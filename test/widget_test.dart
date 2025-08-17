@@ -1,30 +1,36 @@
-// This is a basic Flutter widget test.
+// import 'package:cashgo/services/db/db_helper.dart';
+// import 'package:flutter/material.dart';
+// import 'screens/shared/login_screen.dart';
+// import 'screens/cashier/cashier_screen.dart';
+// import 'screens/admin/dashboard_screen.dart';
 //
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
-import 'package:flutter_test/flutter_test.dart';
-
-import 'package:cashgo/main.dart';
-
-void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
-
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
-  });
-}
+// void main() async {
+//   WidgetsFlutterBinding.ensureInitialized();
+//   WidgetsFlutterBinding.ensureInitialized();
+//   await DBHelper.instance.database; // يفتح/ينشئ DB
+//   await DBHelper.instance.ensureLowStockSeenColumn(); //
+//   await DBHelper.instance.ensureProductDatesColumns();
+//   await DBHelper.instance.ensureExpirySeenColumn();
+//
+//   runApp(
+//     MyApp(),
+//   );
+// }
+//
+// class MyApp extends StatelessWidget {
+//   const MyApp({super.key});
+//
+//   @override
+//   Widget build(BuildContext context) {
+//     return MaterialApp(
+//       title: 'POS Desktop',
+//       debugShowCheckedModeBanner: false,
+//       theme: ThemeData(primarySwatch: Colors.blue),
+//       routes: {
+//         '/': (context) => const LoginScreen(),
+//         '/admin': (context) => const AdminDashboardScreen(username: 'admin'),
+//         '/cashier': (context) => const CashierScreen(),
+//       },
+//     );
+//   }
+// }

@@ -12,6 +12,12 @@ dependencies:
   sqflite: ^2.2.8
   path: ^1.8.3
   provider: ^6.0.5
+  printing: ^5.14.2
+  pdf: ^3.11.3
+  http: ^1.5.0
+  quick_usb: any
+  sqflite_common_ffi: ^2.3.6
+  path_provider: ^2.0.15
 
 dev_dependencies:
   flutter_test:

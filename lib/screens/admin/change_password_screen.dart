@@ -1,5 +1,8 @@
+import 'package:cashgo/widgets/custom_button.dart';
+import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
 import '../../services/db/db_helper.dart';
+import '../../utils/colors.dart';
 
 class ChangePasswordScreen extends StatefulWidget {
   final String username;
@@ -27,7 +30,21 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('تغيير كلمة المرور')),
+      backgroundColor: AppColorsDark.bgColor,
+      appBar: AppBar(
+        iconTheme: IconThemeData(
+          color: Colors.white70
+        ),
+        backgroundColor: Colors.transparent,
+          elevation: 0.0,
+          title: Text(
+          'تغيير كلمة المرور',
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 20
+        ),
+      )
+      ),
       body: Padding(
         padding: const EdgeInsets.all(20),
         child: Center(
@@ -36,15 +53,18 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: newPasswordController,
-                  decoration: const InputDecoration(labelText: 'كلمة مرور جديدة'),
-                  obscureText: true,
+                CustomFormField(
+                    hint: 'كلمة مرور جديدة',
+                    controller: newPasswordController,
+                  isPassword: true,
                 ),
-                const SizedBox(height: 16),
-                ElevatedButton(onPressed: _changePassword, child: const Text('تغيير')),
+                const SizedBox(height: 20),
+                CustomButton(
+                    text: 'تغيير',
+                    onPressed: _changePassword
+                ),
                 const SizedBox(height: 10),
-                Text(message, style: const TextStyle(color: Colors.green)),
+                Text(message, style: const TextStyle(color: Colors.white)),
               ],
             ),
           ),

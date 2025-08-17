@@ -1,22 +1,32 @@
-import 'package:cashgo/services/db/db_helper.dart';
-import 'package:cashgo/services/provider/NotificationProvider.dart';
+// lib/main.dart
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqflite/sqflite.dart';
+
+import 'package:cashgo/services/db/db_helper.dart';
 import 'screens/shared/login_screen.dart';
 import 'screens/cashier/cashier_screen.dart';
 import 'screens/admin/dashboard_screen.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  WidgetsFlutterBinding.ensureInitialized();
-  await DBHelper.instance.database; // يفتح/ينشئ DB
-  await DBHelper.instance.ensureLowStockSeenColumn(); //
+
+  // If running on desktop (Windows / Linux / macOS) initialize sqflite FFI
+  // BEFORE opening the database. This makes `openDatabase` use the
+  // `databaseFactoryFfi` implementation which works on desktop.
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
+
+  // Open/create DB and run any migration helpers that expect DB to exist
+  await DBHelper.instance.database;
+  await DBHelper.instance.ensureLowStockSeenColumn();
   await DBHelper.instance.ensureProductDatesColumns();
   await DBHelper.instance.ensureExpirySeenColumn();
 
-  runApp(
-  MyApp(),
-  );
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {

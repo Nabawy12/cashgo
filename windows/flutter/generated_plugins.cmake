@@ -3,6 +3,8 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  printing
+  quick_usb
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

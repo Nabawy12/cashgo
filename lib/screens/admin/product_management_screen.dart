@@ -1,3 +1,4 @@
+// lib/screens/product_management_screen.dart
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:flutter/material.dart';
@@ -36,10 +37,20 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   }
 
   double computeProductProfit(Map<String, dynamic> p) {
-    if ((p['units_in_carton'] ?? 0) == 0) return 0.0;
-    final purchasePerUnit = (p['purchase_price'] as num) / (p['units_in_carton'] as num);
-    final totalUnits = (p['quantity'] as num) * (p['units_in_carton'] as num);
-    return ((p['selling_price'] as num) - purchasePerUnit) * totalUnits;
+    // استخدم total_units إن وُجد، وإلا نحسبه
+    final unitsInCarton = (p['units_in_carton'] ?? 0) as num;
+    final totalUnits = (p['total_units'] ?? ((p['quantity'] as num) * (p['units_in_carton'] as num) + (p['units_remainder'] ?? 0))) as num;
+    final purchasePrice = (p['purchase_price'] as num).toDouble();
+    final sellingPrice = (p['selling_price'] as num).toDouble();
+
+    if (unitsInCarton == 0) {
+      // لو مفيش تعريف لعدد القطع في الكرتونه، نرجع فرق سعر القطعة مضروب في عدد الوحدات
+      final profitPerUnit = sellingPrice - (purchasePrice);
+      return profitPerUnit * totalUnits;
+    }
+
+    final purchasePerUnit = purchasePrice / unitsInCarton;
+    return (sellingPrice - purchasePerUnit) * totalUnits;
   }
 
   double computeTotalProfit() {
@@ -71,7 +82,10 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
               Text('Name: ${p['name']}'),
               Text('Barcode: ${p['barcode'] ?? '-'}'),
               Text('Price: ${p['selling_price']}'),
-              Text('Quantity: ${p['quantity']}'),
+              Text('Cartons: ${p['quantity']}'),
+              Text('Units in carton: ${p['units_in_carton']}'),
+              Text('Remainder units: ${p['units_remainder'] ?? 0}'),
+              Text('Total units: ${p['total_units'] ?? ((p['quantity'] as num) * (p['units_in_carton'] as num) + (p['units_remainder'] ?? 0))}'),
             ],
           ),
           actions: [
@@ -141,20 +155,15 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0.0,
         iconTheme: IconThemeData(
-          color: Colors.white
+            color: Colors.white
         ),
         title: const Text(
-            'اداره المنتجات',
+          'اداره المنتجات',
           style: TextStyle(
-            color: Colors.white
+              color: Colors.white
           ),
         ),
         actions: [
-          // IconButton(
-          //   tooltip: 'Scan QR (info)',
-          //   onPressed: openScannerFallbackInfo,
-          //   icon: const Icon(Icons.qr_code_scanner),
-          // ),
           IconButton(
             tooltip: 'Refresh',
             onPressed: refreshProducts,
@@ -167,10 +176,10 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         icon: const Icon(Icons.add,color: Colors.white,),
         backgroundColor: AppColorsDark.mainColor,
         label: const Text(
-            'اضافه منتج',
+          'اضافه منتج',
           style: TextStyle(
-            fontSize: 17,
-            color: Colors.white
+              fontSize: 17,
+              color: Colors.white
           ),
         ),
       ),
@@ -200,8 +209,8 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                             const Text(
                               'صافي الربح',
                               style: TextStyle(
-                                  fontSize: 15,
-                                  color: Colors.white,
+                                fontSize: 15,
+                                color: Colors.white,
 
                               ),
                               textAlign: TextAlign.center,
@@ -224,10 +233,10 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                           ? const Center(child: CircularProgressIndicator())
                           : filteredProducts.isEmpty
                           ? const Center(child: Text(
-                          'لا توجد قائمه منتجات حتي الان',
+                        'لا توجد قائمه منتجات حتي الان',
                         style: TextStyle(
-                          fontSize: 25,
-                          color: Colors.white
+                            fontSize: 25,
+                            color: Colors.white
                         ),
                       ))
                           : LayoutBuilder(
@@ -241,28 +250,40 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                 scrollDirection: Axis.vertical,
                                 child: Container(
                                   decoration: BoxDecoration(
-                                    border: Border.all(color: Colors.white, width: 1), // ✅ إطار خارجي
+                                    border: Border.all(color: Colors.white, width: 1),
                                     borderRadius: BorderRadius.circular(8),
                                   ),
                                   child: DataTable(
                                     columnSpacing: 18,
-                                    headingRowColor: MaterialStateProperty.all(AppColorsDark.bgCardColor), // ✅ خلفية العناوين
-                                    dataRowColor: MaterialStateProperty.all(AppColorsDark.bgCardColor), // ✅ خلفية الصفوف
+                                    headingRowColor: MaterialStateProperty.all(AppColorsDark.bgCardColor),
+                                    dataRowColor: MaterialStateProperty.all(AppColorsDark.bgCardColor),
                                     columns: const [
-                                      
                                       DataColumn(label: Text('ID', style: TextStyle(color: Colors.white))),
                                       DataColumn(label: Text('Barcode', style: TextStyle(color: Colors.white))),
                                       DataColumn(label: Text('Name', style: TextStyle(color: Colors.white))),
                                       DataColumn(label: Text('Purchase', style: TextStyle(color: Colors.white))),
                                       DataColumn(label: Text('Selling', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('Qty', style: TextStyle(color: Colors.white))),
+                                      DataColumn(label: Text('carton', style: TextStyle(color: Colors.white))),
+                                      DataColumn(label: Text('unit in carton', style: TextStyle(color: Colors.white))),
                                       DataColumn(label: Text('Days Left', style: TextStyle(color: Colors.white))),
                                       DataColumn(label: Text('Profit', style: TextStyle(color: Colors.white))),
                                       DataColumn(label: Text('Actions', style: TextStyle(color: Colors.white))),
                                     ],
                                     rows: filteredProducts.map((p) {
                                       final profit = computeProductProfit(p);
-                                      final lowStock = (p['quantity'] as int) <= 5;
+                                      final totalUnits = ((p['total_units'] ?? ((p['quantity'] as num) * (p['units_in_carton'] as num) + (p['units_remainder'] ?? 0))) as num).toInt();
+                                      final cartons = (p['quantity'] as num).toInt();
+                                      final unitsInCarton = (p['units_in_carton'] as num).toInt();
+                                      final remainder = (p['units_remainder'] ?? 0) as int;
+                                      final lowStock = totalUnits <= 5;
+                                      String stockText;
+                                      // عرض بصيغة: "2crt + 3pcs = 27pcs" أو "-" لو غير معروف
+                                      if (unitsInCarton > 0) {
+                                        stockText = '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
+                                      } else {
+                                        stockText = '$totalUnits قطعة';
+                                      }
+
                                       return DataRow(
                                         cells: [
                                           DataCell(Text('${p['id']}', style: const TextStyle(color: Colors.white))),
@@ -272,44 +293,51 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                           DataCell(Text((p['selling_price'] as num).toString(), style: const TextStyle(color: Colors.white))),
                                           DataCell(
                                             Text(
-                                              '${p['quantity']}',
+                                              "${cartons}",
                                               style: TextStyle(
-                                                color: lowStock ? Colors.red : Colors.white, // ❌ الأحمر زي ما هو
+                                                color: lowStock ? Colors.red : Colors.white,
                                               ),
                                             ),
                                           ),
                                           DataCell(
-
-                                              Container(
-                                                alignment: Alignment.center,
-                                                width: 50,
-                                                child: Text(
-                                                  () {
-                                                if (p['expiry_date'] == null || p['expiry_date'].toString().isEmpty) return '-';
-                                                final expiry = DateTime.tryParse(p['expiry_date']);
-                                                if (expiry == null) return '-';
-                                                final daysLeft = expiry.difference(DateTime.now()).inDays;
-                                                return '$daysLeft';
-                                                                                            }(),
-                                                                                            style: const TextStyle(
+                                            Text(
+                                              "${totalUnits}",
+                                              style: TextStyle(
+                                                color: lowStock ? Colors.red : Colors.white,
+                                              ),
+                                            ),
+                                          ),
+                                          DataCell(
+                                            Container(
+                                              alignment: Alignment.center,
+                                              width: 50,
+                                              child: Text(
+                                                    () {
+                                                  if (p['expiry_date'] == null || p['expiry_date'].toString().isEmpty) return '-';
+                                                  final expiry = DateTime.tryParse(p['expiry_date']);
+                                                  if (expiry == null) return '-';
+                                                  final daysLeft = expiry.difference(DateTime.now()).inDays;
+                                                  return '$daysLeft';
+                                                }(),
+                                                style: const TextStyle(
                                                   color: Colors.white,
-                                                                                            ),
-                                                                                            textAlign: TextAlign.center,
-                                                                                          ),
-                                              )),
-
+                                                ),
+                                                textAlign: TextAlign.center,
+                                              ),
+                                            ),
+                                          ),
                                           DataCell(Text(profit.toStringAsFixed(2), style: const TextStyle(color: Colors.white))),
                                           DataCell(Row(
                                             children: [
                                               IconButton(
                                                 tooltip: 'Edit',
-                                                icon: const Icon(Icons.edit, color: Colors.white), // ✅ أبيض
+                                                icon: const Icon(Icons.edit, color: Colors.white),
                                                 onPressed: () => openAddEditDialog(existing: p),
                                               ),
                                               const Spacer(),
                                               IconButton(
                                                 tooltip: 'Delete',
-                                                icon: const Icon(Icons.delete, color: Colors.red), // ❌ أحمر
+                                                icon: const Icon(Icons.delete, color: Colors.red),
                                                 onPressed: () async {
                                                   final ok = await showDialog<bool>(
                                                     context: context,
@@ -382,6 +410,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
   final sellingController = TextEditingController();
   final unitsInCartonController = TextEditingController();
   final qtyController = TextEditingController();
+  final unitsRemainderController = TextEditingController();
   final productionDateController = TextEditingController();
   final expiryDateController = TextEditingController();
 
@@ -403,9 +432,9 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
     unitsInCartonController.text =
     widget.existing != null ? (widget.existing!['units_in_carton']?.toString() ?? '') : '';
     qtyController.text = widget.existing != null ? (widget.existing!['quantity']?.toString() ?? '') : '';
+    unitsRemainderController.text = widget.existing != null ? (widget.existing!['units_remainder']?.toString() ?? '0') : '0';
     productionDateController.text = widget.existing?['production_date'] ?? '';
     expiryDateController.text = widget.existing?['expiry_date'] ?? '';
-
   }
 
   Future<void> save() async {
@@ -418,6 +447,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
       'selling_price': double.tryParse(sellingController.text.trim()) ?? 0.0,
       'units_in_carton': int.tryParse(unitsInCartonController.text.trim()) ?? 0,
       'quantity': int.tryParse(qtyController.text.trim()) ?? 0,
+      'units_remainder': int.tryParse(unitsRemainderController.text.trim()) ?? 0,
       'production_date': productionDateController.text.trim(),
       'expiry_date': expiryDateController.text.trim(),
     };
@@ -432,15 +462,15 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final focusNode = FocusNode();
+
     return AlertDialog(
       backgroundColor: AppColorsDark.bgColor,
       title: Center(
         child: Text(
-            isEdit ? 'تعديل المنتج' : 'اضافه منتج جديد',
-          style: TextStyle(
-            color: Colors.white
-          ),
-          ),
+          isEdit ? 'تعديل المنتج' : 'اضافه منتج جديد',
+          style: const TextStyle(color: Colors.white),
+        ),
       ),
       content: SingleChildScrollView(
         child: SizedBox(
@@ -450,41 +480,42 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
             child: Column(
               children: [
                 CustomFormField(
-                    controller: barcodeController,
-                    hint: 'الرمز التعريفي الخاص بالمنتج',
+                  controller: barcodeController,
+                  hint: 'الرمز التعريفي الخاص بالمنتج',
+                  autoFocus: true,
                 ),
-                SizedBox(height: 10,),
+                const SizedBox(height: 10),
                 CustomFormField(
                   controller: nameController,
                   hint: 'اسم المنتج',
                   validator: (v) => (v?.trim().isEmpty ?? true) ? 'Enter name' : null,
                 ),
-                SizedBox(height: 10,),
+                const SizedBox(height: 10),
                 CustomFormField(
                   controller: purchaseController,
                   hint: 'سعر شراء الجمله',
                   validator: (v) => (v?.trim().isEmpty ?? true) ? 'ادخل الاسم' : null,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 ),
-                SizedBox(height: 10,),
+                const SizedBox(height: 10),
                 CustomFormField(
                   controller: sellingController,
                   hint: 'سعر بيع القطعه',
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 ),
-                SizedBox(height: 10,),
+                const SizedBox(height: 10),
                 CustomFormField(
                   controller: unitsInCartonController,
                   hint: 'كام قطعه في الكرتونه',
                   keyboardType: TextInputType.number,
                 ),
-                SizedBox(height: 10,),
+                const SizedBox(height: 10),
                 CustomFormField(
                   controller: qtyController,
                   hint: 'كام كرتونه عندك',
                   keyboardType: TextInputType.number,
                 ),
-                SizedBox(height: 10),
+                const SizedBox(height: 10),
                 CustomFormField(
                   controller: productionDateController,
                   hint: 'تاريخ الإنتاج',
@@ -501,7 +532,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                     }
                   },
                 ),
-                SizedBox(height: 10),
+                const SizedBox(height: 10),
                 CustomFormField(
                   controller: expiryDateController,
                   hint: 'تاريخ الانتهاء',
@@ -523,25 +554,23 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
                     TextButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: SizedBox(
-                          width: double.infinity,
-                          height: 30,
-                          child:Center(
-                            child: Text(
-                                'إلغاء',
-                              style: TextStyle(
-                                color: Colors.white
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
+                      onPressed: () => Navigator.pop(context, false),
+                      child: SizedBox(
+                        width: double.infinity,
+                        height: 30,
+                        child: Center(
+                          child: Text(
+                            'إلغاء',
+                            style: const TextStyle(color: Colors.white),
+                            textAlign: TextAlign.center,
                           ),
-                        )
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 15),
                     CustomButton(
-                        onPressed: save,
-                        text: isEdit ? 'حفظ' : 'اضافه'
+                      onPressed: save,
+                      text: isEdit ? 'حفظ' : 'اضافه',
                     ),
                   ],
                 ),
