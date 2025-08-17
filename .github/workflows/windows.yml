@@ -1,4 +1,4 @@
-name: Build Flutter Windows App
+name: Build Flutter Windows App and Publish Release
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write   # يلزم لإنشاء release ورفع assets
 
 jobs:
   build:
@@ -30,10 +30,18 @@ jobs:
         run: flutter build windows --release
 
       - name: Create zip file
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath CashGo-windows.zip
+        run: |
+          if (Test-Path -Path build/windows/x64/runner/Release) {
+            Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath CashGo-windows.zip -Force
+          } else {
+            Write-Error "Release folder not found!"
+          }
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release and upload ZIP
+        uses: softprops/action-gh-release@v1
         with:
-          name: CashGo-windows
-          path: CashGo-windows.zip
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          files: CashGo-windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
