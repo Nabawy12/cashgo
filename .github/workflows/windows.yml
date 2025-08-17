@@ -2,7 +2,7 @@ name: Build Flutter Windows App
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [ master ]
   workflow_dispatch:
 
 permissions:
@@ -15,54 +15,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Flutter (pin specific stable version)
+      - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.35.0'
+          # Optional: pin a specific Flutter release to ensure reproducible builds.
+          # flutter-version: '3.26.0'
 
-      - name: Show Flutter / Dart version (after install)
+      - name: Show Flutter version (before upgrade)
+        run: flutter --version
+
+      - name: Upgrade Flutter (ensure latest stable with matching Dart)
         run: |
+          flutter upgrade --force
           flutter --version
-          dart --version
 
-      - name: Flutter doctor (diagnostic)
-        run: flutter doctor -v
-
-      - name: Ensure Windows desktop support
+      - name: Enable Windows support
         run: flutter config --enable-windows-desktop
 
-      - name: Clean and fetch dependencies
-        run: |
-          flutter clean
-          flutter pub get
-
-      - name: Show resolved package versions (ffi/sqlite3)
-        run: flutter pub deps --style=compact | Select-String -Pattern "ffi|sqlite3|sqflite_common_ffi"
+      - name: Install dependencies
+        run: flutter pub get
 
       - name: Build Windows release
         run: flutter build windows --release
 
-      - name: Copy sqlite3 DLLs to release folder if present
-        if: success()
-        shell: powershell
-        run: |
-          $pubCache = "$env:USERPROFILE\\AppData\\Local\\Pub\\Cache"
-          $dest = "build\\windows\\x64\\runner\\Release"
-          Get-ChildItem -Path $pubCache -Recurse -Filter "sqlite3*.dll" -ErrorAction SilentlyContinue |
-            ForEach-Object {
-              if (!(Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | Out-Null }
-              Copy-Item -Path $_.FullName -Destination $dest -Force
-            }
-
       - name: Create zip file
-        run: |
-          if (Test-Path build\\windows\\x64\\runner\\Release) {
-            Compress-Archive -Path build\\windows\\x64\\runner\\Release\\* -DestinationPath CashGo-windows.zip -Force
-          } else {
-            Write-Error "Release folder not found: build\\windows\\x64\\runner\\Release"
-            exit 1
-          }
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath CashGo-windows.zip
 
       - name: Create Release
         id: create_release
