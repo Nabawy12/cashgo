@@ -2,7 +2,7 @@ name: Build Flutter Windows App
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, main ]
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.35.0'  # مثبت هنا ليتوافق مع ffi/sqlite3 الحديث
+          flutter-version: '3.35.0'
 
       - name: Show Flutter / Dart version (after install)
         run: |
@@ -42,21 +42,15 @@ jobs:
 
       - name: Build Windows release
         run: flutter build windows --release
-        env:
-          # زيادة وقت للـ build لو لازم، لكن عادة غير مطلوب
-          RUNNING_IN_GHA: "true"
 
-      # بعد البناء ننقل أي sqlite3 dll موجود في pub cache إلى مجلد الريليز (تجنّب مشاكل وقت التشغيل)
       - name: Copy sqlite3 DLLs to release folder if present
         if: success()
         shell: powershell
         run: |
           $pubCache = "$env:USERPROFILE\\AppData\\Local\\Pub\\Cache"
           $dest = "build\\windows\\x64\\runner\\Release"
-          Write-Host "Searching for sqlite3*.dll under $pubCache ..."
           Get-ChildItem -Path $pubCache -Recurse -Filter "sqlite3*.dll" -ErrorAction SilentlyContinue |
             ForEach-Object {
-              Write-Host "Found: $($_.FullName) -> Copying to $dest"
               if (!(Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | Out-Null }
               Copy-Item -Path $_.FullName -Destination $dest -Force
             }
