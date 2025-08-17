@@ -19,16 +19,6 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          # Optional: pin a specific Flutter release to ensure reproducible builds.
-          # flutter-version: '3.26.0'
-
-      - name: Show Flutter version (before upgrade)
-        run: flutter --version
-
-      - name: Upgrade Flutter (ensure latest stable with matching Dart)
-        run: |
-          flutter upgrade --force
-          flutter --version
 
       - name: Enable Windows support
         run: flutter config --enable-windows-desktop
