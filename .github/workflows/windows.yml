@@ -32,23 +32,8 @@ jobs:
       - name: Create zip file
         run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath CashGo-windows.zip
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
         with:
-          tag_name: v${{ github.run_number }}
-          release_name: Release v${{ github.run_number }}
-          draft: false
-          prerelease: false
-
-      - name: Upload Windows build
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: CashGo-windows.zip
-          asset_name: CashGo-windows.zip
-          asset_content_type: application/zip
+          name: CashGo-windows
+          path: CashGo-windows.zip
