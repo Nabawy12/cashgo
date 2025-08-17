@@ -15,10 +15,8 @@ Future<void> main() async {
   // If running on desktop (Windows / Linux / macOS) initialize sqflite FFI
   // BEFORE opening the database. This makes `openDatabase` use the
   // `databaseFactoryFfi` implementation which works on desktop.
-  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
-  }
 
   // Open/create DB and run any migration helpers that expect DB to exist
   await DBHelper.instance.database;
