@@ -2,7 +2,7 @@ name: Build Flutter Windows App
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, ci-windows-build ]
   workflow_dispatch:
 
 permissions:
