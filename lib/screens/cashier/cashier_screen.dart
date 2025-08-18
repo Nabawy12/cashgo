@@ -1,6 +1,6 @@
-// lib/screens/cashier/cashier_screen.dart
-// (الملف كامل — تعديل: حذف حقل الملاحظة وحقْل التعديل النقدي، الحساب التلقائي بالعربي
-//  وعرض رسالة موجبة: "المشتري يدفع X" أو "الكاشير يرجع للعميل X".)
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -9,7 +9,7 @@ import '../../services/db/db_helper.dart';
 
 class CartItem {
   final Product product;
-  int quantity; // number of units (pieces)
+  int quantity;
 
   CartItem({required this.product, required this.quantity});
 
@@ -31,8 +31,11 @@ class _CashierScreenState extends State<CashierScreen> {
 
   final TextEditingController _paidController = TextEditingController();
 
-  final Map<int, CartItem> _cart = {}; // key = product.id
+  final Map<int, CartItem> _cart = {};
   bool _saving = false;
+
+  // عدّل اسم الطابعة حسب جهازك
+  final String _printerQueueName = 'Printer_POS_80';
 
   @override
   void initState() {
@@ -82,7 +85,7 @@ class _CashierScreenState extends State<CashierScreen> {
 
     setState(() {
       if (_cart.containsKey(pid)) {
-        _cart[pid]!.quantity += 1; // scanned again -> increment by 1 unit
+        _cart[pid]!.quantity += 1;
       } else {
         _cart[pid] = CartItem(product: product, quantity: 1);
       }
@@ -120,7 +123,6 @@ class _CashierScreenState extends State<CashierScreen> {
   void _changeQuantity(int productId, int newQty) async {
     if (!_cart.containsKey(productId)) return;
 
-    // check availability from DB (fresh)
     final productMap = await DBHelper.instance.getProductByBarcode((_cart[productId]!.product.barcode));
     if (productMap == null) return;
     final product = Product.fromMap(productMap);
@@ -171,6 +173,132 @@ class _CashierScreenState extends State<CashierScreen> {
     }
   }
 
+
+  Future<void> _printReceiptAsText({
+    required int saleId,
+    required double total,
+    required double paid,
+    required double change,
+  }) async {
+    try {
+      final now = DateTime.now();
+      final sb = StringBuffer();
+
+      const left = '\x1b\x61\x00';
+      const center = '\x1b\x61\x01';
+      const right = '\x1b\x61\x02';
+      const rle = '\u202B';
+      const pdf = '\u202C';
+
+
+      sb.writeln(center + '*** فاتورة بيع ***' + pdf);
+      sb.writeln(''); // سطر فاضي يعمل مسافة
+      sb.writeln(left + 'رقم الفاتورة: $saleId' + pdf);
+      sb.writeln(''); // سطر فاضي يعمل مسافة
+      sb.writeln(rle + 'الكاشير: ${widget.cashierUsername}' + pdf);
+      sb.writeln(''); // سطر فاضي يعمل مسافة
+      sb.writeln(rle + 'التاريخ: ${now.toLocal().toString().split('.').first}' + pdf);
+      sb.writeln('----------------------------');
+
+      for (final item in _cart.values) {
+        final name = item.product.name.replaceAll('\n', ' ');
+        final shortName = name.length > 18 ? name.substring(0, 18) + '...' : name;
+        final qty = item.quantity;
+        final price = item.product.sellingPrice.toStringAsFixed(2);
+        final subtotal = item.subtotal.toStringAsFixed(2);
+        sb.writeln(rle + '$shortName  $qty x $price = $subtotal' + pdf);
+      }
+
+      sb.writeln('----------------------------');
+      sb.writeln(rle + 'الإجمالي: ${total.toStringAsFixed(2)}' + pdf);
+      sb.writeln(''); // سطر فاضي يعمل مسافة
+      sb.writeln(rle + 'المدفوع: ${paid.toStringAsFixed(2)}' + pdf);
+      sb.writeln(''); // سطر فاضي يعمل مسافة
+      sb.writeln(rle + (paid >= total ? 'الباقي: ${change.toStringAsFixed(2)}' : 'المتبقي: ${(total - paid).toStringAsFixed(2)}') + pdf);
+      sb.writeln('');
+      sb.writeln(rle + 'شكراً لزيارتكم' + pdf);
+      sb.writeln('\n');
+
+      final tmpDir = Directory.systemTemp;
+      final utf8File = File('${tmpDir.path}/receipt_$saleId.utf8.txt');
+      await utf8File.writeAsString(sb.toString(), encoding: utf8);
+
+      final encodingsToTry = [
+        'CP1256',
+        'WINDOWS-1256',
+        'CP864',
+        'IBM864',
+        'ISO-8859-6',
+      ];
+
+      Future<File?> _convertWithIconv(String targetEncoding) async {
+        try {
+          final convPath = '${tmpDir.path}/receipt_${saleId}_$targetEncoding.bin';
+          final convFile = File(convPath);
+          final cmd = 'iconv -f UTF-8 -t $targetEncoding "${utf8File.path}" > "${convFile.path}"';
+          final res = await Process.run('/bin/sh', ['-c', cmd]);
+          if (res.exitCode == 0) {
+            return convFile;
+          } else {
+            debugPrint('iconv failed for $targetEncoding: ${res.stderr}');
+            return null;
+          }
+        } catch (e) {
+          debugPrint('iconv exception for $targetEncoding: $e');
+          return null;
+        }
+      }
+
+      File? converted;
+      for (final enc in encodingsToTry) {
+        converted = await _convertWithIconv(enc);
+        if (converted != null && await converted.exists()) {
+          debugPrint('Converted to $enc at ${converted.path}');
+          break;
+        }
+      }
+
+      if (converted == null) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم أتمكن من تحويل الترميز. تأكد أن `iconv` متوفر')));
+        final resUtf = await Process.run('lp', ['-d', _printerQueueName, utf8File.path]);
+        if (resUtf.exitCode == 0) {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم إرسال الفاتورة (UTF-8) — إن ظهرت غريبة فالطابعة لا تدعم UTF-8.')));
+        } else {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل إرسال الملف (UTF-8): ${resUtf.stderr}')));
+        }
+        return;
+      }
+
+      try {
+        final cutFeed = <int>[
+          0x1B, 0x64, 0x01,
+          0x1D, 0x56, 0x00,
+        ];
+        final convBytes = await converted.readAsBytes();
+        final finalBytes = <int>[];
+        finalBytes.addAll(convBytes);
+        finalBytes.addAll(cutFeed);
+        final finalFile = File('${tmpDir.path}/receipt_${saleId}_toPrint.bin');
+        await finalFile.writeAsBytes(finalBytes);
+        final result = await Process.run('lp', ['-d', _printerQueueName, '-o', 'raw', finalFile.path]);
+        if (result.exitCode == 0) {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم إرسال الفاتورة للطباعة (بعد تحويل الترميز)')));
+        } else {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل إرسال الملف المحوّل: ${result.stderr}')));
+        }
+        return;
+      } catch (e) {
+        debugPrint('خطأ أثناء إلحاق أو إرسال الملف المحوّل: $e');
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في التحويل/الإرسال: $e')));
+        return;
+      }
+    } catch (e) {
+      debugPrint('خطأ أثناء الطباعة كنص: $e');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في الطباعة: $e')));
+    }
+  }
+
+
   Future<void> _saveSale({required bool requireFullPayment}) async {
     if (_cart.isEmpty) return;
 
@@ -185,9 +313,7 @@ class _CashierScreenState extends State<CashierScreen> {
     setState(() => _saving = true);
 
     try {
-      // verify availability one more time
       for (final entry in _cart.entries) {
-        final pid = entry.key;
         final cartItem = entry.value;
         final productMap = await DBHelper.instance.getProductByBarcode(cartItem.product.barcode);
         if (productMap == null) throw 'المنتج غير موجود';
@@ -221,17 +347,28 @@ class _CashierScreenState extends State<CashierScreen> {
           price: cartItem.product.sellingPrice,
         );
 
-        // reduce product stock by units (correctly handles cartons + remainder)
         await DBHelper.instance.reduceProductStockByUnits(pid, cartItem.quantity);
       }
 
-      // show change or remaining
       if (paid >= total) {
         final change = paid - total;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم الحفظ — الباقي: ${change.toStringAsFixed(2)}')));
       } else {
         final remaining = total - paid;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم حفظ الفاتورة كآجل — المتبقي: ${remaining.toStringAsFixed(2)}')));
+      }
+
+      // طباعة كنص RAW بشكل افتراضي (أكثر توافقًا مع طابعات الفواتير الحرارية)
+      try {
+        await _printReceiptAsText(
+          saleId: saleId,
+          total: total,
+          paid: paid,
+          change: changeAmount,
+        );
+      } catch (e) {
+        debugPrint('فشل طباعة الفاتورة كنص RAW: $e');
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل الطباعة: $e')));
       }
 
       setState(() {
@@ -246,9 +383,7 @@ class _CashierScreenState extends State<CashierScreen> {
     }
   }
 
-  // ---------------- New: open previous invoices and process return ----------------
   Future<void> _openPreviousInvoices() async {
-    // open PreviousSalesScreen and wait for result.
     final changedSaleId = await Navigator.push<int?>(
       context,
       MaterialPageRoute(
@@ -260,7 +395,6 @@ class _CashierScreenState extends State<CashierScreen> {
     );
 
     if (changedSaleId != null) {
-      // Clear current cart and paid field: treat as a fresh/new invoice
       setState(() {
         _cart.clear();
         _paidController.clear();
@@ -364,7 +498,7 @@ class _CashierScreenState extends State<CashierScreen> {
 
             const SizedBox(height: 12),
 
-            // Payment row: total + paid + change
+            // Payment row
             Column(
               children: [
                 Row(
@@ -391,7 +525,6 @@ class _CashierScreenState extends State<CashierScreen> {
                     const SizedBox(width: 8),
                     Column(
                       children: [
-                        // quick amount buttons
                         Row(
                           children: [
                             ElevatedButton(onPressed: () => _setQuickPaid(20), child: const Text('20')),
@@ -446,6 +579,12 @@ class _CashierScreenState extends State<CashierScreen> {
     );
   }
 }
+
+/// ملاحظات قصيرة:
+// - زر "معاينة" الآن يعرض SupermarketReceipt (كصورة) للحفظ/الطباعة.
+// - لا زال _showRawReceiptPreview متاحًا إذا أردت معاينة النص الثابت (RAW).
+// - لحذف الاختبار لاحقًا: امسح زر المعاينة أو عدِّله حسب رغبتك.
+// - تأكد أن اسم الطابعة صحيح وأن `lp` متوفر على الجهاز.
 
 // -------------------- Widget: PreviousSalesScreen --------------------
 class PreviousSalesScreen extends StatefulWidget {
@@ -957,3 +1096,4 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     );
   }
 }
+
