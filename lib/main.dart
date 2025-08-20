@@ -1,5 +1,6 @@
 // lib/main.dart
 import 'dart:io' show Platform;
+import 'package:cashgo/screens/admin/receipts.dart';
 import 'package:flutter/material.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite/sqflite.dart';
@@ -40,6 +41,7 @@ class MyApp extends StatelessWidget {
         '/': (context) => const LoginScreen(),
         '/admin': (context) => const AdminDashboardScreen(username: 'admin'),
         '/cashier': (context) => const CashierScreen(),
+        receiptsScreen.routeName: (context) => const receiptsScreen(),
       },
     );
   }

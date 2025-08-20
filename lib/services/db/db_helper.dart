@@ -775,4 +775,32 @@ class DBHelper {
     });
   }
 
+  ///////////////// GET Product By Name///////////////////////
+
+  Future<List<Map<String, dynamic>>> getProductsByName(String query) async {
+    final db = await instance.database;
+    final q = query.trim();
+    if (q.isEmpty) return [];
+
+    final like = '%$q%';
+    final rows = await db.query(
+      'products',
+      where: 'name LIKE ? COLLATE NOCASE OR barcode LIKE ?',
+      whereArgs: [like, like],
+      orderBy: 'name',
+    );
+
+    return rows.map((product) {
+      final cartons = (product['quantity'] as num).toInt();
+      final unitsInCarton = (product['units_in_carton'] as num).toInt();
+      final remainder = (product['units_remainder'] as num?)?.toInt() ?? 0;
+      final totalUnits = cartons * unitsInCarton + remainder;
+      return {
+        ...product,
+        'units_remainder': remainder,
+        'total_units': totalUnits,
+      };
+    }).toList();
+  }
+
 }
