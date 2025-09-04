@@ -19,6 +19,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   final barcodeFocusNode = FocusNode();
   final barcodeController = TextEditingController();
 
+
   @override
   void initState() {
     super.initState();
@@ -105,7 +106,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         context: context,
         builder: (_) => AlertDialog(
           title: const Text('Product not found'),
-          content: Text('No product found for barcode/QR "$code". Add new product with this code?'),
+          content: Text('No product found for barcode/QR "\$code". Add new product with this code?'),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('No')),
             TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Yes')),
@@ -145,6 +146,79 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         ],
       ),
     );
+  }
+
+  /// *** New: Open dialog to add separate units to a product ***
+  Future<void> openAddUnitsDialog(Map<String, dynamic> p) async {
+    final unitsController = TextEditingController();
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('اضافة وحدات'),
+        backgroundColor: AppColorsDark.bgColor,
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('ادخل عدد الوحدات المراد اضافتها', style: TextStyle(color: Colors.white)),
+            const SizedBox(height: 8),
+            TextField(
+              controller: unitsController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                hintText: 'مثال: 5',
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text('ملاحظة: اذا كان المنتج معرفًا بعدد القطع في الكرتونة، سيتم تحويل الوحدات الى كراتين عند الاكتفاء.', style: TextStyle(color: Colors.white70, fontSize: 12)),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('اضافة')),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    final added = int.tryParse(unitsController.text.trim());
+    if (added == null || added <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ادخل عدد صحيح أكبر من صفر')));
+      return;
+    }
+
+    final unitsInCarton = (p['units_in_carton'] ?? 0) as int;
+    final currentQty = (p['quantity'] ?? 0) as int;
+    final currentRemainder = (p['units_remainder'] ?? 0) as int;
+
+    if (unitsInCarton > 0) {
+      // جمع الباقي مع المضاف وتحويل الى كراتين اذا امتلأت
+      final totalRemainder = currentRemainder + added;
+      final extraCartons = totalRemainder ~/ unitsInCarton;
+      final newRemainder = totalRemainder % unitsInCarton;
+      final newQty = currentQty + extraCartons;
+
+      final updated = {
+        'id': p['id'],
+        'quantity': newQty,
+        'units_remainder': newRemainder,
+      };
+
+      await DBHelper.instance.updateProduct(updated);
+    } else {
+      // اذا لم يعرف عدد القطع في الكرتون نحدث total_units (أو ننشئه)
+      final currentTotal = (p['total_units'] ?? 0) as int;
+      final newTotal = currentTotal + added;
+      final updated = {
+        'id': p['id'],
+        'total_units': newTotal,
+      };
+      await DBHelper.instance.updateProduct(updated);
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تمت الإضافة')));
+    await refreshProducts();
   }
 
   @override
@@ -329,6 +403,12 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                           DataCell(Text(profit.toStringAsFixed(2), style: const TextStyle(color: Colors.white))),
                                           DataCell(Row(
                                             children: [
+                                              // New: add units button
+                                              IconButton(
+                                                tooltip: 'Add units',
+                                                icon: const Icon(Icons.add, color: Colors.lightGreen),
+                                                onPressed: () => openAddUnitsDialog(p),
+                                              ),
                                               IconButton(
                                                 tooltip: 'Edit',
                                                 icon: const Icon(Icons.edit, color: Colors.white),
@@ -414,6 +494,16 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
   final productionDateController = TextEditingController();
   final expiryDateController = TextEditingController();
 
+  final barcodeFocusNode = FocusNode();
+  final nameProductFocusNode = FocusNode();
+  final paidPriceFocusNode = FocusNode();
+  final salePriceFocusNode = FocusNode();
+  final unisInCartonFocusNode = FocusNode();
+  final quantityFocusNode = FocusNode();
+  final unitsRemainderFocusNode = FocusNode();
+  final productionDateFocusNode = FocusNode();
+  final expiryDateFocusNode = FocusNode();
+
   bool isEdit = false;
 
   @override
@@ -483,41 +573,67 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                   controller: barcodeController,
                   hint: 'الرمز التعريفي الخاص بالمنتج',
                   autoFocus: true,
+                  focusNode: barcodeFocusNode,
+                  onFieldSubmitted: (_) {
+                    FocusScope.of(context).requestFocus(nameProductFocusNode);
+                  },
+                  validator: (v) => (v?.trim().isEmpty ?? true) ? 'Enter barcode' : null,
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: nameController,
+                  focusNode: nameProductFocusNode,
                   hint: 'اسم المنتج',
+                  onFieldSubmitted: (_) {
+                    FocusScope.of(context).requestFocus(paidPriceFocusNode);
+                  },
                   validator: (v) => (v?.trim().isEmpty ?? true) ? 'Enter name' : null,
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: purchaseController,
+                  focusNode: paidPriceFocusNode,
                   hint: 'سعر شراء الجمله',
                   validator: (v) => (v?.trim().isEmpty ?? true) ? 'ادخل الاسم' : null,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  onFieldSubmitted: (_) {
+                    FocusScope.of(context).requestFocus(salePriceFocusNode);
+                  },
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: sellingController,
+                  focusNode: salePriceFocusNode,
                   hint: 'سعر بيع القطعه',
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  onFieldSubmitted: (_) {
+                    FocusScope.of(context).requestFocus(unisInCartonFocusNode);
+                  },
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: unitsInCartonController,
+                  focusNode: unisInCartonFocusNode,
                   hint: 'كام قطعه في الكرتونه',
                   keyboardType: TextInputType.number,
+                  onFieldSubmitted: (_) {
+                    FocusScope.of(context).requestFocus(quantityFocusNode);
+                  },
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: qtyController,
+                  focusNode: quantityFocusNode,
                   hint: 'كام كرتونه عندك',
                   keyboardType: TextInputType.number,
+                  onFieldSubmitted: (_) {
+                    FocusScope.of(context).requestFocus(productionDateFocusNode);
+                  },
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: productionDateController,
+                  focusNode: productionDateFocusNode,
                   hint: 'تاريخ الإنتاج',
                   readOnly: true,
                   onTap: () async {
@@ -531,10 +647,14 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                       productionDateController.text = picked.toIso8601String().split('T').first;
                     }
                   },
+                  onFieldSubmitted: (_) {
+                    FocusScope.of(context).requestFocus(expiryDateFocusNode);
+                  },
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: expiryDateController,
+                  focusNode: expiryDateFocusNode,
                   hint: 'تاريخ الانتهاء',
                   readOnly: true,
                   onTap: () async {
@@ -548,6 +668,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                       expiryDateController.text = picked.toIso8601String().split('T').first;
                     }
                   },
+                  onFieldSubmitted: (_) => save(),
                 ),
                 const SizedBox(height: 12),
                 Column(

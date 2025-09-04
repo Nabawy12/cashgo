@@ -3,29 +3,56 @@ import 'package:flutter/material.dart';
 
 class CustomButton extends StatelessWidget {
   final String text;
-  final VoidCallback onPressed;
-  const CustomButton({super.key, required this.text, required this.onPressed});
+  final VoidCallback? onPressed;
+  final bool infinity;
+  final bool isLoading;
+  final Color color;
+
+  const CustomButton({
+    super.key,
+    required this.text,
+    required this.onPressed,
+    this.infinity = true,
+    this.isLoading = false,
+    this.color = AppColorsDark.mainColor,
+  });
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: double.infinity,
+      width: infinity ? double.infinity : null,
       height: 50,
       child: ElevatedButton(
         style: ElevatedButton.styleFrom(
-          backgroundColor: AppColorsDark.mainColor,
+          backgroundColor: color,
           overlayColor: Colors.blueAccent.withOpacity(0.5),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
         ),
-          onPressed: onPressed,
-          child: Text(
-              text,
-            style: TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w500,
-              color: Colors.white
+        onPressed: isLoading ? null : onPressed, // ✅ يوقف الضغط لو في لودينج
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          transitionBuilder: (child, anim) =>
+              FadeTransition(opacity: anim, child: child),
+          child: isLoading
+              ? SizedBox(
+            key: const ValueKey("loader"),
+            height: 24,
+            width: 24,
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
             ),
           )
+              : Text(
+            text,
+            key: const ValueKey("text"),
+            style: const TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w500,
+              color: Colors.white,
+            ),
+          ),
+        ),
       ),
     );
   }

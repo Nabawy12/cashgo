@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../utils/colors.dart';
 
 class CustomFormField extends StatefulWidget {
@@ -9,12 +10,20 @@ class CustomFormField extends StatefulWidget {
   final TextInputType keyboardType;
   final String? Function(String?)? validator;
   final void Function(String)? onChanged;
+  final List<TextInputFormatter>? inputFormatters;
 
   final bool readOnly;
   final VoidCallback? onTap;
 
-  // ✅ خاصية جديدة للتحكم في الـ autoFocus
+  // ✅ التحكم في الـ autoFocus
   final bool autoFocus;
+
+  // ✅ عشان نقدر نستقبل focusNode من برة
+  final FocusNode? focusNode;
+
+  // ✅ عشان ندعم حركة الكيبورد
+  final TextInputAction? textInputAction;
+  final void Function(String)? onFieldSubmitted;
 
   const CustomFormField({
     super.key,
@@ -27,7 +36,11 @@ class CustomFormField extends StatefulWidget {
     this.onChanged,
     this.readOnly = false,
     this.onTap,
-    this.autoFocus = false, // ✅ القيمة الافتراضية false
+    this.autoFocus = false,
+    this.focusNode,
+    this.textInputAction,
+    this.onFieldSubmitted,
+    this.inputFormatters,
   });
 
   @override
@@ -36,19 +49,21 @@ class CustomFormField extends StatefulWidget {
 
 class _CustomFormFieldState extends State<CustomFormField> {
   late bool _obscure;
-  late FocusNode _focusNode;
+  FocusNode? _internalFocusNode;
 
   @override
   void initState() {
     super.initState();
     _obscure = widget.isPassword;
-    _focusNode = FocusNode();
 
-    // ✅ لو الخاصية autoFocus مفعلة، ندي focus بعد ما الـ widget يبني
+    if (widget.focusNode == null) {
+      _internalFocusNode = FocusNode();
+    }
+
     if (widget.autoFocus) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _focusNode.requestFocus();
+          (widget.focusNode ?? _internalFocusNode)?.requestFocus();
         }
       });
     }
@@ -56,13 +71,31 @@ class _CustomFormFieldState extends State<CustomFormField> {
 
   @override
   void dispose() {
-    _focusNode.dispose(); // ✅ لازم نعمل dispose للـ focusNode
+    _internalFocusNode?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return TextFormField(
+      inputFormatters: [
+        ...(widget.inputFormatters ?? []),
+        // ✅ فورماتر يحول أي أرقام عربية إلى إنجليزية
+        TextInputFormatter.withFunction((oldValue, newValue) {
+          const arabic = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+          const english = ['0','1','2','3','4','5','6','7','8','9'];
+
+          String text = newValue.text;
+          for (int i = 0; i < arabic.length; i++) {
+            text = text.replaceAll(arabic[i], english[i]);
+          }
+
+          return newValue.copyWith(
+            text: text,
+            selection: TextSelection.collapsed(offset: text.length),
+          );
+        }),
+      ],
       controller: widget.controller,
       obscureText: _obscure,
       keyboardType: widget.keyboardType,
@@ -71,7 +104,9 @@ class _CustomFormFieldState extends State<CustomFormField> {
       textAlign: widget.centerHint ? TextAlign.center : TextAlign.start,
       readOnly: widget.readOnly,
       onTap: widget.onTap,
-      focusNode: _focusNode, // ✅ نمرر الـ focusNode الداخلي
+      focusNode: widget.focusNode ?? _internalFocusNode,
+      textInputAction: widget.textInputAction,
+      onFieldSubmitted: widget.onFieldSubmitted,
       decoration: InputDecoration(
         hintText: widget.hint,
         hintStyle: const TextStyle(color: Colors.white70),
