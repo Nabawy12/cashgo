@@ -106,7 +106,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         context: context,
         builder: (_) => AlertDialog(
           title: const Text('Product not found'),
-          content: Text('No product found for barcode/QR "\$code". Add new product with this code?'),
+          content: Text('No product found for barcode/QR "$code". Add new product with this code?'),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('No')),
             TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Yes')),
@@ -146,79 +146,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         ],
       ),
     );
-  }
-
-  /// *** New: Open dialog to add separate units to a product ***
-  Future<void> openAddUnitsDialog(Map<String, dynamic> p) async {
-    final unitsController = TextEditingController();
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('اضافة وحدات'),
-        backgroundColor: AppColorsDark.bgColor,
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('ادخل عدد الوحدات المراد اضافتها', style: TextStyle(color: Colors.white)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: unitsController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                hintText: 'مثال: 5',
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text('ملاحظة: اذا كان المنتج معرفًا بعدد القطع في الكرتونة، سيتم تحويل الوحدات الى كراتين عند الاكتفاء.', style: TextStyle(color: Colors.white70, fontSize: 12)),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('اضافة')),
-        ],
-      ),
-    );
-
-    if (ok != true) return;
-
-    final added = int.tryParse(unitsController.text.trim());
-    if (added == null || added <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ادخل عدد صحيح أكبر من صفر')));
-      return;
-    }
-
-    final unitsInCarton = (p['units_in_carton'] ?? 0) as int;
-    final currentQty = (p['quantity'] ?? 0) as int;
-    final currentRemainder = (p['units_remainder'] ?? 0) as int;
-
-    if (unitsInCarton > 0) {
-      // جمع الباقي مع المضاف وتحويل الى كراتين اذا امتلأت
-      final totalRemainder = currentRemainder + added;
-      final extraCartons = totalRemainder ~/ unitsInCarton;
-      final newRemainder = totalRemainder % unitsInCarton;
-      final newQty = currentQty + extraCartons;
-
-      final updated = {
-        'id': p['id'],
-        'quantity': newQty,
-        'units_remainder': newRemainder,
-      };
-
-      await DBHelper.instance.updateProduct(updated);
-    } else {
-      // اذا لم يعرف عدد القطع في الكرتون نحدث total_units (أو ننشئه)
-      final currentTotal = (p['total_units'] ?? 0) as int;
-      final newTotal = currentTotal + added;
-      final updated = {
-        'id': p['id'],
-        'total_units': newTotal,
-      };
-      await DBHelper.instance.updateProduct(updated);
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تمت الإضافة')));
-    await refreshProducts();
   }
 
   @override
@@ -403,12 +330,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                           DataCell(Text(profit.toStringAsFixed(2), style: const TextStyle(color: Colors.white))),
                                           DataCell(Row(
                                             children: [
-                                              // New: add units button
-                                              IconButton(
-                                                tooltip: 'Add units',
-                                                icon: const Icon(Icons.add, color: Colors.lightGreen),
-                                                onPressed: () => openAddUnitsDialog(p),
-                                              ),
                                               IconButton(
                                                 tooltip: 'Edit',
                                                 icon: const Icon(Icons.edit, color: Colors.white),
@@ -489,10 +410,12 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
   final purchaseController = TextEditingController();
   final sellingController = TextEditingController();
   final unitsInCartonController = TextEditingController();
-  final qtyController = TextEditingController();
-  final unitsRemainderController = TextEditingController();
+  final qtyController = TextEditingController(); // عدد الكراتين
+  final unitsRemainderController = TextEditingController(); // محجوز داخلياً (لن يدخل المستخدمه يدوياً)
   final productionDateController = TextEditingController();
   final expiryDateController = TextEditingController();
+  // NEW: وحدات خارج الكراتين (اللي طلبتها)
+  final externalUnitsController = TextEditingController();
 
   final barcodeFocusNode = FocusNode();
   final nameProductFocusNode = FocusNode();
@@ -500,6 +423,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
   final salePriceFocusNode = FocusNode();
   final unisInCartonFocusNode = FocusNode();
   final quantityFocusNode = FocusNode();
+  final externalUnitsFocusNode = FocusNode(); // focus للحقول الجديدة
   final unitsRemainderFocusNode = FocusNode();
   final productionDateFocusNode = FocusNode();
   final expiryDateFocusNode = FocusNode();
@@ -521,23 +445,47 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
     widget.existing != null ? (widget.existing!['selling_price']?.toString() ?? '') : '';
     unitsInCartonController.text =
     widget.existing != null ? (widget.existing!['units_in_carton']?.toString() ?? '') : '';
+    // qtyController represents number of cartons
     qtyController.text = widget.existing != null ? (widget.existing!['quantity']?.toString() ?? '') : '';
-    unitsRemainderController.text = widget.existing != null ? (widget.existing!['units_remainder']?.toString() ?? '0') : '0';
+    // units_remainder previously stored - نعرضه كمقدار وحدات خارج الكراتين (افتراضي 0)
+    externalUnitsController.text = widget.existing != null
+        ? (widget.existing!['units_remainder']?.toString() ?? '0')
+        : '0';
+    // unitsRemainderController نحتفظ به لكن يتم احتسابه تلقائياً عند الحفظ
+    unitsRemainderController.text =
+    widget.existing != null ? (widget.existing!['units_remainder']?.toString() ?? '0') : '0';
     productionDateController.text = widget.existing?['production_date'] ?? '';
     expiryDateController.text = widget.existing?['expiry_date'] ?? '';
   }
 
   Future<void> save() async {
     if (!_formKey.currentState!.validate()) return;
+
+    final unitsInCarton = int.tryParse(unitsInCartonController.text.trim()) ?? 0;
+    final cartons = int.tryParse(qtyController.text.trim()) ?? 0;
+    final external = int.tryParse(externalUnitsController.text.trim()) ?? 0;
+
+    // تحويل الوحدات الخارجية إلى عدد كراتين وباقي وحدات
+    int finalCartons = cartons;
+    int remainder = 0;
+    if (unitsInCarton > 0) {
+      finalCartons += external ~/ unitsInCarton;
+      remainder = external % unitsInCarton;
+    } else {
+      // لو لم تُدخل عدد وحدات في الكرتونة أو كان صفر، نخزن كل الوحدات الخارجية كباقي
+      remainder = external;
+    }
+
+    // نحفظ (سواء إضافة أو تعديل) — ملاحظة: عند التعديل نستبدل القيم الحالية بالقيم الجديدة (لا نجمع على القديم)
     final prod = {
       'id': isEdit ? widget.existing!['id'] : null,
       'barcode': barcodeController.text.trim(),
       'name': nameController.text.trim(),
       'purchase_price': double.tryParse(purchaseController.text.trim()) ?? 0.0,
       'selling_price': double.tryParse(sellingController.text.trim()) ?? 0.0,
-      'units_in_carton': int.tryParse(unitsInCartonController.text.trim()) ?? 0,
-      'quantity': int.tryParse(qtyController.text.trim()) ?? 0,
-      'units_remainder': int.tryParse(unitsRemainderController.text.trim()) ?? 0,
+      'units_in_carton': unitsInCarton,
+      'quantity': finalCartons, // عدد الكراتين النهائي بعد إضافة ما تحوّل من وحدات خارجية
+      'units_remainder': remainder, // الباقي داخل الكرتونة الأخيرة
       'production_date': productionDateController.text.trim(),
       'expiry_date': expiryDateController.text.trim(),
     };
@@ -627,6 +575,17 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                   hint: 'كام كرتونه عندك',
                   keyboardType: TextInputType.number,
                   onFieldSubmitted: (_) {
+                    FocusScope.of(context).requestFocus(externalUnitsFocusNode);
+                  },
+                ),
+                const SizedBox(height: 10),
+                // NEW: حقل وحدات خارج الكراتين
+                CustomFormField(
+                  controller: externalUnitsController,
+                  focusNode: externalUnitsFocusNode,
+                  hint: 'وحدات خارج الكراتين (مثلاً 10)',
+                  keyboardType: TextInputType.number,
+                  onFieldSubmitted: (_) {
                     FocusScope.of(context).requestFocus(productionDateFocusNode);
                   },
                 ),
@@ -703,3 +662,4 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
     );
   }
 }
+
