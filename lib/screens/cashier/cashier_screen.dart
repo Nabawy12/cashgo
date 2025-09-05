@@ -16,10 +16,12 @@ import '../../widgets/Cashier/cartlist.dart';
 import '../../widgets/Cashier/close_shieft.dart';
 import '../../widgets/Cashier/payment_controller.dart';
 import '../../widgets/Cashier/receipt_widget.dart';
+import '../shared/login_screen.dart';
 import 'ReceiveFromSupplier.dart';
 import 'histroy.dart';
 
 class CashierScreen extends StatefulWidget {
+  static const routName = "/Cashier";
   final String cashierUsername;
   const CashierScreen({super.key, this.cashierUsername = 'cashier'});
   @override
@@ -920,7 +922,7 @@ class _CashierScreenState extends State<CashierScreen> {
         salesTotal += total;
         final net = (paid - change);
         if (method == 'cash') salesPaidCash += net;
-        else if (method == 'card') salesPaidCard += net;
+        else if (method == 'wallet') salesPaidCard += net;
       }
 
       double purchasesPaid = 0.0;
@@ -1039,6 +1041,41 @@ class _CashierScreenState extends State<CashierScreen> {
       setState(() => _closingShift = false);
     }
   }
+  Future<void> _confirmExit() async {
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      builder: (context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: AppColorsDark.bgCardColor,
+          title: const Text('تأكيد الخروج',style: TextStyle(color: Colors.white),),
+          content: const Text('هل أنت متأكد من الخروج؟',style: TextStyle(color: Colors.white70),),
+          actions: [
+            TextButton(
+
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('تأكيد',style: TextStyle(color: Colors.white),),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('إلغاء',style: TextStyle(color: Colors.white70),),
+            ),
+
+          ],
+        ),
+      ),
+    );
+
+    if (shouldExit == true && mounted) {
+      // تذهب إلى LoginScreen وتزيل باقي الشاشة من الستاك
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+            (route) => false,
+      );
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -1056,7 +1093,10 @@ class _CashierScreenState extends State<CashierScreen> {
         toolbarHeight: 65,
         leading: Row(
           children: [
-            BackButton(color: Colors.white70),
+             IconButton(
+              icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white70),
+              onPressed: () => _confirmExit(),
+            ),
             SizedBox(width: 20,),
             InkWell(
               child: Column(
@@ -1070,7 +1110,7 @@ class _CashierScreenState extends State<CashierScreen> {
                     onPressed: _openCardWalletDialog,
                   ),
                   Text(
-                    _cardTotalAvailable.toStringAsFixed(1),
+                    NumberFormat("#,###").format(_cardTotalAvailable),
                     style: const TextStyle(color: Colors.white70, fontSize: 14),
                   ),
                 ],
@@ -1094,7 +1134,7 @@ class _CashierScreenState extends State<CashierScreen> {
                 ),
                 SizedBox(height: 10,),
                 Text(
-                  Drawer.toStringAsFixed(1),
+                  NumberFormat("#,###").format(Drawer),
                   style: const TextStyle(color: Colors.white70, fontSize: 14),
                 ),
               ],

@@ -1,3 +1,4 @@
+import 'package:cashgo/screens/cashier/cashier_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../../models/login.dart';
@@ -22,12 +23,22 @@ class _LoginScreenState extends State<LoginScreen> {
 
   String errorMessage = '';
   bool loading = true;
+  Future<void> _debugPrintUsers() async {
+    final db = await DBHelper.instance.database;
+    final rows = await db.query('users', orderBy: 'id');
+    print('---- users table ----');
+    for (final r in rows) print(r);
+    print('---- end users ----');
+  }
+
 
   @override
   void initState() {
     super.initState();
     _loadCurrentUser();
+    _debugPrintUsers();
   }
+
 
   Future<void> _loadCurrentUser() async {
     try {
@@ -81,7 +92,7 @@ class _LoginScreenState extends State<LoginScreen> {
         if (user['role'] == 'admin') {
           Navigator.pushNamed(context, '/admin', arguments: username);
         } else {
-          Navigator.pushNamed(context, '/cashier', arguments: username);
+          Navigator.pushNamed(context, CashierScreen.routName, arguments: username);
         }
       } else {
         setState(() {

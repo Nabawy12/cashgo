@@ -1,4 +1,5 @@
 // lib/screens/cashier/ReceiveFromSupplier.dart
+import 'package:cashgo/screens/cashier/cashier_screen.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
@@ -181,21 +182,17 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                 note: 'Payment for purchase (wallet) -${paid.toStringAsFixed(2)}',
               );
             } else {
-              // _paymentType == 'cash_or_credit' (merged)
-              if (paid < totalCost) {
-                // treat as partial credit payment -> deduct from drawer starting (same as previous credit behavior)
-                final latestStarting = await dbHelper.getLatestDrawerStartingAmount();
-                final newStarting = latestStarting - paid;
-                await dbHelper.setDrawerStartingAmount(
-                  newStarting,
-                  username,
-                  note: 'Partial payment for credit purchase -${paid.toStringAsFixed(2)}',
-                );
-              } else {
-                // paid == totalCost -> treat as cash payment.
-                // (original code had an empty cash block; keep same behavior to avoid changing other logic)
-                // If you want to deduct cash from drawer on full cash payment, implement it here.
-              }
+              // merged cash_or_credit -> infer: paid < totalCost => partial credit, paid == totalCost => full cash
+              final latestStarting = await dbHelper.getLatestDrawerStartingAmount();
+              final newStarting = latestStarting - paid;
+              final notePrefix = (paid < totalCost)
+                  ? 'Partial payment for credit purchase'
+                  : 'Full cash payment for purchase';
+              await dbHelper.setDrawerStartingAmount(
+                newStarting,
+                username,
+                note: '$notePrefix -${paid.toStringAsFixed(2)}',
+              );
             }
           }
 
@@ -386,7 +383,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                       child: DropdownButtonFormField<String>(
                         value: _paymentType,
                         items: const [
-                          DropdownMenuItem(value: 'cash_or_credit', child: Text('نقدي', style: TextStyle(color: Colors.white))),
+                          DropdownMenuItem(value: 'cash_or_credit', child: Text('نقدي / آجل', style: TextStyle(color: Colors.white))),
                           DropdownMenuItem(value: 'wallet', child: Text('محفظة إلكترونية', style: TextStyle(color: Colors.white))),
                         ],
                         onChanged: (v) {
@@ -427,7 +424,11 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                   text: 'تسجيل الاستلام',
                   onPressed: () {
                     _submit();
-                    Navigator.pop(context, true); // ✅ رجع قيمة (مثلاً true)
+                    Navigator.pushNamedAndRemoveUntil(
+                      context,
+                      CashierScreen.routName,
+                          (Route<dynamic> route) => false,
+                    );
                   },
                   isLoading: _loading,
                 )

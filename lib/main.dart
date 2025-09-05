@@ -38,13 +38,13 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'POS Desktop',
+      title: 'CashGo',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(primarySwatch: Colors.blue),
       routes: {
         '/': (context) => const LoginScreen(),
         '/admin': (context) => const AdminDashboardScreen(username: 'admin'),
-        '/cashier': (context) => const CashierScreen(),
+        CashierScreen.routName: (context) => const CashierScreen(),
         receiptsScreen.routeName: (context) => const receiptsScreen(),
         CreditsScreen.routeName: (context) => const CreditsScreen(),
       },
