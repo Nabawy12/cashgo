@@ -167,8 +167,41 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
             onPressed: () {
               // أغلق الـ details dialog أولاً
               Navigator.pop(context);
-              // افتح المعالجة بعد إطار واحد لتجنّب مشاكل التراصف/context
+              // نعرض مؤشر تحميل (dialog) حتى يتحمّل الـ items من الـ DB
+              showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (_) => const Center(child: CircularProgressIndicator()),
+              );
+
+              // تأكد تحميل العناصر ثم اغلق Loading وافتح شاشة المعالجة
               WidgetsBinding.instance.addPostFrameCallback((_) async {
+                try {
+                  await _ensureItems(saleId);
+                } catch (e, st) {
+                  debugPrint('Error loading sale items before return: $e\n$st');
+                  // أغلق الـ loading إذا كان ظاهرًا
+                  if (Navigator.canPop(context)) Navigator.pop(context);
+                  if (mounted) {
+                    showDialog(
+                      context: context,
+                      builder: (_) => AlertDialog(
+                        title: const Text('خطأ في تحميل البيانات'),
+                        content: SingleChildScrollView(child: Text(e.toString())),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(context), child: const Text('حسناً')),
+                        ],
+                      ),
+                    );
+                  }
+                  return;
+                }
+
+                // أغلق الـ loading
+                if (Navigator.canPop(context)) Navigator.pop(context);
+
+                // ضيف تأخير صغير لإعطاء إطار للـ UI ثم افتح شاشة المعالجة
+                await Future.delayed(const Duration(milliseconds: 50));
                 try {
                   final changed = await _openProcessReturnDialog(saleId, cashierName);
                   if (changed != null) {
