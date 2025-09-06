@@ -165,6 +165,8 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
             style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
             onPressed: () async {
               Navigator.pop(context);
+              // افتح dialog العودة بعد إطار واحد لتجنّب مشاكل التراصف على بعض المنصات (مثل Windows)
+              await Future.delayed(Duration.zero);
               final changed = await _openProcessReturnDialog(saleId, cashierName);
               if (changed != null) {
                 if (mounted) Navigator.pop(context, changed);
