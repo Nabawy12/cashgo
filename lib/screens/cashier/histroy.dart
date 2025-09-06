@@ -415,7 +415,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
                               if (note.toLowerCase().contains('exchange')) const Icon(Icons.swap_horiz, color: Colors.green),
                             ],
                           ),
-                          subtitle: Text('الإجمالي:${total.toStringAsFixed(2)} — المدفوع: ${paid.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                          subtitle: Text('الإجمالي: ${total.toStringAsFixed(2)} — المدفوع: ${paid.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 15)),
                           trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.white70),
                         );
                       }).toList(),
