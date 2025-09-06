@@ -1,6 +1,8 @@
 // PreviousSalesGroupedByCashier.dart
 import 'package:cashgo/utils/colors.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'dart:async';
 import '../../services/db/db_helper.dart';
 import '../../widgets/Cashier/returndailog.dart';
 
@@ -163,15 +165,33 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
           ),
           TextButton(
             style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
-            onPressed: () async {
+            onPressed: () {
               // أغلق الـ details dialog أولاً
               Navigator.pop(context);
-              // افتح صفحة المعالجة بعد إطار واحد لتجنب مشاكل التراصف/context
-              await Future.delayed(Duration.zero);
-              final changed = await _openProcessReturnDialog(saleId, cashierName);
-              if (changed != null) {
-                if (mounted) Navigator.pop(context, changed);
-              }
+              // افتح المعالجة بعد إطار واحد لتجنّب مشاكل التراصف/context
+              WidgetsBinding.instance.addPostFrameCallback((_) async {
+                try {
+                  final changed = await _openProcessReturnDialog(saleId, cashierName);
+                  if (changed != null) {
+                    if (mounted) Navigator.pop(context, changed);
+                  }
+                } catch (e, st) {
+                  // طباعة للـ console لمساعدتك في التحقيق
+                  debugPrint('Error while opening return screen: $e\n$st');
+                  if (mounted) {
+                    showDialog(
+                      context: context,
+                      builder: (_) => AlertDialog(
+                        title: const Text('حدث خطأ'),
+                        content: SingleChildScrollView(child: Text('$e\n\n${st.toString().split("\n").take(10).join("\n")}')),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(context), child: const Text('حسناً')),
+                        ],
+                      ),
+                    );
+                  }
+                }
+              });
             },
             child: Text('معالجة مرتجع / بدل', style: TextStyle(color: Colors.white)),
           ),
@@ -216,49 +236,92 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
     await _ensureItems(originalSaleId);
     final items = saleItems[originalSaleId] ?? [];
 
-    // بدلاً من showDialog نفتح صفحة جديدة (Route) تحتوي على الـ ProcessReturnDialog
-    final result = await Navigator.of(context).push<int?>(
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (ctx) {
-          return Scaffold(
-            backgroundColor: AppColorsDark.bgColor,
-            appBar: AppBar(
-              backgroundColor: Colors.transparent,
-              elevation: 0,
-              iconTheme: IconThemeData(color: Colors.white70),
-              title: Text('معالجة مرتجع / بدل', style: TextStyle(color: Colors.white)),
+    // حفظ الـ ErrorWidget.builder الحالي ثم تغييره مؤقتًا لعرض رسالة واضحة لو حصل خطأ أثناء البناء
+    final prevErrorBuilder = ErrorWidget.builder;
+    ErrorWidget.builder = (FlutterErrorDetails details) {
+      final msg = details.exceptionAsString();
+      // عرض واجهة خطأ بسيطة بدلاً من الشاشة البيضاء
+      return Container(
+        color: AppColorsDark.bgCardColor,
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error, size: 48, color: Colors.red),
+            const SizedBox(height: 8),
+            const Text('حدث خطأ أثناء بناء واجهة المرتجعات', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: 200),
+              child: SingleChildScrollView(child: Text(msg, style: TextStyle(color: Colors.white70))),
             ),
-            body: SafeArea(
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: 900, maxHeight: 800),
-                  child: Container(
-                    // لفّ المحتوى داخل Container حتى يكون له خلفية/حدود واضحة
-                    padding: EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColorsDark.bgCardColor,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: ProcessReturnDialog(
-                      originalSaleId: originalSaleId,
-                      items: items,
-                      cashierUsername: cashierName,
-                      onDone: () async {
-                        await _loadSales(date: selectedDate);
-                        await _ensureItems(originalSaleId);
-                      },
+          ],
+        ),
+      );
+    };
+
+    try {
+      // نستخدم rootNavigator لتجنب أي مشاكل بالـ dialog context
+      final result = await Navigator.of(context, rootNavigator: true).push<int?>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (ctx) {
+            return Scaffold(
+              backgroundColor: AppColorsDark.bgColor,
+              appBar: AppBar(
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                iconTheme: IconThemeData(color: Colors.white70),
+                title: Text('معالجة مرتجع / بدل', style: TextStyle(color: Colors.white)),
+              ),
+              body: SafeArea(
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: 900, maxHeight: 800),
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppColorsDark.bgCardColor,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ProcessReturnDialog(
+                        originalSaleId: originalSaleId,
+                        items: items,
+                        cashierUsername: cashierName,
+                        onDone: () async {
+                          await _loadSales(date: selectedDate);
+                          await _ensureItems(originalSaleId);
+                        },
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          );
-        },
-      ),
-    );
-
-    return result;
+            );
+          },
+        ),
+      );
+      return result;
+    } catch (e, st) {
+      debugPrint('Exception while pushing return route: $e\n$st');
+      // أظهر خطأ مختصر للمستخدم/المطور
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('خطأ في فتح صفحة المعالجة'),
+            content: SingleChildScrollView(child: Text('$e\n\n${st.toString().split("\n").take(10).join("\n")}')),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('حسناً')),
+            ],
+          ),
+        );
+      }
+      return null;
+    } finally {
+      // أعد الـ ErrorWidget.builder الأصلي
+      ErrorWidget.builder = prevErrorBuilder;
+    }
   }
 
   Future<void> _pickDate() async {
