@@ -285,7 +285,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                         children: [
                           TextButton(
                             onPressed: _processing ? null : () => Navigator.of(context).pop(),
-                            child: const Text('إلغاء', style: TextStyle(color: Colors.white70)),
+                            child: const Text(' إلغاء', style: TextStyle(color: Colors.white70)),
                           ),
                           const SizedBox(width: 8),
                           ElevatedButton(
