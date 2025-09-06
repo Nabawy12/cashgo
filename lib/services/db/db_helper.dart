@@ -423,6 +423,47 @@ class DBHelper {
     return null;
   }
 
+  // في DBHelper:
+// يبحث باستخدام LIKE ويرجع قائمة منتجات مع حقل total_units محسوب
+  Future<List<Map<String, dynamic>>> searchProductsByName(String q, {int limit = 50}) async {
+    final db = await instance.database;
+    final pattern = '%${q.replaceAll("'", "''")}%';
+    final rows = await db.rawQuery(
+      "SELECT * FROM products WHERE name LIKE ? COLLATE NOCASE OR barcode LIKE ? LIMIT ?",
+      [pattern, pattern, limit],
+    );
+
+    // احسب total_units لكل نتيجة مثل getProductByBarcode
+    final List<Map<String, dynamic>> results = [];
+    for (final r in rows) {
+      final product = Map<String, dynamic>.from(r);
+      final cartons = (product['quantity'] as num?)?.toInt() ?? 0;
+      final unitsInCarton = (product['units_in_carton'] as num?)?.toInt() ?? 0;
+      final remainder = (product['units_remainder'] as num?)?.toInt() ?? 0;
+      product['units_remainder'] = remainder;
+      product['total_units'] = cartons * unitsInCarton + remainder;
+      results.add(product);
+    }
+    return results;
+  }
+
+// يجلب منتج واحد مطابقًا تمامًا للاسم (limit = 1) ويحسب total_units
+  Future<Map<String, dynamic>?> getProductByName(String name) async {
+    final db = await instance.database;
+    final res = await db.query('products', where: 'name = ?', whereArgs: [name], limit: 1);
+    if (res.isNotEmpty) {
+      final product = Map<String, dynamic>.from(res.first);
+      final cartons = (product['quantity'] as num?)?.toInt() ?? 0;
+      final unitsInCarton = (product['units_in_carton'] as num?)?.toInt() ?? 0;
+      final remainder = (product['units_remainder'] as num?)?.toInt() ?? 0;
+      product['units_remainder'] = remainder;
+      product['total_units'] = cartons * unitsInCarton + remainder;
+      return product;
+    }
+    return null;
+  }
+
+
   // ----------------- sales & sale_items -----------------
   Future<int> createSale({
     required double total,

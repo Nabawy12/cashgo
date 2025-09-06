@@ -1077,6 +1077,249 @@ class _CashierScreenState extends State<CashierScreen> {
   }
 
 
+  Future<void> _openNameSearchDialog({String initialQuery = ''}) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        List<Map<String, dynamic>> results = [];
+        bool loading = false;
+        Timer? debounce;
+        final controller = TextEditingController(text: initialQuery);
+
+        // وظيفة مساعدة للبحث مع debounce داخل StatefulBuilder
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: StatefulBuilder(builder: (ctx2, setState2) {
+            Future<void> runSearch(String q) async {
+              setState2(() {
+                loading = true;
+              });
+              try {
+                final rows = await DBHelper.instance.searchProductsByName(q, limit: 50);
+                setState2(() {
+                  results = rows;
+                });
+              } catch (e) {
+                debugPrint('searchProductsByName error: $e');
+                setState2(() {
+                  results = [];
+                });
+              } finally {
+                setState2(() {
+                  loading = false;
+                });
+              }
+            }
+
+            void scheduleSearch(String q) {
+              debounce?.cancel();
+              debounce = Timer(const Duration(milliseconds: 300), () {
+                if (q.trim().isNotEmpty) runSearch(q);
+                else setState2(() => results = []);
+              });
+            }
+
+            // if initialQuery موجود نفذ بحث مبدئي
+            if (initialQuery.trim().isNotEmpty && results.isEmpty && !loading) {
+              Future.microtask(() => runSearch(initialQuery));
+            }
+
+            return AlertDialog(
+              backgroundColor: AppColorsDark.bgCardColor,
+              title: const Center(child: Text('ابحث بالاسم', style: TextStyle(color: Colors.white))),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 420, // ارتفاع مناسب ليظهر القائمة والبحث
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: controller,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        hintText: 'اكتب اسم المنتج...',
+                        filled: true,
+                        fillColor: AppColorsDark.bgColor,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        suffixIcon: loading ? const SizedBox(width:24, height:24, child: CircularProgressIndicator()) : null,
+                      ),
+                      onChanged: (v) => scheduleSearch(v),
+                      onSubmitted: (v) => runSearch(v),
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: loading
+                          ? const Center(child: Text('جاري البحث...', style: TextStyle(color: Colors.white70)))
+                          : results.isEmpty
+                          ? const Center(child: Text('لا توجد نتائج', style: TextStyle(color: Colors.white70)))
+                          : ListView.separated(
+                        itemCount: results.length,
+                        separatorBuilder: (_, __) => const Divider(height: 0.5, color: Colors.white10),
+                        itemBuilder: (context, i) {
+                          final item = results[i];
+                          final name = (item['name'] ?? '').toString();
+                          final barcode = (item['barcode'] ?? '').toString();
+                          final price = (item['selling_price'] ?? item['sellingPrice'] ?? '').toString();
+                          final stock = (item['total_units'] ?? 0).toString();
+
+                          return ListTile(
+                            tileColor: Colors.transparent,
+                            title: Text(name, style: const TextStyle(color: Colors.white)),
+                            subtitle: Text('باركود: $barcode  •  سعر: $price  •  متاح: $stock',
+                                style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            onTap: () {
+                              // افتح تفاصيل المنتج للاختيار والاضافة
+                              Navigator.of(ctx2).pop();
+                              Future.microtask(() => _showProductDetailDialog(item));
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                  onPressed: () {
+                    debounce?.cancel();
+                    Navigator.of(ctx2).pop();
+                  },
+                  child: const Text('إغلاق', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            );
+          }),
+        );
+      },
+    );
+  }
+  Future<void> _showProductDetailDialog(Map<String, dynamic> product) async {
+    // تأكد من حقل total_units محسوب (إذا لم يكن موجود)
+    if (!product.containsKey('total_units')) {
+      final cartons = (product['quantity'] as num?)?.toInt() ?? 0;
+      final unitsInCarton = (product['units_in_carton'] as num?)?.toInt() ?? 0;
+      final remainder = (product['units_remainder'] as num?)?.toInt() ?? 0;
+      product['units_remainder'] = remainder;
+      product['total_units'] = cartons * unitsInCarton + remainder;
+    }
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        int qty = 1;
+        final available = (product['total_units'] as num?)?.toInt() ?? 0;
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: StatefulBuilder(builder: (ctx2, setState2) {
+            final name = (product['name'] ?? '').toString();
+            final barcode = (product['barcode'] ?? '').toString();
+            final price = (product['selling_price'] ?? product['sellingPrice'] ?? 0.0);
+            final desc = (product['description'] ?? '').toString();
+
+            return AlertDialog(
+              backgroundColor: AppColorsDark.bgCardColor,
+              title: Text(name, style: const TextStyle(color: Colors.white)),
+              content: SizedBox(
+                width: 320,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // صورة (لو عندك حقل image_path -- غير الشيفرة حسب جدولك)
+                    if ((product['image_path'] ?? '').toString().isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8.0),
+                        child: Image.asset(
+                          product['image_path'],
+                          width: 120,
+                          height: 80,
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    if (desc.isNotEmpty) Align(alignment: Alignment.centerRight, child: Text(desc, style: const TextStyle(color: Colors.white70), textAlign: TextAlign.right)),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('السعر: ${price.toString()}', style: const TextStyle(color: Colors.white70)),
+                        Text('متاح: $available', style: const TextStyle(color: Colors.white70)),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    // عداد الكمية
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        IconButton(
+                          onPressed: qty > 1 ? () => setState2(() => qty--) : null,
+                          icon: const Icon(Icons.remove_circle_outline, color: Colors.white),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: AppColorsDark.bgColor,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(qty.toString(), style: const TextStyle(color: Colors.white, fontSize: 18)),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          onPressed: qty < available ? () => setState2(() => qty++) : null,
+                          icon: const Icon(Icons.add_circle_outline, color: Colors.white),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                  onPressed: () => Navigator.of(ctx2).pop(),
+                  child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    // التحقق من التوفر بالمقارنة مع الموجود بالفعل في العربة
+                    final pid = (product['id'] as num?)?.toInt();
+                    if (pid == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير صالح')));
+                      return;
+                    }
+                    final already = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
+                    if (already + qty > available) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد كمية كافية')));
+                      return;
+                    }
+
+                    // أضف إلى العربة
+                    setState(() {
+                      if (_cart.containsKey(pid)) {
+                        _cart[pid]!.quantity += qty;
+                      } else {
+                        final prodModel = Product.fromMap(product);
+                        _cart[pid] = CartItem(product: prodModel, quantity: qty);
+                      }
+                    });
+
+                    Navigator.of(ctx2).pop(); // أغلق تفاصيل المنتج
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت إضافة $qty قطعة من ${product['name']}')));
+                  },
+                  child: const Text('أضف إلى السلة'),
+                ),
+              ],
+            );
+          }),
+        );
+      },
+    );
+  }
+
+
   @override
   Widget build(BuildContext context) {
     final receiptWidth = 380.0;
@@ -1188,11 +1431,45 @@ class _CashierScreenState extends State<CashierScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Expanded(
-                  child: CustomFormField(
-                    hint: 'امسح الباركود أو اكتب واضغط Enter',
+                  child: TextField(
                     controller: _barcodeController,
                     focusNode: _barcodeFocus,
-                    onFieldSubmitted: _onBarcodeSubmitted,
+                    onSubmitted: (v) async {
+                      // لو المحتوى يبدو كـ باركود (أرقام أو طويل) نفذ السلوك السابق
+                      final trimmed = v.trim();
+                      if (trimmed.isEmpty) return;
+                      // لو تحب تفرّق بين باركود واسم: هنا شرط بسيط: لو فيه مسافات أو حروف اعتبره اسم
+                      final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
+                      if (containsLetters) {
+                        // افتح نافذة البحث بالاسم
+                        await _openNameSearchDialog(initialQuery: trimmed);
+                      } else {
+                        // تعامَل كأنه باركود
+                        await _onBarcodeSubmitted(trimmed);
+                      }
+                    },
+                    decoration: InputDecoration(
+                      hintText: 'امسح الباركود أو اكتب اسم المنتج ثم اضغط Enter',
+                      filled: true,
+                      fillColor: Colors.white10,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.search),
+                        onPressed: () async {
+                          final q = _barcodeController.text.trim();
+                          if (q.isEmpty) return;
+                          final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(q);
+                          if (containsLetters) {
+                            await _openNameSearchDialog(initialQuery: q);
+                          } else {
+                            await _onBarcodeSubmitted(q);
+                          }
+                        },
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+                    ),
+                    style: const TextStyle(color: Colors.white),
+                    keyboardType: TextInputType.text,
                   ),
                 ),
                 SizedBox(width: 12),
@@ -1271,5 +1548,7 @@ class _CashierScreenState extends State<CashierScreen> {
         ),
       ),
     );
+
   }
+
 }
