@@ -164,8 +164,9 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
           TextButton(
             style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
             onPressed: () async {
+              // أغلق الـ details dialog أولاً
               Navigator.pop(context);
-              // افتح dialog العودة بعد إطار واحد لتجنّب مشاكل التراصف على بعض المنصات (مثل Windows)
+              // افتح صفحة المعالجة بعد إطار واحد لتجنب مشاكل التراصف/context
               await Future.delayed(Duration.zero);
               final changed = await _openProcessReturnDialog(saleId, cashierName);
               if (changed != null) {
@@ -214,18 +215,49 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
   Future<int?> _openProcessReturnDialog(int originalSaleId, String cashierName) async {
     await _ensureItems(originalSaleId);
     final items = saleItems[originalSaleId] ?? [];
-    final result = await showDialog<int?>(
-      context: context,
-      builder: (_) => ProcessReturnDialog(
-        originalSaleId: originalSaleId,
-        items: items,
-        cashierUsername: cashierName, // مهم: نمرر اسم الكاشير الصحيح هنا
-        onDone: () async {
-          await _loadSales(date: selectedDate);
-          await _ensureItems(originalSaleId);
+
+    // بدلاً من showDialog نفتح صفحة جديدة (Route) تحتوي على الـ ProcessReturnDialog
+    final result = await Navigator.of(context).push<int?>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (ctx) {
+          return Scaffold(
+            backgroundColor: AppColorsDark.bgColor,
+            appBar: AppBar(
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              iconTheme: IconThemeData(color: Colors.white70),
+              title: Text('معالجة مرتجع / بدل', style: TextStyle(color: Colors.white)),
+            ),
+            body: SafeArea(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: 900, maxHeight: 800),
+                  child: Container(
+                    // لفّ المحتوى داخل Container حتى يكون له خلفية/حدود واضحة
+                    padding: EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColorsDark.bgCardColor,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ProcessReturnDialog(
+                      originalSaleId: originalSaleId,
+                      items: items,
+                      cashierUsername: cashierName,
+                      onDone: () async {
+                        await _loadSales(date: selectedDate);
+                        await _ensureItems(originalSaleId);
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
         },
       ),
     );
+
     return result;
   }
 
