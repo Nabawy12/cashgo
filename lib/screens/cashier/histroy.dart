@@ -2,6 +2,8 @@
 // A defensive, non-recursive implementation of ProcessReturnDialog
 // Designed to be used either inside a dialog or as a full-screen route/page.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:cashgo/utils/colors.dart';
 
@@ -246,7 +248,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                     });
                                   },
                                 ),
-                                Text('\${it['quantity']}', style: const TextStyle(color: Colors.white)),
+                                Text('${it['quantity']}', style: const TextStyle(color: Colors.white)),
                                 IconButton(
                                   icon: const Icon(Icons.add_circle_outline, color: Colors.white70),
                                   onPressed: () {
