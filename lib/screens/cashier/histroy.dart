@@ -1,309 +1,355 @@
-// returndailog.dart
-// A defensive, non-recursive implementation of ProcessReturnDialog
-// Designed to be used either inside a dialog or as a full-screen route/page.
-
-import 'dart:async';
-
-import 'package:flutter/material.dart';
+// PreviousSalesGroupedByCashier.dart
 import 'package:cashgo/utils/colors.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import '../../services/db/db_helper.dart';
+import '../../widgets/Cashier/returndailog.dart';
 
-class ProcessReturnDialog extends StatefulWidget {
-  final int originalSaleId;
-  final List<Map<String, dynamic>> items;
+class PreviousSalesScreen extends StatefulWidget {
   final String cashierUsername;
-  final FutureOr<void> Function()? onDone;
-
-  const ProcessReturnDialog({
-    Key? key,
-    required this.originalSaleId,
-    required this.items,
-    required this.cashierUsername,
-    this.onDone,
-  }) : super(key: key);
+  final void Function(int originalSaleId, int returnSaleId)? onReturnProcessed;
+  const PreviousSalesScreen({super.key, required this.cashierUsername, this.onReturnProcessed});
 
   @override
-  State<ProcessReturnDialog> createState() => _ProcessReturnDialogState();
+  State<PreviousSalesScreen> createState() => _PreviousSalesScreenState();
 }
 
-class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
-  final TextEditingController _barcodeController = TextEditingController();
-  final FocusNode _barcodeFocus = FocusNode();
+class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
+  bool loading = true;
+  List<Map<String, dynamic>> sales = [];
+  Map<int, List<Map<String, dynamic>>> saleItems = {};
+  Map<String, List<Map<String, dynamic>>> groupedSales = {};
 
-  // defensive: avoid building infinite loops
-  int _buildCount = 0;
-
-  // items that will be processed as returns/exchanges
-  final List<Map<String, dynamic>> _selectedReturnItems = [];
-
-  bool _processing = false;
+  DateTime selectedDate = DateTime.now(); // الفلتر الافتراضي: اليوم
 
   @override
   void initState() {
     super.initState();
-    // nothing heavy in build; any async work should be done here
+    _loadSales(date: selectedDate);
   }
 
-  @override
-  void dispose() {
-    _barcodeController.dispose();
-    _barcodeFocus.dispose();
-    super.dispose();
-  }
+  Future<void> _loadSales({DateTime? date}) async {
+    setState(() => loading = true);
+    final all = await DBHelper.instance.getAllSales();
 
-  void _addByBarcode() {
-    final code = _barcodeController.text.trim();
-    if (code.isEmpty) {
-      _showSnack('ادخل باركود');
-      return;
+    // تطبيق فلتر التاريخ محليًا كما في كودك
+    List<Map<String, dynamic>> filtered;
+    if (date != null) {
+      filtered = all.where((s) => _matchesDate(s['date'], date)).toList();
+    } else {
+      filtered = all;
     }
 
-    // try to find product in provided items first
-    final match = widget.items.firstWhere(
-          (it) {
-        final b = (it['barcode'] ?? it['code'] ?? '').toString();
-        return b == code;
-      },
-      orElse: () => {},
-    );
-
-    if (match.isEmpty) {
-      _showSnack('لم يتم العثور على منتج بهذا الباركود');
-      return;
+    // تجميع حسب اسم الكاشير — نحاول عدة مفاتيح محتملة
+    final Map<String, List<Map<String, dynamic>>> map = {};
+    for (final s in filtered) {
+      final cashierName = (s['cashier_username'] ?? s['username'] ?? s['cashier'] ?? s['user'] ?? 'Unknown').toString();
+      map.putIfAbsent(cashierName, () => []);
+      map[cashierName]!.add(s);
     }
 
     setState(() {
-      // clone minimal fields so we don't mutate original
-      _selectedReturnItems.add({
-        'product_name': match['product_name'] ?? match['name'] ?? 'منتج',
-        'barcode': match['barcode'] ?? match['code'] ?? code,
-        'price': (match['price'] as num?)?.toDouble() ?? 0.0,
-        'quantity': 1,
-      });
-      _barcodeController.clear();
-      _barcodeFocus.requestFocus();
+      sales = filtered;
+      groupedSales = map;
+      loading = false;
     });
   }
 
-  double get _returnValue {
-    double sum = 0.0;
-    for (final it in _selectedReturnItems) {
-      final price = (it['price'] as num?)?.toDouble() ?? 0.0;
-      final qty = (it['quantity'] as num?)?.toDouble() ?? 0.0;
-      sum += price * qty;
-    }
-    return sum;
-  }
-
-  void _removeReturnItem(int index) {
-    setState(() => _selectedReturnItems.removeAt(index));
-  }
-
-  Future<void> _applyReturns() async {
-    if (_selectedReturnItems.isEmpty) {
-      _showSnack('لا توجد عناصر للمرتجع');
-      return;
-    }
-
-    setState(() => _processing = true);
+  bool _matchesDate(dynamic rawDate, DateTime date) {
+    if (rawDate == null) return false;
+    final s = rawDate.toString();
+    DateTime? dt;
     try {
-      // هنا عادةً تنفذ منطق تحديث قاعدة البيانات، سحب رصيد، إضافة فاتورة مرتجع...
-      // سنضع try/catch لحماية من أي استثناء.
-
-      await Future.delayed(const Duration(milliseconds: 300)); // محاكاة عمل async
-
-      // استدعاء callback اذا وُجد
-      if (widget.onDone != null) {
-        await widget.onDone!();
+      dt = DateTime.parse(s);
+    } catch (_) {
+      final m = RegExp(r'(\d{4})-(\d{2})-(\d{2})').firstMatch(s);
+      if (m != null) {
+        final y = int.tryParse(m.group(1) ?? '0') ?? 0;
+        final mo = int.tryParse(m.group(2) ?? '0') ?? 0;
+        final d = int.tryParse(m.group(3) ?? '0') ?? 0;
+        dt = DateTime(y, mo, d);
+      } else {
+        final parts = s.split(RegExp(r'[\s/\\\-]')).where((p) => p.isNotEmpty).toList();
+        if (parts.length >= 3) {
+          if (parts[0].length == 4) {
+            final y = int.tryParse(parts[0]) ?? 0;
+            final mo = int.tryParse(parts[1]) ?? 0;
+            final d = int.tryParse(parts[2]) ?? 0;
+            dt = DateTime(y, mo, d);
+          } else {
+            final d = int.tryParse(parts[0]) ?? 0;
+            final mo = int.tryParse(parts[1]) ?? 0;
+            final y = int.tryParse(parts[2]) ?? 0;
+            dt = DateTime(y, mo, d);
+          }
+        }
       }
+    }
+    if (dt == null) return false;
+    return dt.year == date.year && dt.month == date.month && dt.day == date.day;
+  }
 
-      // اغلق الواجهة مع إرجاع id (مثلاً رقم مرتجع جديد)
-      if (mounted) Navigator.of(context).pop<int>(1);
-    } catch (e, st) {
-      debugPrint('Exception while applying returns: $e\n$st');
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('خطأ أثناء المعالجة'),
-            content: SingleChildScrollView(child: Text(e.toString())),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text('حسناً')),
+  Future<void> _ensureItems(int saleId) async {
+    if (saleItems.containsKey(saleId)) return;
+    final items = await DBHelper.instance.getSaleItemsBySaleId(saleId);
+    saleItems[saleId] = items;
+    setState(() {});
+  }
+
+  void _openSaleDetails(Map<String, dynamic> sale) async {
+    final saleId = (sale['id'] as num).toInt();
+    await _ensureItems(saleId);
+
+    final cashierName = (sale['cashier_username'] ?? sale['username'] ?? sale['cashier'] ?? sale['user'] ?? widget.cashierUsername).toString();
+
+    await showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColorsDark.bgCardColor,
+        title: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            Text(
+              '#فاتورة رقم : $saleId',
+              style: TextStyle(fontSize: 19, color: Colors.white),
+            ),
+            const SizedBox(width: 8),
+            if ((sale['is_return'] ?? 0) == 1) const Icon(Icons.cancel, color: Colors.red),
+            if ((sale['return_note'] ?? '').toString().toLowerCase().contains('exchange')) const Icon(Icons.swap_horiz, color: Colors.green),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text('الإجمالي: ${(sale['total'] as num?)?.toDouble() ?? 0.0}', style: TextStyle(fontSize: 17, color: Colors.white)),
+              const SizedBox(height: 10),
+              Text('المدفوع: ${(sale['paid_amount'] as num?)?.toDouble() ?? 0.0}', style: TextStyle(fontSize: 17, color: Colors.white)),
+              const SizedBox(height: 10),
+              Text('الباقي: ${(sale['change_amount'] as num?)?.toDouble() ?? 0.0}', style: TextStyle(fontSize: 17, color: Colors.white)),
+              const SizedBox(height: 25),
+              const Text(':العناصر', style: TextStyle(fontSize: 19, color: Colors.white)),
+              SizedBox(height: 25),
+              Builder(builder: (_) {
+                final items = saleItems[saleId] ?? [];
+                if (items.isEmpty) return const Text('لا توجد عناصر مسجلة لهذه الفاتورة', style: TextStyle(fontSize: 25, color: Colors.white));
+                return SizedBox(
+                  height: 250,
+                  child: ListView.builder(
+                    itemCount: items.length,
+                    itemBuilder: (_, i) {
+                      final it = items[i];
+                      final name = (it['product_name'] ?? 'Product') as String;
+                      final qty = (it['quantity'] as num?)?.toInt() ?? 0;
+                      final price = (it['price'] as num?)?.toDouble() ?? 0.0;
+                      return ListTile(
+                        title: Text(name, style: TextStyle(fontSize: 17, color: Colors.white)),
+                        subtitle: Text('الكمية: $qty × ${price.toStringAsFixed(2)}', style: TextStyle(fontSize: 15, color: Colors.white)),
+                      );
+                    },
+                  ),
+                );
+              }),
             ],
           ),
-        );
+        ),
+        actions: [
+          TextButton(
+            style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إغلاق', style: TextStyle(color: Colors.white)),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
+            onPressed: () {
+              // أغلق الـ details dialog أولاً
+              Navigator.pop(context);
+              // افتح المعالجة بعد إطار واحد لتجنّب مشاكل التراصف/context
+              WidgetsBinding.instance.addPostFrameCallback((_) async {
+                try {
+                  final changed = await _openProcessReturnDialog(saleId, cashierName);
+                  if (changed != null) {
+                    if (mounted) Navigator.pop(context, changed);
+                  }
+                } catch (e, st) {
+                  debugPrint('Error while opening return screen: $e\n$st');
+                  if (mounted) {
+                    showDialog(
+                      context: context,
+                      builder: (_) => AlertDialog(
+                        title: const Text('حدث خطأ'),
+                        content: SingleChildScrollView(child: Text('$e\n\n${st.toString().split("\n").take(10).join("\n")}')),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(context), child: const Text('حسناً')),
+                        ],
+                      ),
+                    );
+                  }
+                }
+              });
+            },
+            child: Text('معالجة مرتجع / بدل', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// نفس دالتك لعرض day/month
+  String _formatDayMonth(dynamic rawDate) {
+    if (rawDate == null) return '';
+    final s = rawDate.toString();
+    int? day;
+    int? month;
+    try {
+      final dt = DateTime.parse(s);
+      day = dt.day;
+      month = dt.month;
+    } catch (_) {
+      final m = RegExp(r'(\d{4})-(\d{2})-(\d{2})').firstMatch(s);
+      if (m != null) {
+        month = int.tryParse(m.group(2) ?? '');
+        day = int.tryParse(m.group(3) ?? '');
+      } else {
+        final parts = s.split(RegExp(r'[\s/\\\-]')).where((p) => p.isNotEmpty).toList();
+        if (parts.length >= 3) {
+          if (parts[0].length == 4) {
+            month = int.tryParse(parts[1]);
+            day = int.tryParse(parts[2]);
+          } else {
+            day = int.tryParse(parts[0]);
+            month = int.tryParse(parts[1]);
+          }
+        }
       }
-    } finally {
-      if (mounted) setState(() => _processing = false);
+    }
+    if (day == null || month == null) return s;
+    return '${day.toString()}/${month.toString()}';
+  }
+
+  Future<int?> _openProcessReturnDialog(int originalSaleId, String cashierName) async {
+    await _ensureItems(originalSaleId);
+    final items = saleItems[originalSaleId] ?? [];
+    final result = await showDialog<int?>(
+      context: context,
+      builder: (_) => ProcessReturnDialog(
+        originalSaleId: originalSaleId,
+        items: items,
+        cashierUsername: cashierName, // مهم: نمرر اسم الكاشير الصحيح هنا
+        onDone: () async {
+          await _loadSales(date: selectedDate);
+          await _ensureItems(originalSaleId);
+        },
+      ),
+    );
+    return result;
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(context: context, initialDate: selectedDate, firstDate: DateTime(2000), lastDate: DateTime(2100));
+    if (picked != null) {
+      setState(() => selectedDate = picked);
+      await _loadSales(date: selectedDate);
     }
   }
 
-  void _showSnack(String text) {
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(text)));
-  }
+  String _formatSelectedDate(DateTime dt) => '${dt.day}/${dt.month}/${dt.year}';
 
   @override
   Widget build(BuildContext context) {
-    _buildCount++;
-    if (_buildCount > 200) {
-      // very defensive: if we see extreme rebuilds, show a clear widget
-      debugPrint('⚠️ ProcessReturnDialog: excessive build calls ($_buildCount) — returning error view');
-      return Center(
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(color: AppColorsDark.bgCardColor, borderRadius: BorderRadius.circular(8)),
-          child: const Text('خطأ: إعادة بناء متكررة', style: TextStyle(color: Colors.white)),
-        ),
-      );
-    }
-
-    // Main UI
-    return Material(
-      color: Colors.transparent,
-      child: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 900, maxHeight: 800),
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: AppColorsDark.bgCardColor, borderRadius: BorderRadius.circular(8)),
+    return Scaffold(
+      backgroundColor: AppColorsDark.bgColor,
+      appBar: AppBar(
+        centerTitle: true,
+        backgroundColor: Colors.transparent,
+        elevation: 0.0,
+        scrolledUnderElevation: 0.0,
+        iconTheme: IconThemeData(color: Colors.white70),
+        title: Text('الفواتير السابقة', style: TextStyle(fontSize: 20, color: Colors.white)),
+        actions: [
+          IconButton(
+            onPressed: () async {
+              setState(() => selectedDate = DateTime.now());
+              await _loadSales(date: selectedDate);
+            },
+            icon: Icon(Icons.refresh, color: Colors.white70),
+            tooltip: 'تحديث لليوم',
+          ),
+        ],
+      ),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 16.0),
+            child: GestureDetector(
+              onTap: _pickDate,
               child: Column(
-                mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Header
+                  Text('التاريخ', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  const SizedBox(height: 4),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text('معالجة مرتجع / بدل', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white70),
-                        onPressed: () => Navigator.of(context).pop(),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-
-                  // Summary
-                  Row(
-                    children: [
-                      Expanded(child: Text('فاتورة: #\${widget.originalSaleId}', style: const TextStyle(color: Colors.white70))),
-                      Text('الكاشير: \${widget.cashierUsername}', style: const TextStyle(color: Colors.white70)),
-                    ],
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // Barcode input + Add button
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _barcodeController,
-                          focusNode: _barcodeFocus,
-                          decoration: InputDecoration(
-                            hintText: 'امسح باركود البديل أو اكتب و اضغط إضافة',
-                            hintStyle: const TextStyle(color: Colors.white54),
-                            filled: true,
-                            fillColor: Colors.black12,
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                          ),
-                          style: const TextStyle(color: Colors.white),
-                          onSubmitted: (_) => _addByBarcode(),
-                        ),
-                      ),
+                      Text(_formatSelectedDate(selectedDate), style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                       const SizedBox(width: 8),
-                      ElevatedButton(
-                        onPressed: _addByBarcode,
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
-                        child: const Text('أضف'),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // List of selected return items
-                  Expanded(
-                    child: _selectedReturnItems.isEmpty
-                        ? Center(child: Text('لا توجد عناصر مضافة', style: TextStyle(color: Colors.white70)))
-                        : SingleChildScrollView(
-                      child: Column(
-                        children: List.generate(_selectedReturnItems.length, (index) {
-                          final it = _selectedReturnItems[index];
-                          final name = it['product_name']?.toString() ?? 'منتج';
-                          final qty = (it['quantity'] as num?)?.toInt() ?? 0;
-                          final price = (it['price'] as num?)?.toDouble() ?? 0.0;
-                          return Card(
-                            color: Colors.transparent,
-                            child: ListTile(
-                              title: Text(name, style: const TextStyle(color: Colors.white)),
-                              subtitle: Text('الكمية: \$qty × \${price.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70)),
-                              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                                IconButton(
-                                  icon: const Icon(Icons.remove_circle_outline, color: Colors.white70),
-                                  onPressed: () {
-                                    setState(() {
-                                      if (it['quantity'] is num && (it['quantity'] as num) > 1) {
-                                        it['quantity'] = (it['quantity'] as num) - 1;
-                                      }
-                                    });
-                                  },
-                                ),
-                                Text('${it['quantity']}', style: const TextStyle(color: Colors.white)),
-                                IconButton(
-                                  icon: const Icon(Icons.add_circle_outline, color: Colors.white70),
-                                  onPressed: () {
-                                    setState(() {
-                                      it['quantity'] = (it['quantity'] as num?)?.toInt() ?? 0 + 1;
-                                    });
-                                  },
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                                  onPressed: () => _removeReturnItem(index),
-                                ),
-                              ]),
-                            ),
-                          );
-                        }),
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 8),
-
-                  // Totals and actions
-                  Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text('قيمة المرتجعات:', style: TextStyle(color: Colors.white70)),
-                          Text(_returnValue.toStringAsFixed(2), style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton(
-                            onPressed: _processing ? null : () => Navigator.of(context).pop(),
-                            child: const Text(' إلغاء', style: TextStyle(color: Colors.white70)),
-                          ),
-                          const SizedBox(width: 8),
-                          ElevatedButton(
-                            onPressed: _processing ? null : _applyReturns,
-                            style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12)),
-                            child: _processing ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('تطبيق'),
-                          ),
-                        ],
-                      ),
+                      Icon(Icons.calendar_today, size: 18, color: Colors.white70),
                     ],
                   ),
                 ],
               ),
             ),
           ),
-        ),
+          Expanded(
+            child: groupedSales.isEmpty
+                ? Center(child: Text('لا توجد فواتير لهذا اليوم', style: TextStyle(color: Colors.white70, fontSize: 16)))
+                : ListView(
+              children: groupedSales.entries.map((entry) {
+                final cashierName = entry.key;
+                final list = entry.value;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+                  child: Card(
+                    color: AppColorsDark.bgCardColor,
+                    child: ExpansionTile(
+                      collapsedIconColor: Colors.white70,
+                      iconColor: Colors.white,
+                      tilePadding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      title: Text(
+                        '$cashierName (${list.length})',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                      children: list.map((s) {
+                        final saleId = (s['id'] as num).toInt();
+                        final total = (s['total'] as num?)?.toDouble() ?? 0.0;
+                        final paid = (s['paid_amount'] as num?)?.toDouble() ?? 0.0;
+                        final isReturn = (s['is_return'] ?? 0) == 1;
+                        final note = (s['return_note'] ?? '').toString();
+                        final dayMonth = _formatDayMonth(s['date']);
+                        return ListTile(
+                          onTap: () => _openSaleDetails(s),
+                          title: Row(
+                            children: [
+                              Expanded(child: Text('#$saleId — $dayMonth', style: const TextStyle(fontSize: 16, color: Colors.white))),
+                              if (isReturn) const Icon(Icons.cancel, color: Colors.red),
+                              if (note.toLowerCase().contains('exchange')) const Icon(Icons.swap_horiz, color: Colors.green),
+                            ],
+                          ),
+                          subtitle: Text('الإجمالي: ${total.toStringAsFixed(2)} — المدفوع: ${paid.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                          trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.white70),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
       ),
     );
   }
