@@ -1224,6 +1224,9 @@ class _CashierScreenState extends State<CashierScreen> {
                               // افتح تفاصيل المنتج للاختيار والاضافة
                               Navigator.of(ctx2).pop();
                               Future.microtask(() => _showProductDetailDialog(item));
+                              _barcodeController.clear();
+                              FocusScope.of(context).requestFocus(_barcodeFocus);
+
                             },
                           );
                         },
@@ -1360,6 +1363,8 @@ class _CashierScreenState extends State<CashierScreen> {
 
                     Navigator.of(ctx2).pop(); // أغلق تفاصيل المنتج
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت إضافة $qty قطعة من ${product['name']}')));
+                    _barcodeController.clear();
+                    FocusScope.of(context).requestFocus(_barcodeFocus);
                   },
                   child: const Text('أضف إلى السلة'),
                 ),
