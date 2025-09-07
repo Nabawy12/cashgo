@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -787,6 +788,43 @@ class DBHelper {
         'note': note,
       });
 
+      // --- NEW: reflect refund in card_wallet ledger if original payment was card/wallet
+// --- تعديل: خصم من المحفظة فى حالة المرتجع
+      try {
+        final pm = (sale['payment_method'] ?? '').toString().toLowerCase();
+        final double pd = paidDelta;
+        if (pd.abs() > 0.000001 &&
+            (pm == 'card' || pm == 'wallet' || pm.contains('card') || pm.contains('wallet'))) {
+          // تأكد إن الجدول موجود
+          final tables = await txn.rawQuery(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name='card_wallet';"
+          );
+          if (tables.isEmpty) {
+            await txn.execute('''
+        CREATE TABLE IF NOT EXISTS card_wallet (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          amount REAL NOT NULL,
+          updated_by TEXT,
+          note TEXT,
+          created_at TEXT NOT NULL
+        )
+      ''');
+          }
+
+          // لو paidDelta = +100 (يعنى العميل دفع زيادة)، المرتجع = -100 فى wallet
+          // لو paidDelta = -100 (يعنى استرجع فلوس)، برضه تسجّل سالب عشان يخصم من wallet
+          await txn.insert('card_wallet', {
+            'amount': -pd.abs(),  // دايماً سالب
+            'updated_by': sale['cashier_username'] ?? '',
+            'note': 'Refund for return #$returnRowId (sale #$saleId)',
+            'created_at': now,
+          });
+        }
+      } catch (e, st) {
+        debugPrint('Warning: failed to update card_wallet for return: $e\n$st');
+      }
+
+
       // 1) Process returns: decrement quantities in sale_items and restore stock
       for (final entry in returnsMap.entries) {
         final pid = entry.key;
@@ -936,6 +974,7 @@ class DBHelper {
       }, where: 'id = ?', whereArgs: [saleId]);
     });
   }
+
 
 
   Future<List<Map<String, dynamic>>> getProductsByName(String query) async {
