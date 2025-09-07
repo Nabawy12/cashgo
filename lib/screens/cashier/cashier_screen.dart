@@ -1413,38 +1413,64 @@ class _CashierScreenState extends State<CashierScreen> {
       product['total_units'] = cartons * unitsInCarton + remainder;
     }
 
-    // انشئ controller مرة واحدة قبل الدايلوج
+    // NOTE: we intentionally do NOT dispose this controller here to avoid a race where
+    // framework tries to re-add listeners while the controller was disposed (hot reload / pop races).
     final qtyController = TextEditingController(text: '');
 
-    try {
-      await showDialog<void>(
-        context: context,
-        barrierDismissible: true,
-        builder: (ctx) {
-          int qty = 1;
-          final available = (product['total_units'] as num?)?.toInt() ?? 0;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        int qty = 1;
+        final available = (product['total_units'] as num?)?.toInt() ?? 0;
 
-          return Directionality(
-            textDirection: TextDirection.rtl,
-            child: StatefulBuilder(builder: (ctx2, setState2) {
-              final name = (product['name'] ?? '').toString();
-              final price = (product['selling_price'] ?? product['sellingPrice'] ?? 0.0);
-              final desc = (product['description'] ?? '').toString();
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: StatefulBuilder(builder: (ctx2, setState2) {
+            final name = (product['name'] ?? '').toString();
+            final price = (product['selling_price'] ?? product['sellingPrice'] ?? 0.0);
+            final desc = (product['description'] ?? '').toString();
 
-              void clampAndReflectController() {
-                if (qty <= 0) return;
-                if (qty > available) qty = available;
-                // حدّث النص واوضع المؤشر في النهاية بدون إعادة إنشاء controller
-                qtyController.value = TextEditingValue(
-                  text: qty.toString(),
-                  selection: TextSelection.collapsed(offset: qty.toString().length),
-                );
+            // extracted add-to-cart logic so we can call it from button and onSubmitted
+            Future<void> addRequested() async {
+              final pid = (product['id'] as num?)?.toInt();
+              if (pid == null) {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير صالح')));
+                return;
+              }
+              final already = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
+              final requested = qty <= 0 ? 1 : qty; // default 1 if empty or zero
+              if (already + requested > available) {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد كمية كافية')));
+                return;
               }
 
-              return AlertDialog(
-                backgroundColor: AppColorsDark.bgCardColor,
-                title: Text(name, style: const TextStyle(color: Colors.white)),
-                content: SizedBox(
+              // Update outer state (the cart)
+              if (mounted) {
+                setState(() {
+                  if (_cart.containsKey(pid)) {
+                    _cart[pid]!.quantity += requested;
+                  } else {
+                    final prodModel = Product.fromMap(product);
+                    _cart[pid] = CartItem(product: prodModel, quantity: requested);
+                  }
+                });
+              }
+
+              // close dialog and give feedback
+              Navigator.of(ctx2).pop();
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت إضافة $requested قطعة من ${product['name']}')));
+                _barcodeController.clear();
+                FocusScope.of(context).requestFocus(_barcodeFocus);
+              }
+            }
+
+            return AlertDialog(
+              backgroundColor: AppColorsDark.bgCardColor,
+              title: Text(name, style: const TextStyle(color: Colors.white)),
+              content: SingleChildScrollView( // prevents overflow when keyboard opens
+                child: SizedBox(
                   width: 320,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -1471,7 +1497,6 @@ class _CashierScreenState extends State<CashierScreen> {
                                 ? () {
                               setState2(() {
                                 qty = (qty - 1).clamp(0, available);
-                                // حدّث controller (cursor في النهاية)
                                 qtyController.value = TextEditingValue(
                                   text: qty.toString(),
                                   selection: TextSelection.collapsed(offset: qty.toString().length),
@@ -1491,7 +1516,7 @@ class _CashierScreenState extends State<CashierScreen> {
                             ),
                             child: TextField(
                               controller: qtyController,
-                              autofocus: true, // يصبح الحقل مركّزًا فور فتح الدايلوج
+                              autofocus: true,
                               keyboardType: TextInputType.number,
                               textAlign: TextAlign.center,
                               style: const TextStyle(color: Colors.white, fontSize: 18),
@@ -1500,14 +1525,12 @@ class _CashierScreenState extends State<CashierScreen> {
                                 setState2(() {
                                   final trimmed = v.trim();
                                   if (trimmed.isEmpty) {
-                                    // المستخدم مسح الحقل أو في صدد الكتابة — لا نفرض قيمة حتى يضغط "أضف"
                                     qty = 0;
                                   } else {
                                     final parsed = int.tryParse(trimmed) ?? 0;
                                     qty = parsed;
                                     if (qty > available) {
                                       qty = available;
-                                      // حدّث النص مع وضع المؤشر في النهاية
                                       qtyController.value = TextEditingValue(
                                         text: qty.toString(),
                                         selection: TextSelection.collapsed(offset: qty.toString().length),
@@ -1515,6 +1538,17 @@ class _CashierScreenState extends State<CashierScreen> {
                                     }
                                   }
                                 });
+                              },
+                              // handle Enter key as "Add"
+                              onSubmitted: (v) async {
+                                final trimmed = v.trim();
+                                if (trimmed.isEmpty) {
+                                  qty = 1;
+                                } else {
+                                  qty = int.tryParse(trimmed) ?? 1;
+                                }
+                                if (qty > available) qty = available;
+                                await addRequested();
                               },
                             ),
                           ),
@@ -1538,58 +1572,43 @@ class _CashierScreenState extends State<CashierScreen> {
                     ],
                   ),
                 ),
-                actions: [
-                  TextButton(
-                    style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
-                    onPressed: () {
-                      Navigator.of(ctx2).pop();
-                      Future.microtask(() {
-                        _barcodeController.clear();
-                        FocusScope.of(context).requestFocus(_barcodeFocus);
-                      });
-                    },
-                    child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
-                  ),
-                  ElevatedButton(
-                    onPressed: () {
-                      final pid = (product['id'] as num?)?.toInt();
-                      if (pid == null) {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير صالح')));
-                        return;
-                      }
-                      final already = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
-                      final requested = qty <= 0 ? 1 : qty; // افتراضي 1 لو ترك الحقل فارغًا
-                      if (already + requested > available) {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد كمية كافية')));
-                        return;
-                      }
-
-                      setState(() {
-                        if (_cart.containsKey(pid)) {
-                          _cart[pid]!.quantity += requested;
-                        } else {
-                          final prodModel = Product.fromMap(product);
-                          _cart[pid] = CartItem(product: prodModel, quantity: requested);
-                        }
-                      });
-
-                      Navigator.of(ctx2).pop();
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت إضافة $requested قطعة من ${product['name']}')));
+              ),
+              actions: [
+                TextButton(
+                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                  onPressed: () {
+                    Navigator.of(ctx2).pop();
+                    Future.microtask(() {
                       _barcodeController.clear();
                       FocusScope.of(context).requestFocus(_barcodeFocus);
-                    },
-                    child: const Text('أضف إلى السلة'),
-                  ),
-                ],
-              );
-            }),
-          );
-        },
-      );
-    } finally {
-      // بعد غلق الدايلوج فض الـ controller لتفريغ الموارد
-      qtyController.dispose();
-    }
+                    });
+                  },
+                  child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    final trimmed = qtyController.text.trim();
+                    if (trimmed.isEmpty) {
+                      qty = 1;
+                    } else {
+                      qty = int.tryParse(trimmed) ?? 1;
+                    }
+                    if (qty > available) qty = available;
+                    await addRequested();
+                  },
+                  child: const Text('أضف إلى السلة'),
+                ),
+              ],
+            );
+          }),
+        );
+      },
+    );
+
+    // note: intentionally not disposing qtyController here to avoid a race that causes
+    // "used after being disposed" in some hot-reload / pop timing scenarios.
+    // If you prefer, you can schedule a dispose later:
+    // Future.delayed(Duration(seconds: 5), () { qtyController.dispose(); });
   }
 
 
