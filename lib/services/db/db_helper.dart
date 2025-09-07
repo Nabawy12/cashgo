@@ -1953,5 +1953,29 @@ class DBHelper {
 
 
 
+  // Ensure column exists (run-once safe)
+  Future<void> ensureDrawerWithdrawnColumnExists() async {
+    final db = await database;
+    final cols = await db.rawQuery("PRAGMA table_info(sales);");
+    final has = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
+    if (!has) {
+      await db.execute("ALTER TABLE sales ADD COLUMN drawer_withdrawn INTEGER DEFAULT 0;");
+    }
+  }
+
+// Mark all eligible cash sales as withdrawn (optionally filter by cashier)
+  Future<void> markAllCashSalesAsDrawerWithdrawn({String? cashierUsername}) async {
+    await ensureDrawerWithdrawnColumnExists();
+    final db = await database;
+    String where = "payment_method = 'cash' AND COALESCE(drawer_withdrawn,0) = 0";
+    List<dynamic> args = [];
+    if (cashierUsername != null && cashierUsername.isNotEmpty) {
+      where += " AND cashier_username = ?";
+      args.add(cashierUsername);
+    }
+    await db.update('sales', {'drawer_withdrawn': 1}, where: where, whereArgs: args);
+  }
+
+
 
 }

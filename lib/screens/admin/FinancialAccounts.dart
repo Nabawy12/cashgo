@@ -139,7 +139,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       // البداية: المبلغ المبدئي
       final starting = await dbHelper.getLatestDrawerStartingAmount();
 
-      // المجاميع الأساسية
+      // المجاميع الأساسية (هنستخدمها للمبيعات والمرتجعات)
       final totals = await dbHelper.getDrawerTotals(fromDate: fromStr, toDate: toStr);
 
       // الكرديت (مستحقات العملاء)
@@ -163,7 +163,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         purchaseReceiptsOutstanding = 0.0;
       }
 
-      // defensive values
+      // ===== صافي المبيعات زي ما هو من totals =====
       final salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
           ?? (totals['sales_net'] as num?)?.toDouble()
           ?? 0.0;
@@ -190,7 +190,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       // ===== المشتريات المدفوعة كاش فقط =====
       double purchasePaidCash = 0.0;
       try {
-        // محاولة استعلام SUM مباشرة
         final rows = await db.rawQuery(
             "SELECT SUM(COALESCE(paid_amount,0)) AS total FROM purchase_receipts WHERE payment_type = 'cash'"
         );
@@ -199,7 +198,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
             : 0.0;
       } catch (e) {
         debugPrint('Failed to compute purchasePaidCash in closeShift: $e');
-        // fallback: جمع من getPaidPurchaseReceipts
         try {
           final paidReceipts = await dbHelper.getPaidPurchaseReceipts();
           double sum = 0.0;
@@ -213,8 +211,40 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           purchasePaidCash = 0.0;
         }
       }
-      // حساب القيمة الحالية للدرج (starting + مبيعات كاش - مشتريات كاش)
-      final double computedFromParts = starting + salesNetCash - purchasePaidCash;
+
+      // ===== حساب المبلغ الفعلي في الدرج (باستبعاد المبيعات المسحوبة) =====
+      double drawerCashFromSales = 0.0;
+      try {
+        await dbHelper.ensureDrawerWithdrawnColumnExists();
+
+        String dateCondition = '';
+        List<Object?> dateArgs = [];
+        if (fromStr != null && toStr != null) {
+          dateCondition = " AND date(date) BETWEEN ? AND ?";
+          dateArgs.addAll([fromStr, toStr]);
+        } else if (fromStr != null) {
+          dateCondition = " AND date(date) >= ?";
+          dateArgs.add(fromStr);
+        } else if (toStr != null) {
+          dateCondition = " AND date(date) <= ?";
+          dateArgs.add(toStr);
+        }
+
+        final rows = await db.rawQuery(
+            "SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS total "
+                "FROM sales WHERE payment_method = 'cash' AND COALESCE(drawer_withdrawn,0) = 0"
+                "$dateCondition",
+            dateArgs
+        );
+        drawerCashFromSales = (rows.isNotEmpty && rows.first['total'] != null)
+            ? (rows.first['total'] as num).toDouble()
+            : 0.0;
+      } catch (e) {
+        debugPrint('Error computing drawer cash sales: $e');
+        drawerCashFromSales = salesNetCash; // fallback
+      }
+
+      final double computedFromParts = starting + drawerCashFromSales - purchasePaidCash;
       final double adjustedCurrent = computedFromParts < 0.0 ? 0.0 : computedFromParts;
 
       // قراءة سندات الشراء لتعبئة paid/due
@@ -238,18 +268,12 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         walletAmount = 0.0;
       }
 
-      // Debug
-      debugPrint('LOAD DRAWER DEBUG: starting=$starting, salesNetCash=$salesNetCash, '
-          'purchasePaidCash=$purchasePaidCash, computedFromParts=$computedFromParts, '
-          'adjustedCurrent=$adjustedCurrent, untransferredCard=$untransferredCard, '
-          'cardNetSales=$cardNetSales, walletAmount=$walletAmount');
-
       // تحديث الحالة
       if (!mounted) return;
       setState(() {
         _startingAmount = starting;
-        _currentDrawer = adjustedCurrent ;
-        _salesNet = salesNetCash;
+        _currentDrawer = adjustedCurrent; // الدرج بعد الاستبعاد
+        _salesNet = salesNetCash;         // المبيعات زي ما هي
         _cardReceived = untransferredCard;
         _walletAmount = walletAmount;
         _cardTotalAvailable = (_cardReceived) + (_walletAmount);
@@ -265,9 +289,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         _walletController.text = _walletAmount.toStringAsFixed(2);
       });
 
-      debugPrint('After setState in _loadData: starting=$_startingAmount, '
-          'currentDrawer=$_currentDrawer, cardNetSales=$_cardNetSales, '
-          'wallet=$_walletAmount, cardAvailable=$_cardTotalAvailable');
     } catch (e, st) {
       debugPrint('Error loading drawer data: $e\n$st');
       if (mounted) {
@@ -337,10 +358,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   Future<void> _withdrawFromWallet() async {
     final text = _walletController.text.trim();
     final requested = double.tryParse(text.replaceAll(',', '')) ?? 0.0;
-    if (requested <= 0) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صالحًا أكبر من صفر')));
-      return;
-    }
 
     setState(() => _loading = true);
     try {
@@ -404,75 +421,11 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     }
   }
 
-  Future<void> _withdrawFromDrawer() async {
-    final text = _drawerController.text.trim();
-    final parsed = double.tryParse(text.replaceAll(',', '')) ?? 0.0;
-    if (parsed <= 0) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صالحًا أكبر من صفر')));
-      return;
-    }
-
-    setState(() => _loading = true);
-    try {
-      final dbHelper = DBHelper.instance;
-
-      // احسب المبلغ الكلي المتاح فعلاً (يشمل المبدئي + مبيعات نقدية - مدفوعات مشتريات إلخ)
-      // إذا كنت تستخدم فلاتر تاريخية، مرّرها (اختياري)
-      final fromStr = _fromDate != null ? _dateFormat.format(_fromDate!) : null;
-      final toStr = _toDate != null ? _dateFormat.format(_toDate!) : null;
-      final computedCurrent = await dbHelper.computeCurrentDrawerAmount(fromDate: fromStr, toDate: toStr);
-
-      // تأكد أن الطلب لا يتجاوز المبلغ المتاح فعلاً
-      if (parsed > computedCurrent) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('الرصيد غير كافٍ. المبلغ المتاح حاليًا: EGP ${computedCurrent.toStringAsFixed(2)}')),
-          );
-        }
-        return;
-      }
-
-      // اقرأ latestStarting لأننا سنسجّل صفًا جديدًا يمثل الحالة بعد السحب
-      final latest = await dbHelper.getLatestDrawerStartingAmount();
-
-      // نحدد القيمة الجديدة للحقل `amount` في cash_drawer بحيث يكون التأثير على current واضح
-      final newStarting = latest - parsed;
-
-      // user
-      final currentUser = await dbHelper.getCurrentUser();
-      final username = (currentUser != null && currentUser['username'] != null) ? currentUser['username'] as String : 'admin';
-
-      // سجّل الصف الجديد في جدول cash_drawer داخل معاملة لضمان الاتساق
-      await dbHelper.ensureCashDrawerTable();
-      final now = DateTime.now().toIso8601String();
-      await (await dbHelper.database).transaction((txn) async {
-        await txn.insert('cash_drawer', {
-          'amount': newStarting,
-          'updated_by': username,
-          'note': 'Withdraw from drawer (-${parsed.toStringAsFixed(2)})',
-          'created_at': now,
-        });
-      });
-
-      // أعد تحميل البيانات ليُحدّث العرض
-      await _loadData();
-
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم سحب EGP ${parsed.toStringAsFixed(2)} من الدرج')));
-    } catch (e, st) {
-      debugPrint('Error withdrawing from drawer: $e\n$st');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل السحب: $e')));
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
 
   Future<void> _saveStartingAmount() async {
     final text = _drawerController.text.trim();
     final enteredCurrent = double.tryParse(text.replaceAll(',', '')) ?? 0.0;
-    if (enteredCurrent <= 0) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صالحًا أكبر من صفر')));
-      return;
-    }
+
 
     setState(() => _loading = true);
     try {

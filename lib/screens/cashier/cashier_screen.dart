@@ -50,6 +50,7 @@ class _CashierScreenState extends State<CashierScreen> {
   String _discountType = 'percent';
   double _discountValue = 0.0; // e.g. 5.0 means 5%
 
+
   @override
   void initState() {
     super.initState();
@@ -344,23 +345,47 @@ class _CashierScreenState extends State<CashierScreen> {
     try {
       final dbHelper = DBHelper.instance;
       final db = await dbHelper.database;
+
+      // ensure supporting structures exist (safe to call repeatedly)
       await dbHelper.ensureCardWalletTable();
+      // ensure the column used to mark "withdrawn" sales exists
+      try {
+        await dbHelper.ensureDrawerWithdrawnColumnExists();
+      } catch (e) {
+        // If DBHelper doesn't implement this helper, it's OK — we'll continue.
+        debugPrint('ensureDrawerWithdrawnColumnExists not available or failed: $e');
+      }
+
       final walletLatest = await dbHelper.getLatestCardWalletAmount();
       final untransferred = await _getUntransferredCardAmountSafe();
       final starting = await dbHelper.getLatestDrawerStartingAmount();
+
+      // Compute salesNetCash **excluding** sales that have been marked as withdrawn
       double salesNetCash = 0.0;
       try {
-        final totals = await dbHelper.getDrawerTotals(fromDate: null, toDate: null);
-        salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
-            ?? (totals['sales_net'] as num?)?.toDouble()
-            ?? 0.0;
+        final rows = await db.rawQuery(
+            "SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS total"
+                " FROM sales WHERE payment_method = 'cash' AND COALESCE(drawer_withdrawn,0) = 0"
+        );
+        salesNetCash = (rows.isNotEmpty && rows.first['total'] != null)
+            ? (rows.first['total'] as num).toDouble()
+            : 0.0;
       } catch (e) {
-        debugPrint('Could not get totals for drawer during closeShift: $e');
-        salesNetCash = 0.0;
+        debugPrint('Could not get salesNetCash (excluding withdrawn): $e');
+        // Fallback: try the existing totals API if available
+        try {
+          final totals = await dbHelper.getDrawerTotals(fromDate: null, toDate: null);
+          salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
+              ?? (totals['sales_net'] as num?)?.toDouble()
+              ?? 0.0;
+        } catch (e2) {
+          debugPrint('Fallback also failed: $e2');
+          salesNetCash = 0.0;
+        }
       }
+
       double purchasePaidCash = 0.0;
       try {
-        // محاولة استعلام SUM مباشرة
         final rows = await db.rawQuery(
             "SELECT SUM(COALESCE(paid_amount,0)) AS total FROM purchase_receipts WHERE payment_type = 'cash'"
         );
@@ -369,7 +394,6 @@ class _CashierScreenState extends State<CashierScreen> {
             : 0.0;
       } catch (e) {
         debugPrint('Failed to compute purchasePaidCash in closeShift: $e');
-        // fallback: جمع من getPaidPurchaseReceipts
         try {
           final paidReceipts = await dbHelper.getPaidPurchaseReceipts();
           double sum = 0.0;
@@ -383,10 +407,9 @@ class _CashierScreenState extends State<CashierScreen> {
           purchasePaidCash = 0.0;
         }
       }
+
       final computedFromParts = starting + salesNetCash - purchasePaidCash;
       final adjustedCurrent = computedFromParts < 0.0 ? 0.0 : computedFromParts;
-
-      // ===== استخدم adjustedCurrent في التقرير بدل computeCurrentDrawerAmount =====
 
       if (!mounted) return;
       setState(() {
@@ -394,7 +417,6 @@ class _CashierScreenState extends State<CashierScreen> {
         _cardReceived = untransferred;
         _cardTotalAvailable = (_walletAmount) + (_cardReceived);
         Drawer = adjustedCurrent;
-
       });
     } catch (e, st) {
       debugPrint('Failed to load card totals: $e\n$st');
@@ -417,24 +439,51 @@ class _CashierScreenState extends State<CashierScreen> {
       final currentUser = await dbHelper.getCurrentUser();
       final username = (currentUser != null && currentUser['username'] != null) ? currentUser['username'] as String : widget.cashierUsername;
 
-      // تحقق من التوفّر
+      // تحديث القيم المعروضة قبل أي فحص — هذا يضمن أن قيمة Drawer في الواجهة محدثة
+      await _loadCardTotals();
+
+      // اقرأ القيم بعد التحديث
       final latestWallet = await dbHelper.getLatestCardWalletAmount();
       final latestDrawerStarting = await dbHelper.getLatestDrawerStartingAmount();
 
       if (fromDrawerToWallet) {
-        // نأخذ من الدرج → نزيد المحفظة
-        final computedCurrent = await dbHelper.computeCurrentDrawerAmount();
-        if (amount > computedCurrent + 0.000001) {
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('الرصيد في الدرج غير كافٍ. المتاح: EGP ${computedCurrent.toStringAsFixed(2)}')));
+        // Use the displayed Drawer amount (which was computed by _loadCardTotals)
+        final displayedDrawerAmount = Drawer;
+        const double epsilon = 0.01; // هامش للخطأ العائم
+
+        if (amount > displayedDrawerAmount + epsilon) {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('الرصيد في الدرج غير كافٍ. المتاح: EGP ${displayedDrawerAmount.toStringAsFixed(2)}')));
           return;
         }
 
-        // حساب القيمة الجديدة للدرج
-        final newStarting = (latestDrawerStarting - amount).clamp(0.0, double.infinity);
+        // IMPORTANT: إذا المدفوع يساوي (أو تقريبًا يساوي) ما هو معروض في الدرج،
+        // نضع قيمة الدرج الجديدة بصفر - لضمان تصفير ما يُعرض فعليًا في الـ AppBar.
+        double newStarting;
+        bool isFullWithdraw = false;
+        if (amount >= displayedDrawerAmount - epsilon) {
+          newStarting = 0.0;
+          isFullWithdraw = true;
+        } else {
+          // نحسب الفرق اعتمادًا على latestDrawerStarting
+          newStarting = (latestDrawerStarting - amount).clamp(0.0, double.infinity);
+        }
 
-        // خطوة آمنة: نحدّث الدُرج أولًا ثم نزيد المحفظة. إذا فشل أي منهما نحاول عمل تراجع (rollback) قدر الإمكان.
+        // خطوة آمنة: نحدّث الدُرج أولًا.
         try {
           await dbHelper.setDrawerStartingAmount(newStarting, username, note: 'سحب إلى المحفظة (-${amount.toStringAsFixed(2)})');
+
+          // لو كان سحب كامل: علم كل المبيعات النقدية كمصفاة (withdrawn)
+          if (isFullWithdraw) {
+            try {
+              await DBHelper.instance.markAllCashSalesAsDrawerWithdrawn(cashierUsername: username);
+            } catch (e) {
+              debugPrint('Failed to mark sales as drawer-withdrawn: $e');
+              // لا نرمي الاستثناء لأن العملية الأساسية يجب أن تتحقق (يمكن للمستخدم التدقيق لاحقًا)
+            }
+          }
+
+          // إعادة تحميل القيم فورًا حتى يظهر الـ AppBar صفراً لو كان سحب كامل
+          await _loadCardTotals();
         } catch (e) {
           debugPrint('Failed to set drawer starting amount before wallet change: $e');
           throw 'فشل تحديث الدرج';
@@ -447,6 +496,18 @@ class _CashierScreenState extends State<CashierScreen> {
           // حاول استرجاع قيمة الدرج الأصلية
           try {
             await dbHelper.setDrawerStartingAmount(latestDrawerStarting, username, note: 'Rollback: failed wallet credit after drawer debit');
+            // إن كنا وسمنا المبيعات كـ withdrawn وحبينا التراجع، فالأفضل أن يكون هناك عملية rollback في DBHelper
+            // هنا نحاول تجاهل فشل إعادة الوسم لعدم تعقيد الأمور.
+            try {
+              if (isFullWithdraw) {
+                // محاولة بسيطة لإلغاء وسم المبيعات (إذا كانت الدالة متاحة)
+                await DBHelper.instance.ensureDrawerWithdrawnColumnExists();
+                final db = await DBHelper.instance.database;
+                await db.update('sales', {'drawer_withdrawn': 0}, where: "payment_method = 'cash' AND cashier_username = ?", whereArgs: [username]);
+              }
+            } catch (e2) {
+              debugPrint('Rollback unmark sales failed: $e2');
+            }
           } catch (e2) {
             debugPrint('Rollback failed: $e2');
           }
@@ -487,6 +548,8 @@ class _CashierScreenState extends State<CashierScreen> {
       // بعد التحديثات: اقرأ القيم من DB وضبط الواجهة
       final walletAfter = await dbHelper.getLatestCardWalletAmount();
       final untransferredAfter = await _getUntransferredCardAmountSafe();
+      // إعادة تحميل canonical للقيم (تضمن تصفير Drawer المعروض)
+      await _loadCardTotals();
       if (mounted) {
         setState(() {
           _walletAmount = walletAfter;
@@ -495,8 +558,7 @@ class _CashierScreenState extends State<CashierScreen> {
         });
       }
 
-      // Debug - اطبع للكونسول للتأكد
-      debugPrint('TRANSFER DONE: fromDrawerToWallet=$fromDrawerToWallet amount=$amount; walletBefore=$latestWallet walletAfter=$walletAfter; drawerBefore=$latestDrawerStarting drawerAfter=${fromDrawerToWallet ? (latestDrawerStarting - amount) : (latestDrawerStarting + amount)}');
+      debugPrint('TRANSFER DONE: fromDrawerToWallet=$fromDrawerToWallet amount=$amount; walletBefore=$latestWallet walletAfter=$walletAfter; drawerBefore=$latestDrawerStarting');
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(fromDrawerToWallet
@@ -787,6 +849,31 @@ class _CashierScreenState extends State<CashierScreen> {
         await DBHelper.instance.markSaleAsPaid(saleId, paymentMethod: paymentMethod, paidAmount: total);
       } else if (paymentMethod == 'cash') {
         await DBHelper.instance.markSaleAsPaid(saleId, paymentMethod: 'cash', paidAmount: paid);
+      }
+
+      // --- بعد وضع علامة الدفع على الفاتورة ---
+      if (paymentMethod == 'cash') {
+        try {
+          // صافي النقد الذي يدخل إلى الدرج (paid - change)
+          final netCash = (paid - changeAmount);
+          if (netCash > 0.0) {
+            // اجلب الباديء الحالي للدرج ثم زدّه بصافي النقد
+            final latestStarting = await DBHelper.instance.getLatestDrawerStartingAmount();
+            final newStarting = (latestStarting + netCash).clamp(0.0, double.infinity);
+
+            // سجّل التغيير في الدرج مع ملاحظة تربطها برقم الفاتورة
+            await DBHelper.instance.setDrawerStartingAmount(newStarting, cashierNameToUse,
+                note: 'إضافة نقدية من بيع #$saleId (صافي: ${netCash.toStringAsFixed(2)})');
+
+            // أعد تحميل القيم المعروضة فورًا
+            await _loadCardTotals();
+            debugPrint('Added net cash to drawer: $netCash — newStarting: $newStarting');
+          }
+        } catch (e) {
+          debugPrint('Failed to add cash to drawer after sale: $e');
+          // لا نوقف الحفظ لكن نخبر الكاشير
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('انتباه: لم يتم تحديث الدرج تلقائياً')));
+        }
       }
 
       // user messages
@@ -1336,7 +1423,7 @@ class _CashierScreenState extends State<CashierScreen> {
         toolbarHeight: 65,
         leading: Row(
           children: [
-             IconButton(
+            IconButton(
               icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white70),
               onPressed: () => _confirmExit(),
             ),
