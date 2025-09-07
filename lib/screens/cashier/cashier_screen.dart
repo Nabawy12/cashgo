@@ -1726,80 +1726,83 @@ class _CashierScreenState extends State<CashierScreen> {
                   child: RawKeyboardListener(
                     focusNode: _inlineKeyboardNode,
                     onKey: _handleInlineKey,
-                    child: TextField(
-                      controller: _barcodeController,
-                      focusNode: _barcodeFocus,
-                      onTap: () {
-                        // تأكد إن node الخاص بالكيبورد يستلم الفوكس أيضاً عند الضغط في الحقل
-                        if (!_inlineKeyboardNode.hasFocus) FocusScope.of(context).requestFocus(_inlineKeyboardNode);
-                      },
-                      onChanged: (v) {
-                        final trimmed = v.trim();
-                        final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
-                        if (containsLetters) {
-                          _scheduleInlineSearch(trimmed);
-                        } else {
-                          _inlineDebounce?.cancel();
-                          setState(() {
-                            _inlineSearchResults = [];
-                            _inlineLoading = false;
-                            _inlineSelectedIndex = -1;
-                          });
-                        }
-                      },
-                      onSubmitted: (v) async {
-                        final trimmed = v.trim();
-                        if (trimmed.isEmpty) return;
-                        final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
+                    child: Directionality(
+                      textDirection: TextDirection.rtl,
+                      child: TextField(
+                        controller: _barcodeController,
+                        focusNode: _barcodeFocus,
+                        onTap: () {
+                          // تأكد إن node الخاص بالكيبورد يستلم الفوكس أيضاً عند الضغط في الحقل
+                          if (!_inlineKeyboardNode.hasFocus) FocusScope.of(context).requestFocus(_inlineKeyboardNode);
+                        },
+                        onChanged: (v) {
+                          final trimmed = v.trim();
+                          final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
+                          if (containsLetters) {
+                            _scheduleInlineSearch(trimmed);
+                          } else {
+                            _inlineDebounce?.cancel();
+                            setState(() {
+                              _inlineSearchResults = [];
+                              _inlineLoading = false;
+                              _inlineSelectedIndex = -1;
+                            });
+                          }
+                        },
+                        onSubmitted: (v) async {
+                          final trimmed = v.trim();
+                          if (trimmed.isEmpty) return;
+                          final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
 
-                        if (containsLetters) {
-                          if (_inlineSearchResults.isNotEmpty) {
-                            final first = _inlineSearchResults.first;
+                          if (containsLetters) {
+                            if (_inlineSearchResults.isNotEmpty) {
+                              final first = _inlineSearchResults.first;
 
-                            if (_dialogOpening) return;
-                            _dialogOpening = true;
+                              if (_dialogOpening) return;
+                              _dialogOpening = true;
 
-                            try {
-                              await _showProductDetailDialog(first);
-                            } finally {
-                              if (!mounted) return;
-                              setState(() {
-                                _inlineSearchResults = [];
-                                _inlineLoading = false;
-                                _inlineSelectedIndex = -1;
-                                _dialogOpening = false;
-                              });
+                              try {
+                                await _showProductDetailDialog(first);
+                              } finally {
+                                if (!mounted) return;
+                                setState(() {
+                                  _inlineSearchResults = [];
+                                  _inlineLoading = false;
+                                  _inlineSelectedIndex = -1;
+                                  _dialogOpening = false;
+                                });
+                              }
+                            } else {
+                              await _openNameSearchDialog(initialQuery: trimmed);
                             }
                           } else {
-                            await _openNameSearchDialog(initialQuery: trimmed);
+                            await _onBarcodeSubmitted(trimmed);
                           }
-                        } else {
-                          await _onBarcodeSubmitted(trimmed);
-                        }
-                      },
-                      decoration: InputDecoration(
-                        hintText: 'امسح الباركود أو اكتب اسم المنتج ثم اضغط Enter',
-                        filled: true,
-                        fillColor: Colors.white10,
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.search),
-                          onPressed: () async {
-                            final q = _barcodeController.text.trim();
-                            if (q.isEmpty) return;
-                            final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(q);
-                            if (containsLetters) {
-                              _scheduleInlineSearch(q);
-                              if (!_inlineKeyboardNode.hasFocus) FocusScope.of(context).requestFocus(_inlineKeyboardNode);
-                            } else {
-                              await _onBarcodeSubmitted(q);
-                            }
-                          },
+                        },
+                        decoration: InputDecoration(
+                          hintText: 'امسح الباركود أو اكتب اسم المنتج ثم اضغط Enter',
+                          filled: true,
+                          fillColor: Colors.white10,
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.search),
+                            onPressed: () async {
+                              final q = _barcodeController.text.trim();
+                              if (q.isEmpty) return;
+                              final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(q);
+                              if (containsLetters) {
+                                _scheduleInlineSearch(q);
+                                if (!_inlineKeyboardNode.hasFocus) FocusScope.of(context).requestFocus(_inlineKeyboardNode);
+                              } else {
+                                await _onBarcodeSubmitted(q);
+                              }
+                            },
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
                         ),
-                        contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+                        style: const TextStyle(color: Colors.white),
+                        keyboardType: TextInputType.text,
                       ),
-                      style: const TextStyle(color: Colors.white),
-                      keyboardType: TextInputType.text,
                     ),
                   ),
 
