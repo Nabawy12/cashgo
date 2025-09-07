@@ -1873,8 +1873,20 @@ class _CashierScreenState extends State<CashierScreen> {
                         FocusScope.of(context).requestFocus(_barcodeFocus);
                       });
                     },
-                    onSaveAsLater: () => _saveSale(requireFullPayment: false, paymentMethod: 'credit'),
-                    onSaveAsCard: () => _saveSale(requireFullPayment: true, paymentMethod: 'wallet'),
+                    onSaveAsLater: (){
+                      _saveSale(requireFullPayment: false, paymentMethod: 'credit');
+                      Future.microtask(() {
+                        _barcodeController.clear();
+                        FocusScope.of(context).requestFocus(_barcodeFocus);
+                      });
+                    },
+                    onSaveAsCard: () {
+                      _saveSale(requireFullPayment: true, paymentMethod: 'wallet');
+                      Future.microtask(() {
+                        _barcodeController.clear();
+                        FocusScope.of(context).requestFocus(_barcodeFocus);
+                      });
+                    },
                     // If you want a BUTTON specifically to pay via the app wallet, you can hook it to:
                     // onSaveAsWallet: () => _saveSale(requireFullPayment: true, paymentMethod: 'wallet'),
                   ),
