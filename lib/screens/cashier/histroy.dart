@@ -1,4 +1,5 @@
 // PreviousSalesGroupedByCashier.dart
+import 'package:cashgo/screens/cashier/cashier_screen.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -311,6 +312,11 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
               onDone: () async {
                 await _loadSales(date: selectedDate);
                 await _ensureItems(originalSaleId);
+                Navigator.pushNamedAndRemoveUntil(
+                  context,
+                  CashierScreen.routName,
+                      (Route<dynamic> route) => false, // يحذف كل الشاشات السابقة
+                );
               },
             ),
           ),
