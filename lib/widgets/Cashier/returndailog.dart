@@ -286,16 +286,16 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
             Expanded(
                 child:
                 Text(
-                    name,
+                  name,
                   style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 15
+                      color: Colors.white,
+                      fontSize: 15
                   ),
                 )
             ),
             const SizedBox(width: 8),
             Text(
-                'متاح : $available',
+              'متاح : $available',
               style: TextStyle(
                   fontSize: 17,
                   color: Colors.white
@@ -308,17 +308,17 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                   Icons.remove_circle_outline,color: Colors.white70,)
             ),
             Text(
-                '$qty',
+              '$qty',
               style: TextStyle(
-                color: Colors.white,
-                fontSize: 17
+                  color: Colors.white,
+                  fontSize: 17
               ),
             ),
             IconButton(
                 onPressed: () => _incReplacementQty(pid),
                 icon:Icon(
-                    Icons.add_circle_outline,
-                    color: Colors.white70,
+                  Icons.add_circle_outline,
+                  color: Colors.white70,
                 )
             ),
             IconButton(
@@ -351,17 +351,14 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     }
 
     return AlertDialog(
-      
+
       backgroundColor: AppColorsDark.bgColor,
-      title: Align(
-        alignment: Alignment.center,
-        child: Expanded(
-          child: const Text(
-              'معالجة مرتجع / استبدال',
-            style: TextStyle(
+      title: Center(
+        child: const Text(
+          'معالجة مرتجع / استبدال',
+          style: TextStyle(
               fontSize: 17,
               color: Colors.white
-            ),
           ),
         ),
       ),
@@ -438,14 +435,14 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
               ),
               const SizedBox(height: 10),
               const Align(
-                  alignment: Alignment.centerRight,
-                  child: Text(
-                      ' : اختر العناصر التي سيتم إرجاعها والكمية',
-                          style: TextStyle(
-                            fontSize: 17,
-                            color: Colors.white
-                          ),
+                alignment: Alignment.centerRight,
+                child: Text(
+                  ' : اختر العناصر التي سيتم إرجاعها والكمية',
+                  style: TextStyle(
+                      fontSize: 17,
+                      color: Colors.white
                   ),
+                ),
               ),
               const SizedBox(height: 8),
               Expanded(
@@ -471,10 +468,10 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                             Row(
                               children: [
                                 Checkbox(
-                                  value: selected,
-                                  onChanged: (_) => _toggleSelect(pid),
-                                  activeColor: AppColorsDark.mainColor,
-                                  checkColor: Colors.white,
+                                    value: selected,
+                                    onChanged: (_) => _toggleSelect(pid),
+                                    activeColor: AppColorsDark.mainColor,
+                                    checkColor: Colors.white,
                                     fillColor: MaterialStateProperty.resolveWith<Color>((states) {
                                       if (states.contains(MaterialState.selected)) {
                                         return AppColorsDark.mainColor;
@@ -484,11 +481,11 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                 ),
                                 Expanded(
                                     child: Text(
-                                    '$name',
-                                    style: TextStyle(
-                                      color: Colors.white
-                                    ),
-                                )
+                                      '$name',
+                                      style: TextStyle(
+                                          color: Colors.white
+                                      ),
+                                    )
                                 ),
                                 Column(
                                   crossAxisAlignment: CrossAxisAlignment.end,
@@ -497,7 +494,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                     Text(
                                       '${price.toStringAsFixed(2)}  : السعر',
                                       style: TextStyle(
-                                          color: Colors.white,
+                                        color: Colors.white,
                                         fontSize: 17,
                                       ),
                                     ),
@@ -505,7 +502,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                     Text(
                                       'مباع : $origQty',
                                       style: const TextStyle(
-                                          color: Colors.white,
+                                        color: Colors.white,
                                         fontSize: 17,
                                       ),
                                     ),
@@ -520,13 +517,13 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                   IconButton(
                                       onPressed: () => _decReturnQty(pid),
                                       icon: const Icon(Icons.remove_circle_outline,
-                                      color: Colors.white70,
+                                        color: Colors.white70,
                                       )
                                   ),
                                   Text(
-                                      '$selQty',
+                                    '$selQty',
                                     style: const TextStyle(
-                                      color: Colors.white
+                                        color: Colors.white
                                     ),
                                   ),
                                   IconButton(
@@ -556,9 +553,9 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                 const Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
-                        'أضف عناصر بدل (امسح الباركود):',
+                      'أضف عناصر بدل (امسح الباركود):',
                       style: TextStyle(
-                        color: Colors.white
+                          color: Colors.white
                       ),
                     )
                 ),
@@ -567,14 +564,14 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                   children: [
                     Expanded(
                       child: CustomFormField(
-                          hint: 'امسح باركود البديل واضغط إضافة',
-                          onFieldSubmitted: (v) => _addReplacementByBarcode(v),
+                        hint: 'امسح باركود البديل واضغط إضافة',
+                        onFieldSubmitted: (v) => _addReplacementByBarcode(v),
                       ),
                     ),
                     const SizedBox(width: 8),
                     CustomButton(
-                        text: 'أضف',
-                        onPressed: () => _addReplacementByBarcode(_replacementBarcodeController.text),
+                      text: 'أضف',
+                      onPressed: () => _addReplacementByBarcode(_replacementBarcodeController.text),
                       infinity: false,
                     ),
                   ],
@@ -582,9 +579,9 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                 const SizedBox(height: 10),
                 if (_replacementProducts.isEmpty)
                   const Text(
-                      'لا توجد عناصر بديلة مضافة',
+                    'لا توجد عناصر بديلة مضافة',
                     style: TextStyle(
-                      color: Colors.white
+                        color: Colors.white
                     ),
                   )
                 else
@@ -592,20 +589,20 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
               ],
               SizedBox(height: 10),
               Align(
-                  alignment: Alignment.center,
-                  child: Text(
-                      'قيمة المرتجع: ${refundedVal.toStringAsFixed(2)}',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 17
-                    ),
+                alignment: Alignment.center,
+                child: Text(
+                  'قيمة المرتجع: ${refundedVal.toStringAsFixed(2)}',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17
                   ),
+                ),
               ),
               SizedBox(height: 10),
               Align(
                   alignment: Alignment.center,
                   child: Text(
-                      'تكلفة البدائل: ${addedVal.toStringAsFixed(2)}',
+                    'تكلفة البدائل: ${addedVal.toStringAsFixed(2)}',
                     style: TextStyle(
                         color: Colors.white,
                         fontSize: 16
@@ -616,7 +613,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
               Align(
                   alignment: Alignment.center,
                   child: Text(
-                      'الفرق (بدل - مرتجع): ${netVal.toStringAsFixed(2)}',
+                    'الفرق (بدل - مرتجع): ${netVal.toStringAsFixed(2)}',
                     style: TextStyle(
                         color: Colors.white,
                         fontSize: 15
@@ -627,11 +624,11 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
               Align(
                 alignment: Alignment.center,
                 child: Text(
-                    resultMessage,
+                  resultMessage,
                   style: TextStyle(
-                      color: Colors.white,
+                    color: Colors.white,
                     fontWeight: FontWeight.bold,
-                      fontSize: 18,
+                    fontSize: 18,
                   ),
                 ),
               ),
@@ -639,7 +636,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
               Align(
                 alignment: Alignment.center,
                 child: const Text(
-                    'اضغط تطبيق — النظام سيحدث الفاتورة والمخزون تلقائياً.',
+                  'اضغط تطبيق — النظام سيحدث الفاتورة والمخزون تلقائياً.',
                   style: TextStyle(
                       color: Colors.white,
                       fontSize: 13
@@ -657,9 +654,9 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
             ),
             onPressed: () => Navigator.pop(context),
             child:Text(
-                'إلغاء',
+              'إلغاء',
               style: TextStyle(
-                color: Colors.white
+                  color: Colors.white
               ),
             )
         ),
@@ -668,12 +665,12 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
               backgroundColor: AppColorsDark.bgCardColor,
             ),
             onPressed: _processing ? null : _process, child: _processing ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) :
-          const Text(
-              'تطبيق',
-            style: TextStyle(
+        const Text(
+          'تطبيق',
+          style: TextStyle(
               color: Colors.white
-            ),
-          )
+          ),
+        )
         ),
       ],
     );

@@ -287,20 +287,38 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
   }
 
   Future<int?> _openProcessReturnDialog(int originalSaleId, String cashierName) async {
+    // نتأكد من وجود العناصر محمّلة
     await _ensureItems(originalSaleId);
     final items = saleItems[originalSaleId] ?? [];
-    final result = await showDialog<int?>(
-      context: context,
-      builder: (_) => ProcessReturnDialog(
-        originalSaleId: originalSaleId,
-        items: items,
-        cashierUsername: cashierName, // مهم: نمرر اسم الكاشير الصحيح هنا
-        onDone: () async {
-          await _loadSales(date: selectedDate);
-          await _ensureItems(originalSaleId);
-        },
+
+    // على Windows أحيانًا يحدث خطأ لأن بعض Widgets (مثل Expanded) متوقعة أن تكون داخل Flex
+    // وDialog يضيف حدود/محاذاة قد تجعل Expanded يتلقى BoxParentData — بالتالي نفتح شاشة كاملة بدلاً من AlertDialog
+    final result = await Navigator.of(context).push<int?>(
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          backgroundColor: AppColorsDark.bgColor,
+          appBar: AppBar(
+            title: Text('معالجة مرتجع / بدل', style: TextStyle(color: Colors.white)),
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            iconTheme: IconThemeData(color: Colors.white70),
+          ),
+          body: SafeArea(
+            child: ProcessReturnDialog(
+              originalSaleId: originalSaleId,
+              items: items,
+              cashierUsername: cashierName,
+              onDone: () async {
+                await _loadSales(date: selectedDate);
+                await _ensureItems(originalSaleId);
+              },
+            ),
+          ),
+        ),
+        fullscreenDialog: true,
       ),
     );
+
     return result;
   }
 
@@ -364,6 +382,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
             child: groupedSales.isEmpty
                 ? Center(child: Text('لا توجد فواتير لهذا اليوم', style: TextStyle(color: Colors.white70, fontSize: 16)))
                 : ListView(
+              scrollDirection: Axis.vertical,
               children: groupedSales.entries.map((entry) {
                 final cashierName = entry.key;
                 final list = entry.value;
