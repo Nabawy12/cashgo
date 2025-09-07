@@ -6,6 +6,7 @@ import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:intl/intl.dart' hide TextDirection ;
 import '../../models/cart.dart';
@@ -44,6 +45,8 @@ class _CashierScreenState extends State<CashierScreen> {
   double _cardReceived = 0.0;       // untransferred card payments from sales
   double _cardTotalAvailable = 0.0; // wallet + untransferred
   double Drawer = 0.0; // wallet + untransferred
+  bool _dialogOpening = false;
+
 
   // --------- Discount state ----------
   // design: percent-only discount (as requested), from 0% to 50% step 5
@@ -52,6 +55,66 @@ class _CashierScreenState extends State<CashierScreen> {
   List<Map<String, dynamic>> _inlineSearchResults = [];
   bool _inlineLoading = false;
   Timer? _inlineDebounce;
+  int _inlineSelectedIndex = -1;
+  final ScrollController _inlineScrollController = ScrollController();
+  final FocusNode _inlineKeyboardNode = FocusNode();
+
+  Future<void> _scrollInlineToIndex(int index) async {
+    if (!_inlineScrollController.hasClients) return;
+    final itemHeight = 72.0; // تقريب ارتفاع ListTile؛ عدِّل لو كان مختلف
+    final offset = (index * itemHeight).clamp(0.0, _inlineScrollController.position.maxScrollExtent);
+    await _inlineScrollController.animateTo(offset, duration: const Duration(milliseconds: 200), curve: Curves.easeInOut);
+  }
+
+  void _handleInlineKey(RawKeyEvent event) {
+    if (event is! RawKeyDownEvent) return; // تعامل فقط مع أحداث الضغط
+    if (_inlineSearchResults.isEmpty) return;
+
+    final key = event.logicalKey;
+
+    if (key == LogicalKeyboardKey.arrowDown) {
+      setState(() {
+        _inlineSelectedIndex = (_inlineSelectedIndex + 1).clamp(0, _inlineSearchResults.length - 1);
+      });
+      _scrollInlineToIndex(_inlineSelectedIndex);
+    } else if (key == LogicalKeyboardKey.arrowUp) {
+      setState(() {
+        _inlineSelectedIndex = (_inlineSelectedIndex - 1).clamp(0, _inlineSearchResults.length - 1);
+      });
+      _scrollInlineToIndex(_inlineSelectedIndex);
+    } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
+      final idx = _inlineSelectedIndex >= 0 ? _inlineSelectedIndex : 0;
+      if (idx >= 0 && idx < _inlineSearchResults.length) {
+        final item = _inlineSearchResults[idx];
+
+        // منع الاستدعاء المزدوج
+        if (_dialogOpening) return;
+        _dialogOpening = true;
+
+        Future.microtask(() async {
+          try {
+            await _showProductDetailDialog(item);
+          } finally {
+            if (!mounted) return;
+            setState(() {
+              _inlineSearchResults = [];
+              _inlineLoading = false;
+              _inlineSelectedIndex = -1;
+              _dialogOpening = false;
+            });
+          }
+        });
+      }
+    } else if (key == LogicalKeyboardKey.escape) {
+      setState(() {
+        _inlineSearchResults = [];
+        _inlineLoading = false;
+        _inlineSelectedIndex = -1;
+      });
+    }
+  }
+
+
 
   void _scheduleInlineSearch(String q) {
     _inlineDebounce?.cancel();
@@ -165,7 +228,9 @@ class _CashierScreenState extends State<CashierScreen> {
     _barcodeController.dispose();
     _barcodeFocus.dispose();
     _paidController.dispose();
-    _inlineDebounce?.cancel(); // cancel debounce
+    _inlineDebounce?.cancel();
+    _inlineScrollController.dispose();
+    _inlineKeyboardNode.dispose();
     super.dispose();
   }
 
@@ -915,7 +980,7 @@ class _CashierScreenState extends State<CashierScreen> {
       if (paymentMethod == 'card' || paymentMethod == 'wallet') {
         await DBHelper.instance.markSaleAsPaid(saleId, paymentMethod: paymentMethod, paidAmount: total);
       } else
-        if (paymentMethod == 'cash') {
+      if (paymentMethod == 'cash') {
         await DBHelper.instance.markSaleAsPaid(saleId, paymentMethod: 'cash', paidAmount: paid);
       }
 
@@ -1298,14 +1363,24 @@ class _CashierScreenState extends State<CashierScreen> {
                             title: Text(name, style: const TextStyle(color: Colors.white)),
                             subtitle: Text('باركود: $barcode  •  سعر: $price  •  متاح: $stock',
                                 style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                            onTap: () {
-                              // افتح تفاصيل المنتج للاختيار والاضافة
-                              Navigator.of(ctx2).pop();
-                              Future.microtask(() => _showProductDetailDialog(item));
-                              _barcodeController.clear();
-                              FocusScope.of(context).requestFocus(_barcodeFocus);
+                            onTap: () async {
+                              // منع النداء لو هناك دايلوج مفتوح حاليا
+                              if (_dialogOpening) return;
+                              _dialogOpening = true;
 
+                              try {
+                                await _showProductDetailDialog(item);
+                              } finally {
+                                if (!mounted) return;
+                                setState(() {
+                                  _inlineSearchResults = [];
+                                  _inlineLoading = false;
+                                  _inlineSelectedIndex = -1;
+                                  _dialogOpening = false;
+                                });
+                              }
                             },
+
                           );
                         },
                       ),
@@ -1330,7 +1405,6 @@ class _CashierScreenState extends State<CashierScreen> {
     );
   }
   Future<void> _showProductDetailDialog(Map<String, dynamic> product) async {
-    // تأكد من حقل total_units محسوب (إذا لم يكن موجود)
     if (!product.containsKey('total_units')) {
       final cartons = (product['quantity'] as num?)?.toInt() ?? 0;
       final unitsInCarton = (product['units_in_carton'] as num?)?.toInt() ?? 0;
@@ -1339,119 +1413,183 @@ class _CashierScreenState extends State<CashierScreen> {
       product['total_units'] = cartons * unitsInCarton + remainder;
     }
 
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) {
-        int qty = 1;
-        final available = (product['total_units'] as num?)?.toInt() ?? 0;
-        return Directionality(
-          textDirection: TextDirection.rtl,
-          child: StatefulBuilder(builder: (ctx2, setState2) {
-            final name = (product['name'] ?? '').toString();
-            final barcode = (product['barcode'] ?? '').toString();
-            final price = (product['selling_price'] ?? product['sellingPrice'] ?? 0.0);
-            final desc = (product['description'] ?? '').toString();
+    // انشئ controller مرة واحدة قبل الدايلوج
+    final qtyController = TextEditingController(text: '');
 
-            return AlertDialog(
-              backgroundColor: AppColorsDark.bgCardColor,
-              title: Text(name, style: const TextStyle(color: Colors.white)),
-              content: SizedBox(
-                width: 320,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // صورة (لو عندك حقل image_path -- غير الشيفرة حسب جدولك)
-                    if ((product['image_path'] ?? '').toString().isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8.0),
-                        child: Image.asset(
-                          product['image_path'],
-                          width: 120,
-                          height: 80,
-                          fit: BoxFit.contain,
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: true,
+        builder: (ctx) {
+          int qty = 1;
+          final available = (product['total_units'] as num?)?.toInt() ?? 0;
+
+          return Directionality(
+            textDirection: TextDirection.rtl,
+            child: StatefulBuilder(builder: (ctx2, setState2) {
+              final name = (product['name'] ?? '').toString();
+              final price = (product['selling_price'] ?? product['sellingPrice'] ?? 0.0);
+              final desc = (product['description'] ?? '').toString();
+
+              void clampAndReflectController() {
+                if (qty <= 0) return;
+                if (qty > available) qty = available;
+                // حدّث النص واوضع المؤشر في النهاية بدون إعادة إنشاء controller
+                qtyController.value = TextEditingValue(
+                  text: qty.toString(),
+                  selection: TextSelection.collapsed(offset: qty.toString().length),
+                );
+              }
+
+              return AlertDialog(
+                backgroundColor: AppColorsDark.bgCardColor,
+                title: Text(name, style: const TextStyle(color: Colors.white)),
+                content: SizedBox(
+                  width: 320,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (desc.isNotEmpty)
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(desc, style: const TextStyle(color: Colors.white70), textAlign: TextAlign.right),
                         ),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('السعر: ${price.toString()}', style: const TextStyle(color: Colors.white70)),
+                          Text('متاح: $available', style: const TextStyle(color: Colors.white70)),
+                        ],
                       ),
-                    if (desc.isNotEmpty) Align(alignment: Alignment.centerRight, child: Text(desc, style: const TextStyle(color: Colors.white70), textAlign: TextAlign.right)),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('السعر: ${price.toString()}', style: const TextStyle(color: Colors.white70)),
-                        Text('متاح: $available', style: const TextStyle(color: Colors.white70)),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    // عداد الكمية
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        IconButton(
-                          onPressed: qty > 1 ? () => setState2(() => qty--) : null,
-                          icon: const Icon(Icons.remove_circle_outline, color: Colors.white),
-                        ),
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: AppColorsDark.bgColor,
-                            borderRadius: BorderRadius.circular(6),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          IconButton(
+                            onPressed: qty > 1
+                                ? () {
+                              setState2(() {
+                                qty = (qty - 1).clamp(0, available);
+                                // حدّث controller (cursor في النهاية)
+                                qtyController.value = TextEditingValue(
+                                  text: qty.toString(),
+                                  selection: TextSelection.collapsed(offset: qty.toString().length),
+                                );
+                              });
+                            }
+                                : null,
+                            icon: const Icon(Icons.remove_circle_outline, color: Colors.white),
                           ),
-                          child: Text(qty.toString(), style: const TextStyle(color: Colors.white, fontSize: 18)),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          onPressed: qty < available ? () => setState2(() => qty++) : null,
-                          icon: const Icon(Icons.add_circle_outline, color: Colors.white),
-                        ),
-                      ],
-                    ),
-                  ],
+                          const SizedBox(width: 8),
+                          Container(
+                            width: 100,
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: AppColorsDark.bgColor,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: TextField(
+                              controller: qtyController,
+                              autofocus: true, // يصبح الحقل مركّزًا فور فتح الدايلوج
+                              keyboardType: TextInputType.number,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white, fontSize: 18),
+                              decoration: const InputDecoration(border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.zero),
+                              onChanged: (v) {
+                                setState2(() {
+                                  final trimmed = v.trim();
+                                  if (trimmed.isEmpty) {
+                                    // المستخدم مسح الحقل أو في صدد الكتابة — لا نفرض قيمة حتى يضغط "أضف"
+                                    qty = 0;
+                                  } else {
+                                    final parsed = int.tryParse(trimmed) ?? 0;
+                                    qty = parsed;
+                                    if (qty > available) {
+                                      qty = available;
+                                      // حدّث النص مع وضع المؤشر في النهاية
+                                      qtyController.value = TextEditingValue(
+                                        text: qty.toString(),
+                                        selection: TextSelection.collapsed(offset: qty.toString().length),
+                                      );
+                                    }
+                                  }
+                                });
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            onPressed: qty < available
+                                ? () {
+                              setState2(() {
+                                qty = (qty + 1).clamp(0, available);
+                                qtyController.value = TextEditingValue(
+                                  text: qty.toString(),
+                                  selection: TextSelection.collapsed(offset: qty.toString().length),
+                                );
+                              });
+                            }
+                                : null,
+                            icon: const Icon(Icons.add_circle_outline, color: Colors.white),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              actions: [
-                TextButton(
-                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
-                  onPressed: () => Navigator.of(ctx2).pop(),
-                  child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    // التحقق من التوفر بالمقارنة مع الموجود بالفعل في العربة
-                    final pid = (product['id'] as num?)?.toInt();
-                    if (pid == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير صالح')));
-                      return;
-                    }
-                    final already = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
-                    if (already + qty > available) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد كمية كافية')));
-                      return;
-                    }
-
-                    // أضف إلى العربة
-                    setState(() {
-                      if (_cart.containsKey(pid)) {
-                        _cart[pid]!.quantity += qty;
-                      } else {
-                        final prodModel = Product.fromMap(product);
-                        _cart[pid] = CartItem(product: prodModel, quantity: qty);
+                actions: [
+                  TextButton(
+                    style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                    onPressed: () {
+                      Navigator.of(ctx2).pop();
+                      Future.microtask(() {
+                        _barcodeController.clear();
+                        FocusScope.of(context).requestFocus(_barcodeFocus);
+                      });
+                    },
+                    child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
+                  ),
+                  ElevatedButton(
+                    onPressed: () {
+                      final pid = (product['id'] as num?)?.toInt();
+                      if (pid == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير صالح')));
+                        return;
                       }
-                    });
+                      final already = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
+                      final requested = qty <= 0 ? 1 : qty; // افتراضي 1 لو ترك الحقل فارغًا
+                      if (already + requested > available) {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد كمية كافية')));
+                        return;
+                      }
 
-                    Navigator.of(ctx2).pop(); // أغلق تفاصيل المنتج
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت إضافة $qty قطعة من ${product['name']}')));
-                    _barcodeController.clear();
-                    FocusScope.of(context).requestFocus(_barcodeFocus);
-                  },
-                  child: const Text('أضف إلى السلة'),
-                ),
-              ],
-            );
-          }),
-        );
-      },
-    );
+                      setState(() {
+                        if (_cart.containsKey(pid)) {
+                          _cart[pid]!.quantity += requested;
+                        } else {
+                          final prodModel = Product.fromMap(product);
+                          _cart[pid] = CartItem(product: prodModel, quantity: requested);
+                        }
+                      });
+
+                      Navigator.of(ctx2).pop();
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت إضافة $requested قطعة من ${product['name']}')));
+                      _barcodeController.clear();
+                      FocusScope.of(context).requestFocus(_barcodeFocus);
+                    },
+                    child: const Text('أضف إلى السلة'),
+                  ),
+                ],
+              );
+            }),
+          );
+        },
+      );
+    } finally {
+      // بعد غلق الدايلوج فض الـ controller لتفريغ الموارد
+      qtyController.dispose();
+    }
   }
 
 
@@ -1471,7 +1609,7 @@ class _CashierScreenState extends State<CashierScreen> {
         toolbarHeight: 65,
         leading: Row(
           children: [
-             IconButton(
+            IconButton(
               icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white70),
               onPressed: () => _confirmExit(),
             ),
@@ -1566,65 +1704,86 @@ class _CashierScreenState extends State<CashierScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Expanded(
-                  child: TextField(
-                    controller: _barcodeController,
-                    focusNode: _barcodeFocus,
-                    onChanged: (v) {
-                      // لو فيه حروف -> نبحث مباشرة ونعرض النتائج أسفل الحقل
-                      final trimmed = v.trim();
-                      final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
-                      if (containsLetters) {
-                        _scheduleInlineSearch(trimmed);
-                      } else {
-                        // لو بحث برقم (باركود) نقوم بمسح الاقتراحات
-                        _inlineDebounce?.cancel();
-                        setState(() {
-                          _inlineSearchResults = [];
-                          _inlineLoading = false;
-                        });
-                      }
-                    },
-                    onSubmitted: (v) async {
-                      final trimmed = v.trim();
-                      if (trimmed.isEmpty) return;
-                      final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
-                      if (containsLetters) {
-                        // لو فيه اقتراحات، نضيف أول اقتراح مباشرة — سلوك شبيه باختيار أول نتيجة في محرك بحث
-                        if (_inlineSearchResults.isNotEmpty) {
-                          _addProductMapToCart(_inlineSearchResults.first, qty: 1);
+                  child: RawKeyboardListener(
+                    focusNode: _inlineKeyboardNode,
+                    onKey: _handleInlineKey,
+                    child: TextField(
+                      controller: _barcodeController,
+                      focusNode: _barcodeFocus,
+                      onTap: () {
+                        // تأكد إن node الخاص بالكيبورد يستلم الفوكس أيضاً عند الضغط في الحقل
+                        if (!_inlineKeyboardNode.hasFocus) FocusScope.of(context).requestFocus(_inlineKeyboardNode);
+                      },
+                      onChanged: (v) {
+                        final trimmed = v.trim();
+                        final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
+                        if (containsLetters) {
+                          _scheduleInlineSearch(trimmed);
                         } else {
-                          // كسق fallback لو ما في نتائج: افتح نافذة البحث القديمة (اختياري)
-                          await _openNameSearchDialog(initialQuery: trimmed);
+                          _inlineDebounce?.cancel();
+                          setState(() {
+                            _inlineSearchResults = [];
+                            _inlineLoading = false;
+                            _inlineSelectedIndex = -1;
+                          });
                         }
-                      } else {
-                        // barcode behavior
-                        await _onBarcodeSubmitted(trimmed);
-                      }
-                    },
-                    decoration: InputDecoration(
-                      hintText: 'امسح الباركود أو اكتب اسم المنتج ثم اضغط Enter',
-                      filled: true,
-                      fillColor: Colors.white10,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.search),
-                        onPressed: () async {
-                          final q = _barcodeController.text.trim();
-                          if (q.isEmpty) return;
-                          final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(q);
-                          if (containsLetters) {
-                            // فوراً اعرض نتائج inline (إذا لم تظهر)
-                            _scheduleInlineSearch(q);
+                      },
+                      onSubmitted: (v) async {
+                        final trimmed = v.trim();
+                        if (trimmed.isEmpty) return;
+                        final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
+
+                        if (containsLetters) {
+                          if (_inlineSearchResults.isNotEmpty) {
+                            final first = _inlineSearchResults.first;
+
+                            if (_dialogOpening) return;
+                            _dialogOpening = true;
+
+                            try {
+                              await _showProductDetailDialog(first);
+                            } finally {
+                              if (!mounted) return;
+                              setState(() {
+                                _inlineSearchResults = [];
+                                _inlineLoading = false;
+                                _inlineSelectedIndex = -1;
+                                _dialogOpening = false;
+                              });
+                            }
                           } else {
-                            await _onBarcodeSubmitted(q);
+                            await _openNameSearchDialog(initialQuery: trimmed);
                           }
-                        },
+                        } else {
+                          await _onBarcodeSubmitted(trimmed);
+                        }
+                      },
+                      decoration: InputDecoration(
+                        hintText: 'امسح الباركود أو اكتب اسم المنتج ثم اضغط Enter',
+                        filled: true,
+                        fillColor: Colors.white10,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.search),
+                          onPressed: () async {
+                            final q = _barcodeController.text.trim();
+                            if (q.isEmpty) return;
+                            final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(q);
+                            if (containsLetters) {
+                              _scheduleInlineSearch(q);
+                              if (!_inlineKeyboardNode.hasFocus) FocusScope.of(context).requestFocus(_inlineKeyboardNode);
+                            } else {
+                              await _onBarcodeSubmitted(q);
+                            }
+                          },
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
                       ),
-                      contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+                      style: const TextStyle(color: Colors.white),
+                      keyboardType: TextInputType.text,
                     ),
-                    style: const TextStyle(color: Colors.white),
-                    keyboardType: TextInputType.text,
                   ),
+
 
                 ),
                 SizedBox(width: 12),
@@ -1650,6 +1809,7 @@ class _CashierScreenState extends State<CashierScreen> {
                 child: _inlineLoading
                     ? const Center(child: Text('جاري البحث...', style: TextStyle(color: Colors.white70)))
                     : ListView.separated(
+                  controller: _inlineScrollController,
                   shrinkWrap: true,
                   itemCount: _inlineSearchResults.length,
                   separatorBuilder: (_, __) => const Divider(height: 0.5, color: Colors.white10),
@@ -1659,29 +1819,27 @@ class _CashierScreenState extends State<CashierScreen> {
                     final barcode = (item['barcode'] ?? '').toString();
                     final price = (item['selling_price'] ?? item['sellingPrice'] ?? '').toString();
                     final stock = (item['total_units'] ?? 0).toString();
+                    final isSelected = i == _inlineSelectedIndex;
 
-                    return ListTile(
-                      tileColor: Colors.transparent,
-                      title: Text(name, style: const TextStyle(color: Colors.white)),
-                      subtitle: Text('باركود: $barcode  •  سعر: $price  •  متاح: $stock',
-                          style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                      // نقرة سريعة تضيف قطعة واحدة مباشرة
-                      onTap: () => _addProductMapToCart(item, qty: 1),
-                      // أيقونة للمزيد من التفاصيل (تفتح دايلوج تفاصيل المنتج كما عندك)
-                      trailing: IconButton(
-                        tooltip: 'تفاصيل',
-                        icon: const Icon(Icons.info_outline, color: Colors.white70),
-                        onPressed: () {
-                          // نمسح الاقتراحات قبل فتح الدايلوج لتفادي بقاء النتائج خلفه
-                          _inlineDebounce?.cancel();
+                    return Container(
+                      color: isSelected ? Colors.white10 : Colors.transparent,
+                      child: ListTile(
+                        tileColor: Colors.transparent,
+                        title: Text(name, style: TextStyle(color: isSelected ? Colors.white : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+                        subtitle: Text('باركود: $barcode  •  سعر: $price  •  متاح: $stock',
+                            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                        onTap: () async {
+                          final item = _inlineSearchResults[i];
+                          await _showProductDetailDialog(item);
+                          if (!mounted) return;
                           setState(() {
                             _inlineSearchResults = [];
                             _inlineLoading = false;
+                            _inlineSelectedIndex = -1;
                           });
-                          _showProductDetailDialog(item);
                         },
-                      ),
 
+                      ),
                     );
                   },
                 ),
@@ -1710,6 +1868,10 @@ class _CashierScreenState extends State<CashierScreen> {
                     onPayAndSave: () {
                       setState(() {});
                       _saveSale(requireFullPayment: true, paymentMethod: 'cash');
+                      Future.microtask(() {
+                        _barcodeController.clear();
+                        FocusScope.of(context).requestFocus(_barcodeFocus);
+                      });
                     },
                     onSaveAsLater: () => _saveSale(requireFullPayment: false, paymentMethod: 'credit'),
                     onSaveAsCard: () => _saveSale(requireFullPayment: true, paymentMethod: 'wallet'),
