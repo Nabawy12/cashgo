@@ -19,11 +19,30 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   final barcodeFocusNode = FocusNode();
   final barcodeController = TextEditingController();
 
+  // NEW: pagination state
+  int displayCount = 50;
+  final ScrollController verticalScrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
     refreshProducts();
+
+    // listener to load more when scrolled to bottom
+    verticalScrollController.addListener(() {
+      if (!verticalScrollController.hasClients) return;
+      final pos = verticalScrollController.position;
+      if (pos.maxScrollExtent <= 0) return;
+      // when close to bottom (threshold 40), try to load more
+      if (pos.pixels >= pos.maxScrollExtent - 40) {
+        final total = filteredProducts.length;
+        if (displayCount < total) {
+          setState(() {
+            displayCount = (displayCount + 50) > total ? total : (displayCount + 50);
+          });
+        }
+      }
+    });
   }
 
   Future<void> refreshProducts() async {
@@ -34,6 +53,11 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
     setState(() {
       products = rows;
       loading = false;
+      // reset pagination on refresh
+      displayCount = 50;
+      if (verticalScrollController.hasClients) {
+        verticalScrollController.jumpTo(0);
+      }
     });
   }
 
@@ -199,7 +223,14 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                           flex: 7,
                           child: CustomFormField(
                             hint: "بحث بواسطه الاسم او الرمز التعريفي",
-                            onChanged: (v) => setState(() => searchQuery = v),
+                            onChanged: (v) => setState(() {
+                              searchQuery = v;
+                              // reset pagination when searching
+                              displayCount = 50;
+                              if (verticalScrollController.hasClients) {
+                                verticalScrollController.jumpTo(0);
+                              }
+                            }),
                             centerHint: true,
                           ),
                         ),
@@ -242,13 +273,18 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                       ))
                           : LayoutBuilder(
                         builder: (context, constraints) {
+                          // only show up to displayCount items (lazy load)
+                          final visibleProducts = filteredProducts.take(displayCount).toList();
+
                           return SingleChildScrollView(
                             scrollDirection: Axis.horizontal,
                             child: ConstrainedBox(
                               constraints:
                               BoxConstraints(minWidth: constraints.maxWidth),
                               child: SingleChildScrollView(
+                                // attach the vertical controller so we can detect reaching bottom
                                 scrollDirection: Axis.vertical,
+                                controller: verticalScrollController,
                                 child: Container(
                                   decoration: BoxDecoration(
                                     border: Border.all(color: Colors.white, width: 1),
@@ -270,7 +306,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                       DataColumn(label: Text('Profit', style: TextStyle(color: Colors.white))),
                                       DataColumn(label: Text('Actions', style: TextStyle(color: Colors.white))),
                                     ],
-                                    rows: filteredProducts.map((p) {
+                                    rows: visibleProducts.map((p) {
                                       final profit = computeProductProfit(p);
                                       final totalUnits = ((p['total_units'] ?? ((p['quantity'] as num) * (p['units_in_carton'] as num) + (p['units_remainder'] ?? 0))) as num).toInt();
                                       final cartons = (p['quantity'] as num).toInt();
@@ -390,6 +426,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   void dispose() {
     barcodeController.dispose();
     barcodeFocusNode.dispose();
+    verticalScrollController.dispose();
     super.dispose();
   }
 }
@@ -662,4 +699,3 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
     );
   }
 }
-

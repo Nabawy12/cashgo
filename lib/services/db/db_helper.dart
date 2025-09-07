@@ -1255,6 +1255,10 @@ class DBHelper {
   Future<Map<String, double>> getDrawerTotals({String? fromDate, String? toDate}) async {
     final db = await instance.database;
 
+    // check if drawer_withdrawn column exists (to stay compatible with older DBs)
+    final cols = await db.rawQuery("PRAGMA table_info(sales);");
+    final hasDrawerWithdrawn = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
+
     String dateCondition = '';
     List<Object?> args = [];
     if (fromDate != null && toDate != null) {
@@ -1267,8 +1271,16 @@ class DBHelper {
       dateCondition = "AND date(date) <= ?";
       args = [toDate];
     }
+
+    // build the cash sales condition (exclude drawer_withdrawn if column exists)
+    String cashWhere = "payment_method = ?";
+    if (hasDrawerWithdrawn) {
+      cashWhere += " AND COALESCE(drawer_withdrawn,0) = 0";
+    }
+
     final salesRow = await db.rawQuery(
-      'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_cash FROM sales WHERE payment_method = ? $dateCondition',
+      'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_cash '
+          'FROM sales WHERE $cashWhere $dateCondition',
       ['cash', ...args],
     );
     final salesNetCash = (salesRow.isNotEmpty && salesRow.first['sales_net_cash'] != null)
@@ -1976,6 +1988,106 @@ class DBHelper {
     await db.update('sales', {'drawer_withdrawn': 1}, where: where, whereArgs: args);
   }
 
+
+  /// حساب ملخّص يومي *بلا تخزين* (on-the-fly)
+  /// date: التاريخ المطلوب (ستُحوَّل إلى YYYY-MM-DD)
+  /// excludeDrawerWithdrawn: لو true (افتراضي) سيتم استثناء الفواتير التي وُسِمَت drawer_withdrawn = 1
+  Future<Map<String, double>> computeDailySummary(DateTime date, {bool excludeDrawerWithdrawn = true}) async {
+    final db = await instance.database;
+    final dateOnly = date.toIso8601String().split('T').first; // YYYY-MM-DD
+
+    // هل العمود drawer_withdrawn موجود؟
+    final cols = await db.rawQuery("PRAGMA table_info(sales);");
+    final hasDrawerWithdrawn = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
+
+    // شرط الفلاتر حسب وجود العمود ورغبتك
+    String cashWhere = "payment_method = 'cash'";
+    if (excludeDrawerWithdrawn && hasDrawerWithdrawn) {
+      cashWhere += " AND COALESCE(drawer_withdrawn,0) = 0";
+    }
+
+    // إجمالي المبيعات (عمود total من sales) لذلك نأخذ SUM(total)
+    final salesTotalRow = await db.rawQuery(
+      "SELECT SUM(COALESCE(total,0)) as sales_total FROM sales WHERE date(date) = ?",
+      [dateOnly],
+    );
+    final salesTotal = (salesTotalRow.isNotEmpty && salesTotalRow.first['sales_total'] != null)
+        ? (salesTotalRow.first['sales_total'] as num).toDouble()
+        : 0.0;
+
+    // ما تم تحصيله نقدًا (net = paid_amount - change_amount) مع إمكانية استثناء drawer_withdrawn
+    final salesPaidCashRow = await db.rawQuery(
+      "SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_paid_cash FROM sales WHERE $cashWhere AND date(date) = ?",
+      [dateOnly],
+    );
+    final salesPaidCash = (salesPaidCashRow.isNotEmpty && salesPaidCashRow.first['sales_paid_cash'] != null)
+        ? (salesPaidCashRow.first['sales_paid_cash'] as num).toDouble()
+        : 0.0;
+
+    // ما تم تحصيله كـ كارد/محفظة (نعتمد على payment_method 'card' أو 'wallet')
+    final salesPaidCardRow = await db.rawQuery(
+      "SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_paid_card "
+          "FROM sales WHERE (payment_method = 'card' OR payment_method = 'wallet' OR lower(payment_method) LIKE '%card%') AND date(date) = ?",
+      [dateOnly],
+    );
+    final salesPaidCard = (salesPaidCardRow.isNotEmpty && salesPaidCardRow.first['sales_paid_card'] != null)
+        ? (salesPaidCardRow.first['sales_paid_card'] as num).toDouble()
+        : 0.0;
+
+    // ما دفع للنقد في سندات الشراء لنفس اليوم
+    final purchasesRow = await db.rawQuery(
+      "SELECT SUM(COALESCE(paid_amount,0)) as purchases_paid_cash FROM purchase_receipts WHERE payment_type = 'cash' AND date(created_at) = ?",
+      [dateOnly],
+    );
+    final purchasesPaidCash = (purchasesRow.isNotEmpty && purchasesRow.first['purchases_paid_cash'] != null)
+        ? (purchasesRow.first['purchases_paid_cash'] as num).toDouble()
+        : 0.0;
+
+    // مجموع paid_delta في sale_returns لليوم (يمكن إيجابي أو سلبي حسب الحالة)
+    final returnsRow = await db.rawQuery(
+      "SELECT SUM(COALESCE(paid_delta,0)) as returns_delta FROM sale_returns WHERE date(date) = ?",
+      [dateOnly],
+    );
+    final returnsDelta = (returnsRow.isNotEmpty && returnsRow.first['returns_delta'] != null)
+        ? (returnsRow.first['returns_delta'] as num).toDouble()
+        : 0.0;
+
+    // نرجع خريطة منظمة قابلة للاستخدام فورًا
+    return {
+      'date': 0.0, // placeholder — لا تعيد التاريخ هنا كرقم، استخدم dateOnly من الطرف المستدعي
+      'sales_total': salesTotal,
+      'sales_paid_cash': salesPaidCash,
+      'sales_paid_card': salesPaidCard,
+      'purchases_paid_cash': purchasesPaidCash,
+      'returns_delta': returnsDelta,
+    };
+  }
+
+
+// examples to add into DBHelper class
+
+// getProducts with offset+limit (pagination)
+  Future<List<Map<String, dynamic>>> getProducts({int offset = 0, int limit = 50}) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'products',
+      orderBy: 'id ASC',
+      limit: limit,
+      offset: offset,
+    );
+    return maps;
+  }
+
+// search products by name or barcode (returns ALL matches)
+  Future<List<Map<String, dynamic>>> searchProducts(String q) async {
+    final db = await database;
+    final pattern = '%${q.replaceAll("'", "''").toLowerCase()}%';
+    final List<Map<String, dynamic>> maps = await db.rawQuery(
+      "SELECT * FROM products WHERE LOWER(name) LIKE ? OR LOWER(barcode) LIKE ? ORDER BY id ASC",
+      [pattern, pattern],
+    );
+    return maps;
+  }
 
 
 }
