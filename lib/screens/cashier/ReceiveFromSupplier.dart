@@ -331,73 +331,40 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
       return;
     }
 
-    setState(() => _loading = true);
+    // parse values from current form controls
+    final unitsInCarton = int.tryParse(_unitsInCartonCtrl.text.trim()) ?? 0;
+    final existingUnits = int.tryParse(_existingUnitsCtrl.text.trim()) ?? 0;
+
+    int cartons = 0;
+    int remainder = existingUnits;
+    if (unitsInCarton > 0) {
+      cartons = existingUnits ~/ unitsInCarton;
+      remainder = existingUnits % unitsInCarton;
+    }
+
+    // prepare product map to update (keep other fields from the form to avoid wiping)
+    final prodUpdate = {
+      'id': _selectedProductId,
+      'barcode': _barcodeCtrl.text.trim(),
+      'name': _nameCtrl.text.trim(),
+      'units_in_carton': unitsInCarton,
+      'quantity': cartons,
+      'units_remainder': remainder,
+      'purchase_price': double.tryParse(_purchasePricePerCartonCtrl.text.trim()) ?? 0.0,
+      'selling_price': double.tryParse(_sellingPriceIfNewCtrl.text.trim()) ?? 0.0,
+      'production_date': null,
+      'expiry_date': null,
+    };
+
     try {
-      // جلب السجل الحالي مباشرة من جدول products
-      final db = await DBHelper.instance.database;
-      final rows = await db.query('products', where: 'id = ?', whereArgs: [_selectedProductId], limit: 1);
-      if (rows.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم أجد المنتج في قاعدة البيانات.')));
-        setState(() => _loading = false);
-        return;
-      }
-      final current = Map<String, dynamic>.from(rows.first);
-
-      // قراءة القيم الحالية من الداتا بيس بحذر (عدة أسماء محتملة للحقل)
-      int dbUnitsInCarton = 0;
-      try {
-        if (current['units_in_carton'] != null) dbUnitsInCarton = (current['units_in_carton'] as num).toInt();
-        else if (current['unitsInCarton'] != null) dbUnitsInCarton = (current['unitsInCarton'] as num).toInt();
-        else if (current['unit_in_carton'] != null) dbUnitsInCarton = (current['unit_in_carton'] as num).toInt();
-      } catch (_) {}
-      int dbQuantity = 0;
-      try {
-        if (current['quantity'] != null) dbQuantity = (current['quantity'] as num).toInt();
-      } catch (_) {}
-
-      // القيمة التي يريد المستخدم حفظها في الحقل (الوحدات الفردية الحالية)
-      int newRemainder = int.tryParse(_existingUnitsCtrl.text.trim()) ?? 0;
-      if (newRemainder < 0) newRemainder = 0;
-
-      // نقيد الباقي بحيث لا نغير عدد الكراتين هنا
-      if (dbUnitsInCarton > 0) {
-        final maxRemainder = dbUnitsInCarton - 1;
-        if (newRemainder > maxRemainder) {
-          newRemainder = maxRemainder;
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('تم حفظ الوحدات الفردية لكن تم تقليصها إلى الحد الأقصى ($maxRemainder) لأننا لا نغيّر الكراتين هنا.'),
-          ));
-        }
-      }
-
-      // إعداد خريطة للتحديث مع الحفاظ على quantity كما هي
-      final prodUpdate = Map<String, dynamic>.from(current);
-      prodUpdate['id'] = _selectedProductId;
-      prodUpdate['units_remainder'] = newRemainder;
-      // لا نغير 'quantity' ولا 'units_in_carton' هنا
-
-      // نُحدّث حقول اختيارية من الفورم إذا كانت موجودة (حتى لا نمسح بيانات مهمة)
-      if (_barcodeCtrl.text.trim().isNotEmpty) prodUpdate['barcode'] = _barcodeCtrl.text.trim();
-      if (_nameCtrl.text.trim().isNotEmpty) prodUpdate['name'] = _nameCtrl.text.trim();
-      if (_purchasePricePerCartonCtrl.text.trim().isNotEmpty) {
-        final v = double.tryParse(_purchasePricePerCartonCtrl.text.replaceAll(',', '').trim());
-        if (v != null) prodUpdate['purchase_price'] = v;
-      }
-      if (_sellingPriceIfNewCtrl.text.trim().isNotEmpty) {
-        final v = double.tryParse(_sellingPriceIfNewCtrl.text.replaceAll(',', '').trim());
-        if (v != null) prodUpdate['selling_price'] = v;
-      }
-
       await DBHelper.instance.updateProduct(prodUpdate);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تحديث الوحدات الفردية بنجاح')));
-
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تحديث المخزون بنجاح')));
       await _loadProducts();
+      // reflect updated values in UI
       _fillFieldsFromProduct(prodUpdate);
     } catch (e) {
       debugPrint('Error updating product: $e');
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء تحديث المنتج: $e')));
-    } finally {
-      setState(() => _loading = false);
     }
   }
 
@@ -666,6 +633,24 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                   controller: _nameCtrl,
                   hint: 'اسم المنتج',
                 ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: CustomFormField(
+                        controller: _existingUnitsCtrl,
+                        hint: 'الوحدات الفردية الحالية (قابلة للتعديل)',
+                        keyboardType: TextInputType.number,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'حفظ التعديل على المخزون الحالي',
+                      icon: const Icon(Icons.save, color: Colors.white),
+                      onPressed: _applyStockEdit,
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 10),
                 Row(
                   children: [
@@ -679,16 +664,11 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: CustomFormField(
-                        controller: _existingUnitsCtrl,
-                        hint: 'الوحدات الفردية الحالية (قابلة للتعديل)',
+                        controller: _unitsCtrl,
                         keyboardType: TextInputType.number,
+                        hint: 'عدد وحدات فردية',
+                        onChanged: (_) => _updateComputedPaid(),
                       ),
-                    ),
-                    SizedBox(width: 5,),
-                    IconButton(
-                      tooltip: 'حفظ التعديل على المخزون الحالي',
-                      icon: const Icon(Icons.save, color: Colors.white),
-                      onPressed: _applyStockEdit,
                     ),
                   ],
                 ),
