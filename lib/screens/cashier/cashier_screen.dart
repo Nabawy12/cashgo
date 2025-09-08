@@ -1871,12 +1871,11 @@ class _CashierScreenState extends State<CashierScreen> {
                       if (event is RawKeyDownEvent) {
                         final key = event.logicalKey;
                         if (key == LogicalKeyboardKey.arrowDown) {
-                          // تعامل محليًا مع السهم للأسفل
                           setState(() {
                             _inlineSelectedIndex = (_inlineSelectedIndex + 1).clamp(0, _inlineSearchResults.length - 1);
                           });
                           _scrollInlineToIndex(_inlineSelectedIndex);
-                          return KeyEventResult.handled; // منع الـ platform من تنفيذ performSelectors
+                          return KeyEventResult.handled;
                         } else if (key == LogicalKeyboardKey.arrowUp) {
                           setState(() {
                             _inlineSelectedIndex = (_inlineSelectedIndex - 1).clamp(0, _inlineSearchResults.length - 1);
@@ -1884,14 +1883,14 @@ class _CashierScreenState extends State<CashierScreen> {
                           _scrollInlineToIndex(_inlineSelectedIndex);
                           return KeyEventResult.handled;
                         } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
-                          final idx = _inlineSelectedIndex >= 0 ? _inlineSelectedIndex : 0;
+                          // <-- التغيير: نتعامل مع Enter فقط لو في نتائج للبحث بالكلمة
                           if (_inlineSearchResults.isNotEmpty) {
-                            final item = _inlineSearchResults[idx];
+                            final idx = _inlineSelectedIndex >= 0 ? _inlineSelectedIndex : 0;
                             if (_dialogOpening) return KeyEventResult.handled;
                             _dialogOpening = true;
                             Future.microtask(() async {
                               try {
-                                await _showProductDetailDialog(item);
+                                await _showProductDetailDialog(_inlineSearchResults[idx]);
                               } finally {
                                 if (!mounted) return;
                                 setState(() {
@@ -1902,8 +1901,10 @@ class _CashierScreenState extends State<CashierScreen> {
                                 });
                               }
                             });
+                            return KeyEventResult.handled;
                           }
-                          return KeyEventResult.handled;
+                          // لو مفيش نتائج، متقبّضش على Enter هنا علشان يسمح بعمل onSubmitted (الباركود)
+                          return KeyEventResult.ignored;
                         } else if (key == LogicalKeyboardKey.escape) {
                           setState(() {
                             _inlineSearchResults = [];
@@ -1941,15 +1942,14 @@ class _CashierScreenState extends State<CashierScreen> {
                         onSubmitted: (v) async {
                           final trimmed = v.trim();
                           if (trimmed.isEmpty) return;
+
                           final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
 
                           if (containsLetters) {
                             if (_inlineSearchResults.isNotEmpty) {
                               final first = _inlineSearchResults.first;
-
                               if (_dialogOpening) return;
                               _dialogOpening = true;
-
                               try {
                                 await _showProductDetailDialog(first);
                               } finally {
@@ -1965,7 +1965,17 @@ class _CashierScreenState extends State<CashierScreen> {
                               await _openNameSearchDialog(initialQuery: trimmed);
                             }
                           } else {
+                            // === barcode path: بحث بالباركود وإضافة للسلة ===
                             await _onBarcodeSubmitted(trimmed);
+
+                            // تنظيف الحقل وإرجاع الفوكس للباركود (مريح للكاشير)
+                            if (!mounted) return;
+                            setState(() {
+                              _barcodeController.clear();
+                              _inlineSearchResults = [];
+                              _inlineSelectedIndex = -1;
+                            });
+                            FocusScope.of(context).requestFocus(_barcodeFocus);
                           }
                         },
                         decoration: InputDecoration(
