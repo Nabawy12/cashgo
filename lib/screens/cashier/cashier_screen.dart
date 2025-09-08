@@ -21,6 +21,13 @@ import '../shared/login_screen.dart';
 import 'ReceiveFromSupplier.dart';
 import 'histroy.dart';
 
+// ضع هذه التعاريف أعلى الملف (قبل CashierScreen)
+class ArrowDownIntent extends Intent { const ArrowDownIntent(); }
+class ArrowUpIntent extends Intent { const ArrowUpIntent(); }
+class EnterIntent extends Intent { const EnterIntent(); }
+class EscapeIntent extends Intent { const EscapeIntent(); }
+
+
 class CashierScreen extends StatefulWidget {
   static const routName = "/Cashier";
   final String cashierUsername;
@@ -46,6 +53,8 @@ class _CashierScreenState extends State<CashierScreen> {
   double _cardTotalAvailable = 0.0; // wallet + untransferred
   double Drawer = 0.0; // wallet + untransferred
   bool _dialogOpening = false;
+  final nameFocus = FocusNode();
+
 
 
   // --------- Discount state ----------
@@ -1277,33 +1286,31 @@ class _CashierScreenState extends State<CashierScreen> {
       context: context,
       barrierDismissible: true,
       builder: (ctx) {
-        List<Map<String, dynamic>> results = [];
-        bool loading = false;
-        Timer? debounce;
-        final controller = TextEditingController(text: initialQuery);
-
-        // وظيفة مساعدة للبحث مع debounce داخل StatefulBuilder
         return Directionality(
           textDirection: TextDirection.rtl,
           child: StatefulBuilder(builder: (ctx2, setState2) {
+            List<Map<String, dynamic>> results = [];
+            bool loading = false;
+            Timer? debounce;
+            final controller = TextEditingController(text: initialQuery);
+            final FocusNode textFocus = FocusNode();
+            final FocusNode keyFocus = FocusNode();
+            final ScrollController scrollController = ScrollController();
+            int selectedIndex = -1;
+
             Future<void> runSearch(String q) async {
-              setState2(() {
-                loading = true;
-              });
+              setState2(() => loading = true);
               try {
                 final rows = await DBHelper.instance.searchProductsByName(q, limit: 50);
                 setState2(() {
                   results = rows;
+                  selectedIndex = results.isNotEmpty ? 0 : -1;
                 });
               } catch (e) {
                 debugPrint('searchProductsByName error: $e');
-                setState2(() {
-                  results = [];
-                });
+                setState2(() { results = []; selectedIndex = -1; });
               } finally {
-                setState2(() {
-                  loading = false;
-                });
+                setState2(() => loading = false);
               }
             }
 
@@ -1311,93 +1318,228 @@ class _CashierScreenState extends State<CashierScreen> {
               debounce?.cancel();
               debounce = Timer(const Duration(milliseconds: 300), () {
                 if (q.trim().isNotEmpty) runSearch(q);
-                else setState2(() => results = []);
+                else setState2(() { results = []; selectedIndex = -1; });
               });
             }
 
-            // if initialQuery موجود نفذ بحث مبدئي
+            void ensureSelectedVisible() {
+              if (!scrollController.hasClients || selectedIndex < 0) return;
+              const itemHeight = 72.0;
+              final offset = (selectedIndex * itemHeight).clamp(0.0, scrollController.position.maxScrollExtent);
+              scrollController.animateTo(offset, duration: const Duration(milliseconds: 150), curve: Curves.easeInOut);
+            }
+
+            void _ensureKeyFocusAndUnfocusTextIfNeeded() {
+              if (textFocus.hasFocus) {
+                try { textFocus.unfocus(); } catch (_) {}
+              }
+              if (!keyFocus.hasFocus) {
+                FocusScope.of(ctx2).requestFocus(keyFocus);
+              }
+            }
+
             if (initialQuery.trim().isNotEmpty && results.isEmpty && !loading) {
               Future.microtask(() => runSearch(initialQuery));
             }
+            String customInputText = controller.text;
 
-            return AlertDialog(
-              backgroundColor: AppColorsDark.bgCardColor,
-              title: const Center(child: Text('ابحث بالاسم', style: TextStyle(color: Colors.white))),
-              content: SizedBox(
-                width: double.maxFinite,
-                height: 420, // ارتفاع مناسب ليظهر القائمة والبحث
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: controller,
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        hintText: 'اكتب اسم المنتج...',
-                        filled: true,
-                        fillColor: AppColorsDark.bgColor,
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                        suffixIcon: loading ? const SizedBox(width:24, height:24, child: CircularProgressIndicator()) : null,
+            Widget buildCustomInput() {
+              return GestureDetector(
+                onTap: () {
+                  // اطلب الفوكس لكي نلتقط مفاتيح الكيبورد عبر RawKeyboardListener
+                  if (!textFocus.hasFocus) FocusScope.of(ctx2).requestFocus(textFocus);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColorsDark.bgColor,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white10),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          customInputText.isEmpty ? 'اكتب اسم المنتج...' : customInputText,
+                          style: TextStyle(
+                            color: customInputText.isEmpty ? Colors.white38 : Colors.white,
+                            fontSize: 16,
+                          ),
+                        ),
                       ),
-                      onChanged: (v) => scheduleSearch(v),
-                      onSubmitted: (v) => runSearch(v),
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                    const SizedBox(height: 12),
-                    Expanded(
-                      child: loading
-                          ? const Center(child: Text('جاري البحث...', style: TextStyle(color: Colors.white70)))
-                          : results.isEmpty
-                          ? const Center(child: Text('لا توجد نتائج', style: TextStyle(color: Colors.white70)))
-                          : ListView.separated(
-                        itemCount: results.length,
-                        separatorBuilder: (_, __) => const Divider(height: 0.5, color: Colors.white10),
-                        itemBuilder: (context, i) {
-                          final item = results[i];
-                          final name = (item['name'] ?? '').toString();
-                          final barcode = (item['barcode'] ?? '').toString();
-                          final price = (item['selling_price'] ?? item['sellingPrice'] ?? '').toString();
-                          final stock = (item['total_units'] ?? 0).toString();
+                      if (loading)
+                        const SizedBox(width: 12, height: 12, child: CircularProgressIndicator())
+                      else if (customInputText.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white70),
+                          onPressed: () {
+                            setState2(() {
+                              customInputText = '';
+                              controller.text = '';
+                              results = [];
+                              selectedIndex = -1;
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            }
 
-                          return ListTile(
-                            tileColor: Colors.transparent,
-                            title: Text(name, style: const TextStyle(color: Colors.white)),
-                            subtitle: Text('باركود: $barcode  •  سعر: $price  •  متاح: $stock',
-                                style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                            onTap: () async {
-                              // منع النداء لو هناك دايلوج مفتوح حاليا
-                              if (_dialogOpening) return;
-                              _dialogOpening = true;
+            return Shortcuts(
+              shortcuts: <LogicalKeySet, Intent>{
+                LogicalKeySet(LogicalKeyboardKey.arrowDown): const ArrowDownIntent(),
+                LogicalKeySet(LogicalKeyboardKey.arrowUp): const ArrowUpIntent(),
+                LogicalKeySet(LogicalKeyboardKey.enter): const EnterIntent(),
+                LogicalKeySet(LogicalKeyboardKey.numpadEnter): const EnterIntent(),
+                LogicalKeySet(LogicalKeyboardKey.escape): const EscapeIntent(),
+              },
+              child: Actions(
+                actions: <Type, Action<Intent>>{
+                  ArrowDownIntent: CallbackAction<ArrowDownIntent>(onInvoke: (intent) {
+                    _ensureKeyFocusAndUnfocusTextIfNeeded();
+                    if (results.isNotEmpty) {
+                      setState2(() {
+                        selectedIndex = (selectedIndex + 1).clamp(0, results.length - 1);
+                      });
+                      WidgetsBinding.instance.addPostFrameCallback((_) => ensureSelectedVisible());
+                    }
+                    return null;
+                  }),
+                  ArrowUpIntent: CallbackAction<ArrowUpIntent>(onInvoke: (intent) {
+                    _ensureKeyFocusAndUnfocusTextIfNeeded();
+                    if (results.isNotEmpty) {
+                      setState2(() {
+                        selectedIndex = (selectedIndex - 1).clamp(0, results.length - 1);
+                      });
+                      WidgetsBinding.instance.addPostFrameCallback((_) => ensureSelectedVisible());
+                    }
+                    return null;
+                  }),
+                  EnterIntent: CallbackAction<EnterIntent>(onInvoke: (intent) {
+                    if (selectedIndex >= 0 && selectedIndex < results.length) {
+                      final item = results[selectedIndex];
+                      if (_dialogOpening) return null;
+                      _dialogOpening = true;
+                      Future.microtask(() async {
+                        try {
+                          await _showProductDetailDialog(item);
+                        } finally {
+                          if (!mounted) return;
+                          setState(() {
+                            _inlineSearchResults = [];
+                            _inlineLoading = false;
+                            _inlineSelectedIndex = -1;
+                            _dialogOpening = false;
+                          });
+                        }
+                      });
+                    } else {
+                      if (controller.text.trim().isNotEmpty) runSearch(controller.text.trim());
+                    }
+                    return null;
+                  }),
+                  EscapeIntent: CallbackAction<EscapeIntent>(onInvoke: (intent) {
+                    Navigator.of(ctx2).pop();
+                    return null;
+                  }),
+                },
 
-                              try {
-                                await _showProductDetailDialog(item);
-                              } finally {
-                                if (!mounted) return;
-                                setState(() {
-                                  _inlineSearchResults = [];
-                                  _inlineLoading = false;
-                                  _inlineSelectedIndex = -1;
-                                  _dialogOpening = false;
-                                });
-                              }
-                            },
+                child: RawKeyboardListener(
+                  focusNode: textFocus,
+                  onKey: (RawKeyEvent event) {
+                    if (event is RawKeyDownEvent) {
+                      final key = event.logicalKey;
 
-                          );
-                        },
-                      ),
-                    ),
-                  ],
+                      // handle printable characters (event.character may be null on some platforms, but often works on macOS)
+                      final char = (event.character ?? '');
+                      if (char.isNotEmpty && char.codeUnitAt(0) != 10 && !event.isControlPressed && !event.isMetaPressed) {
+                        // append printable character
+                        setState2(() {
+                          customInputText += char;
+                          controller.text = customInputText;
+                        });
+                        scheduleSearch(customInputText);
+                        return;
+                      }
+
+                      if (key == LogicalKeyboardKey.backspace) {
+                        setState2(() {
+                          if (customInputText.isNotEmpty) {
+                            customInputText = customInputText.substring(0, customInputText.length - 1);
+                            controller.text = customInputText;
+                            if (customInputText.trim().isEmpty) {
+                              results = [];
+                              selectedIndex = -1;
+                            } else {
+                              scheduleSearch(customInputText);
+                            }
+                          }
+                        });
+                        return;
+                      }
+
+                      if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
+                        // نفّذ بحث نهائي أو افتح العنصر المختار
+                        if (customInputText.trim().isNotEmpty && results.isEmpty) {
+                          runSearch(customInputText.trim());
+                        } else if (selectedIndex >= 0 && selectedIndex < results.length) {
+                          final item = results[selectedIndex];
+                          if (_dialogOpening) return;
+                          _dialogOpening = true;
+                          Future.microtask(() async {
+                            try {
+                              await _showProductDetailDialog(item);
+                            } finally {
+                              if (!mounted) return;
+                              setState(() {
+                                _inlineSearchResults = [];
+                                _inlineLoading = false;
+                                _inlineSelectedIndex = -1;
+                                _dialogOpening = false;
+                              });
+                            }
+                          });
+                        }
+                        return;
+                      }
+
+                      if (key == LogicalKeyboardKey.escape) {
+                        Navigator.of(ctx2).pop();
+                        return;
+                      }
+
+                      // arrows: نحول الفوكس إلى keyFocus لأننا نريد أنها تستخدم لتنقّل النتائج
+                      if (key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.arrowUp) {
+                        // ننقل الفوكس لالتقاط الأسهم في المكان اللي يتعامل مع التنقّل (keyFocus موجود في الـ dialog)
+                        if (!keyFocus.hasFocus) FocusScope.of(ctx2).requestFocus(keyFocus);
+
+                        // وإذا أردتي يمكن هنا أيضًا التحكم المباشر بتغيير selectedIndex
+                        if (results.isNotEmpty) {
+                          setState2(() {
+                            if (key == LogicalKeyboardKey.arrowDown) {
+                              selectedIndex = (selectedIndex + 1).clamp(0, results.length - 1);
+                            } else {
+                              selectedIndex = (selectedIndex - 1).clamp(0, results.length - 1);
+                            }
+                          });
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            // scroll to selected
+                            const itemHeight = 72.0;
+                            if (scrollController.hasClients && selectedIndex >= 0) {
+                              final offset = (selectedIndex * itemHeight).clamp(0.0, scrollController.position.maxScrollExtent);
+                              scrollController.animateTo(offset, duration: const Duration(milliseconds: 150), curve: Curves.easeInOut);
+                            }
+                          });
+                        }
+                        return;
+                      }
+                    }
+                  },
+                  child: buildCustomInput(),
                 ),
               ),
-              actions: [
-                TextButton(
-                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
-                  onPressed: () {
-                    debounce?.cancel();
-                    Navigator.of(ctx2).pop();
-                  },
-                  child: const Text('إغلاق', style: TextStyle(color: Colors.white)),
-                ),
-              ],
             );
           }),
         );
@@ -1723,9 +1865,56 @@ class _CashierScreenState extends State<CashierScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Expanded(
-                  child: RawKeyboardListener(
+                  child: Focus(
                     focusNode: _inlineKeyboardNode,
-                    onKey: _handleInlineKey,
+                    onKey: (FocusNode node, RawKeyEvent event) {
+                      if (event is RawKeyDownEvent) {
+                        final key = event.logicalKey;
+                        if (key == LogicalKeyboardKey.arrowDown) {
+                          // تعامل محليًا مع السهم للأسفل
+                          setState(() {
+                            _inlineSelectedIndex = (_inlineSelectedIndex + 1).clamp(0, _inlineSearchResults.length - 1);
+                          });
+                          _scrollInlineToIndex(_inlineSelectedIndex);
+                          return KeyEventResult.handled; // منع الـ platform من تنفيذ performSelectors
+                        } else if (key == LogicalKeyboardKey.arrowUp) {
+                          setState(() {
+                            _inlineSelectedIndex = (_inlineSelectedIndex - 1).clamp(0, _inlineSearchResults.length - 1);
+                          });
+                          _scrollInlineToIndex(_inlineSelectedIndex);
+                          return KeyEventResult.handled;
+                        } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
+                          final idx = _inlineSelectedIndex >= 0 ? _inlineSelectedIndex : 0;
+                          if (_inlineSearchResults.isNotEmpty) {
+                            final item = _inlineSearchResults[idx];
+                            if (_dialogOpening) return KeyEventResult.handled;
+                            _dialogOpening = true;
+                            Future.microtask(() async {
+                              try {
+                                await _showProductDetailDialog(item);
+                              } finally {
+                                if (!mounted) return;
+                                setState(() {
+                                  _inlineSearchResults = [];
+                                  _inlineLoading = false;
+                                  _inlineSelectedIndex = -1;
+                                  _dialogOpening = false;
+                                });
+                              }
+                            });
+                          }
+                          return KeyEventResult.handled;
+                        } else if (key == LogicalKeyboardKey.escape) {
+                          setState(() {
+                            _inlineSearchResults = [];
+                            _inlineLoading = false;
+                            _inlineSelectedIndex = -1;
+                          });
+                          return KeyEventResult.handled;
+                        }
+                      }
+                      return KeyEventResult.ignored;
+                    },
                     child: Directionality(
                       textDirection: TextDirection.rtl,
                       child: TextField(

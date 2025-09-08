@@ -26,6 +26,9 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   final _purchasePricePerUnitCtrl = TextEditingController();
   final _sellingPriceIfNewCtrl = TextEditingController();
   final _paidAmountCtrl = TextEditingController();
+  // for showing/editing existing single units
+  final _existingUnitsCtrl = TextEditingController(text: '0');
+
   // merged نقدي و آجل into a single option: we'll infer "credit" vs "cash" from paid vs total
   String _paymentType = 'cash_or_credit';
   bool _loading = false;
@@ -33,11 +36,45 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   // NEW: track whether user manually edited the paid field
   bool _paidTouched = false;
 
+  // NEW: focus node so we can lookup when user finishes barcode input
+  final FocusNode _barcodeFocusNode = FocusNode();
+
+  // products cache for picker
+  List<Map<String, dynamic>> _products = [];
+  bool _loadingProducts = false;
+
+  // human-readable current stock summary
+  String _currentStockText = '';
+  int? _selectedProductId;
+
   @override
   void initState() {
     super.initState();
     // تأكد من أن قيمة الحقل المدفوع مناسبة لحالة الدفع الابتدائية
-    WidgetsBinding.instance.addPostFrameCallback((_) => _updateComputedPaid());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _updateComputedPaid();
+      _loadProducts();
+    });
+
+    // when barcode field loses focus, try to lookup the product and autofill
+    _barcodeFocusNode.addListener(() {
+      if (!_barcodeFocusNode.hasFocus) {
+        _lookupBarcode();
+      }
+    });
+  }
+
+  Future<void> _loadProducts() async {
+    setState(() => _loadingProducts = true);
+    try {
+      final rows = await DBHelper.instance.getAllProducts();
+      setState(() {
+        _products = rows;
+      });
+    } catch (e) {
+      debugPrint('Error loading products: $e');
+    }
+    setState(() => _loadingProducts = false);
   }
 
   @override
@@ -51,6 +88,8 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     _purchasePricePerUnitCtrl.dispose();
     _sellingPriceIfNewCtrl.dispose();
     _paidAmountCtrl.dispose();
+    _existingUnitsCtrl.dispose();
+    _barcodeFocusNode.dispose();
     super.dispose();
   }
 
@@ -62,6 +101,27 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   int _parseInt(String? s) {
     if (s == null) return 0;
     return int.tryParse(s) ?? 0;
+  }
+
+  /// Helper: try to extract a numeric field from product map using several common keys
+  double _extractDoubleFromProduct(Map<String, dynamic> p, List<String> keys) {
+    for (final k in keys) {
+      if (p.containsKey(k) && p[k] != null) {
+        final v = p[k];
+        if (v is num) return v.toDouble();
+        if (v is String) return double.tryParse(v) ?? 0.0;
+      }
+    }
+    return 0.0;
+  }
+
+  String? _extractStringFromProduct(Map<String, dynamic> p, List<String> keys) {
+    for (final k in keys) {
+      if (p.containsKey(k) && p[k] != null) {
+        return p[k].toString();
+      }
+    }
+    return null;
   }
 
   /// Compute total cost using the same logic DBHelper.receiveFromSupplier uses:
@@ -114,6 +174,231 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
       _paidAmountCtrl.text = total.toStringAsFixed(2);
     }
     setState(() {}); // refresh UI if needed
+  }
+
+  /// Try to lookup product by barcode and autofill fields when found.
+  Future<void> _lookupBarcode() async {
+    final barcode = _barcodeCtrl.text.trim();
+    if (barcode.isEmpty) return;
+
+    setState(() => _loading = true);
+    try {
+      final db = DBHelper.instance;
+
+      final product = await db.getProductByBarcode(barcode);
+
+      // debug print of DB row to help if keys differ
+      debugPrint('LOOKUP product row: $product');
+
+      if (product == null) {
+        // nothing found: do not clear all fields but inform user
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم يتم العثور على منتج بهذا الباركود.')));
+      } else {
+        _fillFieldsFromProduct(Map<String, dynamic>.from(product));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم ملء بيانات المنتج تلقائياً.')));
+      }
+    } catch (e) {
+      debugPrint('Barcode lookup error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء جلب بيانات المنتج: $e')));
+    }
+    setState(() => _loading = false);
+  }
+
+  void _fillFieldsFromProduct(Map<String, dynamic> p) {
+    // remember selected product id
+    try {
+      _selectedProductId = (p['id'] != null) ? (p['id'] as num).toInt() : null;
+    } catch (e) {
+      _selectedProductId = null;
+    }
+
+    final name = _extractStringFromProduct(p, ['name', 'product_name', 'title', 'title_ar']);
+
+    // units in carton
+    int unitsInCarton = 0;
+    try {
+      if (p.containsKey('units_in_carton') && p['units_in_carton'] != null) unitsInCarton = (p['units_in_carton'] as num).toInt();
+      else if (p.containsKey('unitsInCarton') && p['unitsInCarton'] != null) unitsInCarton = (p['unitsInCarton'] as num).toInt();
+      else if (p.containsKey('unit_in_carton') && p['unit_in_carton'] != null) unitsInCarton = (p['unit_in_carton'] as num).toInt();
+    } catch (e) {
+      unitsInCarton = 0;
+    }
+
+    // try to determine total units using a few heuristics / possible keys
+    int totalUnits = 0;
+    try {
+      if (p.containsKey('total_units') && p['total_units'] != null) {
+        totalUnits = (p['total_units'] as num).toInt();
+      } else if (p.containsKey('units') && p['units'] != null) {
+        totalUnits = (p['units'] as num).toInt();
+      } else if (p.containsKey('units_remainder') && p['units_remainder'] != null) {
+        final cartons = (p['quantity'] ?? 0) as num;
+        final remainder = (p['units_remainder'] as num).toInt();
+        totalUnits = cartons.toInt() * (unitsInCarton > 0 ? unitsInCarton : 0) + remainder;
+      } else if (p.containsKey('units_outside') && p['units_outside'] != null) {
+        final cartons = (p['quantity'] ?? 0) as num;
+        final remainder = (p['units_outside'] as num).toInt();
+        totalUnits = cartons.toInt() * (unitsInCarton > 0 ? unitsInCarton : 0) + remainder;
+      } else if (p.containsKey('quantity') && p['quantity'] != null) {
+        final q = (p['quantity'] as num).toInt();
+        if (unitsInCarton > 0) {
+          if (q > unitsInCarton * 5) {
+            totalUnits = q; // treat as total units
+          } else {
+            totalUnits = q * unitsInCarton;
+            if (p.containsKey('units_remainder') && p['units_remainder'] != null) {
+              totalUnits += (p['units_remainder'] as num).toInt();
+            }
+          }
+        } else {
+          totalUnits = q;
+        }
+      }
+    } catch (e) {
+      totalUnits = 0;
+    }
+
+    totalUnits = totalUnits < 0 ? 0 : totalUnits;
+
+    // derive cartons and remainder from totalUnits when possible
+    int cartons = 0;
+    int remainder = 0;
+    if (unitsInCarton > 0 && totalUnits > 0) {
+      cartons = totalUnits ~/ unitsInCarton;
+      remainder = totalUnits % unitsInCarton;
+    } else {
+      try {
+        cartons = (p['quantity'] ?? 0) as int;
+      } catch (e) {
+        cartons = ((p['quantity'] ?? 0) as num).toInt();
+      }
+      try {
+        remainder = (p['units_remainder'] ?? p['units_outside'] ?? 0) as int;
+      } catch (e) {
+        remainder = ((p['units_remainder'] ?? p['units_outside'] ?? 0) as num).toInt();
+      }
+      if (unitsInCarton > 0) {
+        totalUnits = cartons * unitsInCarton + remainder;
+      } else {
+        totalUnits = cartons + remainder;
+      }
+    }
+
+    // prices
+    final purchaseCarton = _extractDoubleFromProduct(p, ['purchase_price', 'purchase_price_per_carton', 'purchase_per_carton', 'price_carton']);
+    final purchaseUnit = _extractDoubleFromProduct(p, ['purchase_price_per_unit', 'purchase_per_unit', 'price_unit']);
+    final sellingUnit = _extractDoubleFromProduct(p, ['selling_price', 'selling_price_per_unit', 'price']);
+
+    // fill form fields
+    if (name != null) _nameCtrl.text = name;
+    _unitsInCartonCtrl.text = (unitsInCarton > 0) ? unitsInCarton.toString() : '1';
+    // don't overwrite user's input for receiving cartons/units: show current stock separately
+    _existingUnitsCtrl.text = remainder.toString();
+
+    if (purchaseCarton > 0) {
+      _purchasePricePerCartonCtrl.text = purchaseCarton.toStringAsFixed(2);
+      if (purchaseUnit <= 0 && unitsInCarton > 0) {
+        _purchasePricePerUnitCtrl.text = (purchaseCarton / unitsInCarton).toStringAsFixed(2);
+      } else if (purchaseUnit > 0) {
+        _purchasePricePerUnitCtrl.text = purchaseUnit.toStringAsFixed(2);
+      }
+    } else if (purchaseUnit > 0) {
+      _purchasePricePerUnitCtrl.text = purchaseUnit.toStringAsFixed(2);
+    }
+
+    if (sellingUnit > 0) {
+      _sellingPriceIfNewCtrl.text = sellingUnit.toStringAsFixed(2);
+    }
+
+    // set a human readable stock summary so the user clearly sees the full count
+    setState(() {
+      _currentStockText = '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
+    });
+
+    // ensure receive quantity inputs are present
+    if (_cartonsCtrl.text.isEmpty) _cartonsCtrl.text = '0';
+    if (_unitsCtrl.text.isEmpty) _unitsCtrl.text = '0';
+
+    // reset paid touched so paid defaults to total cost
+    _paidTouched = false;
+    _updateComputedPaid();
+  }
+
+  /// Apply edits to the currently selected product's stock (cartons/units)
+  Future<void> _applyStockEdit() async {
+    if (_selectedProductId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يوجد منتج محدد للتعديل.')));
+      return;
+    }
+
+    setState(() => _loading = true);
+    try {
+      // جلب السجل الحالي مباشرة من جدول products
+      final db = await DBHelper.instance.database;
+      final rows = await db.query('products', where: 'id = ?', whereArgs: [_selectedProductId], limit: 1);
+      if (rows.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم أجد المنتج في قاعدة البيانات.')));
+        setState(() => _loading = false);
+        return;
+      }
+      final current = Map<String, dynamic>.from(rows.first);
+
+      // قراءة القيم الحالية من الداتا بيس بحذر (عدة أسماء محتملة للحقل)
+      int dbUnitsInCarton = 0;
+      try {
+        if (current['units_in_carton'] != null) dbUnitsInCarton = (current['units_in_carton'] as num).toInt();
+        else if (current['unitsInCarton'] != null) dbUnitsInCarton = (current['unitsInCarton'] as num).toInt();
+        else if (current['unit_in_carton'] != null) dbUnitsInCarton = (current['unit_in_carton'] as num).toInt();
+      } catch (_) {}
+      int dbQuantity = 0;
+      try {
+        if (current['quantity'] != null) dbQuantity = (current['quantity'] as num).toInt();
+      } catch (_) {}
+
+      // القيمة التي يريد المستخدم حفظها في الحقل (الوحدات الفردية الحالية)
+      int newRemainder = int.tryParse(_existingUnitsCtrl.text.trim()) ?? 0;
+      if (newRemainder < 0) newRemainder = 0;
+
+      // نقيد الباقي بحيث لا نغير عدد الكراتين هنا
+      if (dbUnitsInCarton > 0) {
+        final maxRemainder = dbUnitsInCarton - 1;
+        if (newRemainder > maxRemainder) {
+          newRemainder = maxRemainder;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('تم حفظ الوحدات الفردية لكن تم تقليصها إلى الحد الأقصى ($maxRemainder) لأننا لا نغيّر الكراتين هنا.'),
+          ));
+        }
+      }
+
+      // إعداد خريطة للتحديث مع الحفاظ على quantity كما هي
+      final prodUpdate = Map<String, dynamic>.from(current);
+      prodUpdate['id'] = _selectedProductId;
+      prodUpdate['units_remainder'] = newRemainder;
+      // لا نغير 'quantity' ولا 'units_in_carton' هنا
+
+      // نُحدّث حقول اختيارية من الفورم إذا كانت موجودة (حتى لا نمسح بيانات مهمة)
+      if (_barcodeCtrl.text.trim().isNotEmpty) prodUpdate['barcode'] = _barcodeCtrl.text.trim();
+      if (_nameCtrl.text.trim().isNotEmpty) prodUpdate['name'] = _nameCtrl.text.trim();
+      if (_purchasePricePerCartonCtrl.text.trim().isNotEmpty) {
+        final v = double.tryParse(_purchasePricePerCartonCtrl.text.replaceAll(',', '').trim());
+        if (v != null) prodUpdate['purchase_price'] = v;
+      }
+      if (_sellingPriceIfNewCtrl.text.trim().isNotEmpty) {
+        final v = double.tryParse(_sellingPriceIfNewCtrl.text.replaceAll(',', '').trim());
+        if (v != null) prodUpdate['selling_price'] = v;
+      }
+
+      await DBHelper.instance.updateProduct(prodUpdate);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تحديث الوحدات الفردية بنجاح')));
+
+      await _loadProducts();
+      _fillFieldsFromProduct(prodUpdate);
+    } catch (e) {
+      debugPrint('Error updating product: $e');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء تحديث المنتج: $e')));
+    } finally {
+      setState(() => _loading = false);
+    }
   }
 
   Future<void> _submit() async {
@@ -225,6 +510,9 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
           _purchasePricePerUnitCtrl.clear();
           _sellingPriceIfNewCtrl.clear();
 
+          // reset existing units display
+          _existingUnitsCtrl.text = '0';
+
           // reset paid: for the merged behavior we default to full total after submit
           _paidAmountCtrl.text = totalCostRes.toStringAsFixed(2);
           _paidTouched = false;
@@ -252,6 +540,74 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     } catch (e) {
       // ignore
     }
+  }
+
+  /// Open a picker dialog to choose an existing product and autofill fields
+  Future<void> _openProductPicker() async {
+    await _loadProducts();
+    String query = '';
+
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(builder: (ctx2, setStateDialog) {
+          final filtered = query.trim().isEmpty
+              ? _products
+              : _products.where((p) {
+            final name = (p['name'] ?? '').toString().toLowerCase();
+            final barcode = (p['barcode'] ?? '').toString().toLowerCase();
+            final q = query.toLowerCase();
+            return name.contains(q) || barcode.contains(q);
+          }).toList();
+
+          return AlertDialog(
+            backgroundColor: AppColorsDark.bgCardColor,
+            title: const Text('اختر منتج', style: TextStyle(color: Colors.white)),
+            content: SizedBox(
+              width: 520,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    decoration: const InputDecoration(hintText: 'بحث بالاسم او الباركود'),
+                    onChanged: (v) => setStateDialog(() => query = v),
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  const SizedBox(height: 12),
+                  _loadingProducts
+                      ? const Center(child: CircularProgressIndicator())
+                      : SizedBox(
+                    height: 300,
+                    child: filtered.isEmpty
+                        ? const Center(child: Text('لا يوجد منتجات', style: TextStyle(color: Colors.white)))
+                        : ListView.separated(
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const Divider(color: Colors.white24),
+                      itemBuilder: (_, i) {
+                        final prod = filtered[i];
+                        return ListTile(
+                          title: Text(prod['name'] ?? '-', style: const TextStyle(color: Colors.white)),
+                          subtitle: Text('Barcode: ${prod['barcode'] ?? '-'}', style: const TextStyle(color: Colors.white70)),
+                          trailing: Text('Price: ${prod['selling_price'] ?? '-'}', style: const TextStyle(color: Colors.white)),
+                          onTap: () {
+                            Navigator.of(ctx).pop();
+                            _barcodeCtrl.text = (prod['barcode'] ?? '').toString();
+                            _fillFieldsFromProduct(prod);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('اغلاق')),
+            ],
+          );
+        });
+      },
+    );
   }
 
   @override
@@ -284,9 +640,26 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                CustomFormField(
-                  controller: _barcodeCtrl,
-                  hint: 'باركود (اجباري)',
+                Row(
+                  children: [
+                    Expanded(
+                      child: CustomFormField(
+                        controller: _barcodeCtrl,
+                        hint: 'باركود (اجباري)',
+                        focusNode: _barcodeFocusNode,
+                        onFieldSubmitted: (_) => _lookupBarcode(),
+                        onChanged: (_) {
+                          // clear name when barcode changed so user sees updated suggestion
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'اختر منتج من القائمة',
+                      onPressed: _openProductPicker,
+                      icon: const Icon(Icons.list, color: Colors.white),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
@@ -306,11 +679,16 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: CustomFormField(
-                        controller: _unitsCtrl,
+                        controller: _existingUnitsCtrl,
+                        hint: 'الوحدات الفردية الحالية (قابلة للتعديل)',
                         keyboardType: TextInputType.number,
-                        hint: 'عدد وحدات فردية',
-                        onChanged: (_) => _updateComputedPaid(),
                       ),
+                    ),
+                    SizedBox(width: 5,),
+                    IconButton(
+                      tooltip: 'حفظ التعديل على المخزون الحالي',
+                      icon: const Icon(Icons.save, color: Colors.white),
+                      onPressed: _applyStockEdit,
                     ),
                   ],
                 ),
