@@ -722,24 +722,24 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                   controller: _nameCtrl,
                   hint: 'اسم المنتج',
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: CustomFormField(
-                        controller: _existingUnitsCtrl,
-                        hint: 'الوحدات الفردية الحالية (قابلة للتعديل)',
-                        keyboardType: TextInputType.number,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      tooltip: 'حفظ التعديل على المخزون الحالي',
-                      icon: const Icon(Icons.save, color: Colors.white),
-                      onPressed: _applyStockEdit,
-                    ),
-                  ],
-                ),
+                // const SizedBox(height: 8),
+                // Row(
+                //   children: [
+                //     Expanded(
+                //       child: CustomFormField(
+                //         controller: _existingUnitsCtrl,
+                //         hint: 'الوحدات الفردية الحالية (قابلة للتعديل)',
+                //         keyboardType: TextInputType.number,
+                //       ),
+                //     ),
+                //     const SizedBox(width: 8),
+                //     IconButton(
+                //       tooltip: 'حفظ التعديل على المخزون الحالي',
+                //       icon: const Icon(Icons.save, color: Colors.white),
+                //       onPressed: _applyStockEdit,
+                //     ),
+                //   ],
+                // ),
 
                 const SizedBox(height: 10),
                 Row(
