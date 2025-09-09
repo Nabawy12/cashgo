@@ -43,6 +43,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
 
+
   @override
   void initState() {
     super.initState();
@@ -56,58 +57,140 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       backgroundColor: AppColorsDark.bgColor,
         extendBodyBehindAppBar: false, // مهم جدا
         appBar: AppBar(
-        scrolledUnderElevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        backgroundColor: Colors.transparent,
-        elevation: 0.0,
-        title: const Text(
+          scrolledUnderElevation: 0,
+          iconTheme: const IconThemeData(color: Colors.white),
+          backgroundColor: Colors.transparent,
+          elevation: 0.0,
+          title: const Text(
             'اداره التطبيق',
-            style: TextStyle(
-                color: Colors.white
-            ),
-        ),
-        centerTitle: true,
-        actions: [
-          Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Tooltip(
-                message: 'الاشعارات',
-                waitDuration: const Duration(milliseconds: 1),
-                child: IconButton(
-                  icon: const Icon(Icons.notifications_outlined, color: Colors.white70, size: 26),
-                  onPressed: () async {
-                    await Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsScreen()));
-                    await _loadUnseen();
-                  },
-                ),
-              ),
-              if (_unseenCount > 0)
-                Positioned(
-                  right: 8,
-                  top: 8,
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
-                    child: Text('$_unseenCount', style: const TextStyle(color: Colors.white, fontSize: 12)),
+            style: TextStyle(color: Colors.white),
+          ),
+          centerTitle: true,
+          actions: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Tooltip(
+                  message: 'الاشعارات',
+                  waitDuration: const Duration(milliseconds: 1),
+                  child: IconButton(
+                    icon: const Icon(Icons.notifications_outlined, color: Colors.white70, size: 26),
+                    onPressed: () async {
+                      await Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsScreen()));
+                      await _loadUnseen();
+                    },
                   ),
                 ),
-            ],
-          ),
-          Tooltip(
-            message: 'اداره المستخدمين',
-            waitDuration: const Duration(milliseconds: 1),
-            child: IconButton(
-              mouseCursor: SystemMouseCursors.click,
-              icon: const Icon(Icons.settings_outlined, color: Colors.white70, size: 22),
-              onPressed: () {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsPage()));
-              },
+                if (_unseenCount > 0)
+                  Positioned(
+                    right: 8,
+                    top: 8,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
+                      child: Text('$_unseenCount', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                    ),
+                  ),
+              ],
             ),
-          ),
-        ],
-      ),
-        body: SafeArea(
+
+            Tooltip(
+              message: 'اداره المستخدمين',
+              waitDuration: const Duration(milliseconds: 1),
+              child: IconButton(
+                mouseCursor: SystemMouseCursors.click,
+                icon: const Icon(Icons.settings_outlined, color: Colors.white70, size: 22),
+                onPressed: () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsPage()));
+                },
+              ),
+            ),
+
+            // ------------------ أيقونة مسح البيانات (ما عدا المنتجات) ------------------
+            Tooltip(
+              message: 'مسح كل البيانات (ما عدا المنتجات)',
+              waitDuration: const Duration(milliseconds: 1),
+              child: IconButton(
+                icon: const Icon(Icons.delete_forever, color: Colors.white70, size: 22),
+                onPressed: () async {
+                  // 1) حوار التأكيد مع خيار الاحتفاظ بالمستخدمين
+                  final choice = await showDialog<int>(
+                    context: context,
+                    builder: (c) => AlertDialog(
+                      title: const Text('تأكيد عملية المسح'),
+                      content: const Text('هل أنت متأكد؟ سيتم حذف كل البيانات ما عدا جدول "المنتجات".'),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.of(c).pop(0), child: const Text('إلغاء')),
+                        TextButton(onPressed: () => Navigator.of(c).pop(1), child: const Text('مسح واحتفاظ بالمستخدمين')),
+                        ElevatedButton(onPressed: () => Navigator.of(c).pop(2), child: const Text('مسح الكل')),
+                      ],
+                    ),
+                  );
+
+                  if (choice == null || choice == 0) return; // الغى المستخدم
+
+                  final keepUsers = (choice == 1);
+
+                  // 2) مؤشر تقدم غير قابل للإغلاق أثناء التنفيذ
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (c) => Dialog(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: const [
+                            SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            SizedBox(width: 16),
+                            Text('جاري المسح...'),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+
+                  try {
+                    // نفّذ المسح عبر singleton (تأكد إن الدالة داخل DBHelper وليست static)
+                    await DBHelper.instance.wipeAllExceptProducts(keepUsers: keepUsers);
+
+                    // اغلاق مؤشر التقدم
+                    Navigator.of(context).pop();
+
+                    // رسالة نجاح
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(keepUsers ? 'تم مسح البيانات مع الاحتفاظ بالمستخدمين.' : 'تم مسح كل البيانات بنجاح.')),
+                    );
+
+                    // لو محتاج تعيد تحميل أي بيانات بالواجهة:
+                    if (mounted) setState(() {
+                      // حدث الحالة لو عندك حاجة تتغير قدام المستخدم
+                      // مثال: _loadData();
+                    });
+                  } catch (e, st) {
+                    // اغلاق مؤشر التقدم
+                    Navigator.of(context).pop();
+                    debugPrint('wipeAllExceptProducts error: $e\n$st');
+
+                    // اظهار خطأ
+                    showDialog(
+                      context: context,
+                      builder: (c) => AlertDialog(
+                        title: const Text('حدث خطأ'),
+                        content: Text('فشل المسح: $e'),
+                        actions: [TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('حسناً'))],
+                      ),
+                    );
+                  }
+                },
+              ),
+            ),
+          ],
+        ),        body: SafeArea(
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(vertical: 16,horizontal: 20),
             child: Column(

@@ -2127,6 +2127,57 @@ class DBHelper {
     );
     return maps;
   }
+  /// داخل class DBHelper { ... }
+  Future<void> wipeAllExceptProducts({bool keepUsers = false}) async {
+    final db = await database; // <-- هنا getter موجود لأن إحنا داخل الكلاس
+    await db.transaction((txn) async {
+      final tablesRes = await txn.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+      );
+      final allTables = tablesRes.map((r) => r['name'] as String).toList();
+
+      final keep = <String>{'products'};
+      if (keepUsers) keep.add('users');
+
+      final preferredOrder = [
+        'sale_return_items',
+        'sale_returns',
+        'sale_items',
+        'sales',
+        'purchase_receipts',
+        'cash_drawer',
+        'card_wallet',
+        'users',
+      ];
+
+      Future<void> _deleteTable(String tableName) async {
+        try {
+          await txn.delete(tableName);
+        } catch (e) {
+          try {
+            await txn.execute('DELETE FROM $tableName;');
+          } catch (_) {}
+        }
+        try {
+          await txn.execute('DELETE FROM sqlite_sequence WHERE name = ?;', [tableName]);
+        } catch (_) {}
+      }
+
+      final remaining = Set<String>.from(allTables)..removeAll(keep);
+
+      for (final t in preferredOrder) {
+        if (remaining.contains(t)) {
+          await _deleteTable(t);
+          remaining.remove(t);
+        }
+      }
+
+      for (final t in remaining) {
+        if (t == 'products' || t.startsWith('sqlite_')) continue;
+        await _deleteTable(t);
+      }
+    });
+  }
 
 
 }

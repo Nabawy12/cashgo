@@ -420,51 +420,76 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   }
 
 
-  Future<void> _saveStartingAmount() async {
+  Future<void> _saveStartingAmount_replace() async {
     final text = _drawerController.text.trim();
-    final enteredCurrent = double.tryParse(text.replaceAll(',', '')) ?? 0.0;
+    final entered = double.tryParse(text.replaceAll(',', '')) ?? 0.0;
 
     setState(() => _loading = true);
     try {
       final dbHelper = DBHelper.instance;
+      final db = await dbHelper.database;
 
-      // مباشرة نستخدم القيمة الّتي أدخلها المستخدم
-      final desiredStarting = enteredCurrent;
+      // احصل على آخر سجل (نحتاج الـ id عشان نعمل UPDATE)
+      final lastRows = await db.query(
+        'cash_drawer',
+        orderBy: 'created_at DESC',
+        limit: 1,
+      );
 
-      await dbHelper.ensureCashDrawerTable();
+      double newAmount;
       final currentUser = await dbHelper.getCurrentUser();
       final username = (currentUser != null && currentUser['username'] != null)
           ? currentUser['username'] as String
           : 'admin';
 
-      final now = DateTime.now().toIso8601String();
-      final db = await dbHelper.database;
-      await db.transaction((txn) async {
-        await txn.insert('cash_drawer', {
-          'amount': desiredStarting,
-          'updated_by': username,
-          'note': 'Set starting to exact entered value',
-          'created_at': now,
+      if (lastRows.isNotEmpty) {
+        final last = lastRows.first;
+        final lastId = last['id']; // لو اسم العمود مختلف عندك غيّره هنا
+        // بدل ما نزيد على القديم، نضع القيمة الّي ادخلتها بالظبط
+        newAmount = entered;
+
+        await db.transaction((txn) async {
+          await txn.update(
+            'cash_drawer',
+            {
+              'amount': newAmount,
+              'updated_by': username,
+              'note': 'Replaced with entered value ${entered.toStringAsFixed(2)}',
+              'created_at': DateTime.now().toIso8601String(), // أو احتفظ بالقيمة القديمة لو تحب
+            },
+            where: 'id = ?',
+            whereArgs: [lastId],
+          );
         });
-      });
+      } else {
+        // لو مافيش سجلات من قبل، نعمل INSERT بالقيمة الّتي أدخلتها
+        newAmount = entered;
+        await db.transaction((txn) async {
+          await txn.insert('cash_drawer', {
+            'amount': newAmount,
+            'updated_by': username,
+            'note': 'Initial starting amount (set to entered value)',
+            'created_at': DateTime.now().toIso8601String(),
+          });
+        });
+      }
 
       if (mounted) {
         setState(() {
-          _drawerController.text = enteredCurrent.toStringAsFixed(2);
+          // عرض القيمة مباشرةً كما أدخلتها
+          _drawerController.text = newAmount.toStringAsFixed(2);
         });
       }
 
       await _loadData();
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم تعيين المبلغ المبدئي كما هو (بدون حسابات إضافية)')),
+          SnackBar(content: Text('تم ضبط رصيد الدرج إلى ${newAmount.toStringAsFixed(2)}')),
         );
     } catch (e, st) {
-      debugPrint('Error saving starting drawer (direct): $e\n$st');
+      debugPrint('Error replacing drawer amount: $e\n$st');
       if (mounted)
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('حدث خطأ أثناء الحفظ: $e')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ: $e')));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -569,7 +594,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                           const SizedBox(height: 20),
                           CustomButton(
                                 text: 'حفظ القيمه للدرج',
-                                onPressed: _saveStartingAmount,
+                                onPressed: _saveStartingAmount_replace,
                                 infinity: true,
                           ),
                           SizedBox(height: 20,),
@@ -935,7 +960,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
             const SizedBox(height: 8),
             Row(
               children: [
-                Expanded(child: ElevatedButton(onPressed: _saveStartingAmount, child: const Text('حفظ'))),
+                Expanded(child: ElevatedButton(onPressed: _saveStartingAmount_replace, child: const Text('حفظ'))),
                 const SizedBox(width: 8),
                 Expanded(child: ElevatedButton(onPressed: _loadData, child: const Text('تحديث'))),
               ],
