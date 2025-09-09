@@ -292,8 +292,9 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     // fill form fields
     if (name != null) _nameCtrl.text = name;
     _unitsInCartonCtrl.text = (unitsInCarton > 0) ? unitsInCarton.toString() : '1';
-    // don't overwrite user's input for receiving cartons/units: show current stock separately
-    _existingUnitsCtrl.text = remainder.toString();
+    // show current stock as TOTAL UNITS in the editable "existing units" field
+    // (this was changed to reflect the full count inside cartons)
+    _existingUnitsCtrl.text = totalUnits.toString();
 
     if (purchaseCarton > 0) {
       _purchasePricePerCartonCtrl.text = purchaseCarton.toStringAsFixed(2);
@@ -331,23 +332,32 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
       return;
     }
 
-    // parse values from current form controls
-    final unitsInCarton = int.tryParse(_unitsInCartonCtrl.text.trim()) ?? 0;
-    final existingUnits = int.tryParse(_existingUnitsCtrl.text.trim()) ?? 0;
+    // احصل القيمة الجديدة لعدد الوحدات داخل الكرتونة (user edited this)
+    int newUnitsInCarton = int.tryParse(_unitsInCartonCtrl.text.trim()) ?? 0;
+    if (newUnitsInCarton <= 0) newUnitsInCarton = 1; // لا نسمح بصفر أو سالب
 
+    // اجمالي الوحدات الحالي (نأخذ قيمة الحقل القابلة للتعديل _existingUnitsCtrl كمصدر للحقيقة)
+    int totalUnits = int.tryParse(_existingUnitsCtrl.text.trim()) ?? 0;
+    if (totalUnits < 0) totalUnits = 0;
+
+    // احسب كراتين وباقي بناءً على newUnitsInCarton بحيث يبقى totalUnits ثابتًا
     int cartons = 0;
-    int remainder = existingUnits;
-    if (unitsInCarton > 0) {
-      cartons = existingUnits ~/ unitsInCarton;
-      remainder = existingUnits % unitsInCarton;
+    int remainder = 0;
+    if (newUnitsInCarton > 0) {
+      cartons = totalUnits ~/ newUnitsInCarton;
+      remainder = totalUnits % newUnitsInCarton;
+    } else {
+      // تقيّد احترازي (لكن أعلاه ضمنا newUnitsInCarton >= 1)
+      cartons = totalUnits;
+      remainder = 0;
     }
 
-    // prepare product map to update (keep other fields from the form to avoid wiping)
+    // جهّز خريطة التحديث (نحافظ على الحقول الأخرى من الفورم إن وُجدت)
     final prodUpdate = {
       'id': _selectedProductId,
       'barcode': _barcodeCtrl.text.trim(),
       'name': _nameCtrl.text.trim(),
-      'units_in_carton': unitsInCarton,
+      'units_in_carton': newUnitsInCarton,
       'quantity': cartons,
       'units_remainder': remainder,
       'purchase_price': double.tryParse(_purchasePricePerCartonCtrl.text.trim()) ?? 0.0,
@@ -359,9 +369,20 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     try {
       await DBHelper.instance.updateProduct(prodUpdate);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تحديث المخزون بنجاح')));
+
+      // reload products list (optional) and reflect UI changes
       await _loadProducts();
-      // reflect updated values in UI
-      _fillFieldsFromProduct(prodUpdate);
+
+      // نعرض القيم الجديدة في الحقول
+      final newTotalUnits = cartons * newUnitsInCarton + remainder;
+      _existingUnitsCtrl.text = newTotalUnits.toString();
+      _cartonsCtrl.text = cartons.toString();
+      _unitsCtrl.text = remainder.toString();
+      _unitsInCartonCtrl.text = newUnitsInCarton.toString();
+
+      setState(() {
+        _currentStockText = '$cartons كرتونة + $remainder قطعة = $newTotalUnits قطعة';
+      });
     } catch (e) {
       debugPrint('Error updating product: $e');
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء تحديث المنتج: $e')));
@@ -374,9 +395,9 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
     final barcode = _barcodeCtrl.text.trim();
     final name = _nameCtrl.text.trim();
-    final cartons = int.tryParse(_cartonsCtrl.text) ?? 0;
-    final units = int.tryParse(_unitsCtrl.text) ?? 0;
-    final unitsInCarton = int.tryParse(_unitsInCartonCtrl.text) ?? 1;
+    final cartonsInput = int.tryParse(_cartonsCtrl.text) ?? 0;
+    final unitsInput = int.tryParse(_unitsCtrl.text) ?? 0;
+    final unitsInCartonInput = int.tryParse(_unitsInCartonCtrl.text) ?? 1;
     final purchasePerCarton = double.tryParse(_purchasePricePerCartonCtrl.text.replaceAll(',', ''));
     final purchasePerUnit = double.tryParse(_purchasePricePerUnitCtrl.text.replaceAll(',', ''));
     final sellingIfNew = double.tryParse(_sellingPriceIfNewCtrl.text.replaceAll(',', ''));
@@ -385,23 +406,99 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     try {
       final totalCost = _computeTotalCost();
 
-      // normalize paid value: cannot be negative and should not (sensibly) exceed total
+      // normalize paid value
       double paid = rawPaid;
       if (paid < 0) paid = 0.0;
-      // allow paying up to total only (for all types). If you want to allow overpayments, change here.
       if (paid > totalCost) paid = totalCost;
 
       final dbHelper = DBHelper.instance;
 
+      // ---------------------------
+      // IMPORTANT: if product is selected, sync new units_in_carton BEFORE calling receiveFromSupplier
+      // This preserves totalUnits and redistributes them using the new units_in_carton value.
+      // ---------------------------
+      if (_selectedProductId != null) {
+        try {
+          // Load product (getAllProducts returns total_units computed)
+          final products = await DBHelper.instance.getAllProducts();
+          final prod = products.firstWhere(
+                (p) => (p['id'] as num).toInt() == _selectedProductId,
+            orElse: () => {},
+          );
+
+          if (prod.isNotEmpty) {
+            // compute current totalUnits (prefer total_units if present)
+            int totalUnits = 0;
+            try {
+              if (prod.containsKey('total_units') && prod['total_units'] != null) {
+                totalUnits = (prod['total_units'] as num).toInt();
+              } else {
+                final q = (prod['quantity'] as num?)?.toInt() ?? 0;
+                final ui = (prod['units_in_carton'] as num?)?.toInt() ?? 1;
+                final rem = (prod['units_remainder'] as num?)?.toInt() ?? 0;
+                totalUnits = q * (ui > 0 ? ui : 1) + rem;
+              }
+            } catch (_) {
+              totalUnits = 0;
+            }
+
+            // new units-in-carton from form (ensure >= 1)
+            int newUnitsInCarton = unitsInCartonInput <= 0 ? 1 : unitsInCartonInput;
+
+            // redistribute totalUnits into cartons + remainder using newUnitsInCarton
+            int newCartons = 0;
+            int newRemainder = 0;
+            if (newUnitsInCarton > 0) {
+              newCartons = totalUnits ~/ newUnitsInCarton;
+              newRemainder = totalUnits % newUnitsInCarton;
+            } else {
+              newCartons = totalUnits;
+              newRemainder = 0;
+            }
+
+            // prepare update map - preserve other fields where possible
+            final prodUpdate = {
+              'id': _selectedProductId,
+              'barcode': prod['barcode'] ?? _barcodeCtrl.text.trim(),
+              'name': prod['name'] ?? _nameCtrl.text.trim(),
+              'units_in_carton': newUnitsInCarton,
+              'quantity': newCartons,
+              'units_remainder': newRemainder,
+              'purchase_price': (prod['purchase_price'] as num?)?.toDouble() ?? (purchasePerCarton ?? 0.0),
+              'selling_price': (prod['selling_price'] as num?)?.toDouble() ?? (sellingIfNew ?? 0.0),
+              'production_date': prod['production_date'] ?? '',
+              'expiry_date': prod['expiry_date'] ?? '',
+            };
+
+            await DBHelper.instance.updateProduct(prodUpdate);
+
+            // update UI to reflect redistribution before adding new received cartons
+            _unitsInCartonCtrl.text = newUnitsInCarton.toString();
+            _cartonsCtrl.text = newCartons.toString();
+            _unitsCtrl.text = newRemainder.toString();
+            _existingUnitsCtrl.text = totalUnits.toString();
+            setState(() {
+              _currentStockText = '$newCartons كرتونة + $newRemainder قطعة = $totalUnits قطعة';
+            });
+          }
+        } catch (e) {
+          debugPrint('Warning: failed to sync units_in_carton before receive: $e');
+          // لا نوقف العملية هنا — نتابع receiveFromSupplier لكن قد يستخدم القيمة القديمة في DB
+        }
+      }
+
+      // ---------------------------
+      // call receiveFromSupplier to persist the incoming receipt (this will use the updated units_in_carton)
+      // ---------------------------
       final res = await dbHelper.receiveFromSupplier(
         barcode: barcode.isEmpty ? null : barcode,
         name: name.isEmpty ? null : name,
-        cartons: cartons,
-        units: units,
+        cartons: cartonsInput,
+        units: unitsInput,
         purchasePricePerCarton: purchasePerCarton,
         purchasePricePerUnit: purchasePerUnit,
         sellingPricePerUnitIfNew: sellingIfNew,
-        unitsInCartonIfNew: unitsInCarton,
+        unitsInCartonIfNew: unitsInCartonInput,
         receivedBy: Session.currentUsername!,
         paymentType: _paymentType,
         paidAmount: paid,
@@ -415,15 +512,12 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         final due = (res['due_amount'] ?? 0.0) as double;
         final added = res['added_units'] ?? 0;
 
-        // After persisting the purchase_receipt, we need to reflect any paid amount
-        // on the appropriate ledger/table:
-        // - merged cash/credit:
-        //     * if paid < total -> treat as partial credit payment (apply the "credit" behavior)
-        //     * if paid == total -> treat as cash (keep previous cash behavior)
-        // - wallet payments -> deduct from card_wallet (ledger)
+        // apply payment-side effects (drawer / card_wallet) as in original logic
         try {
           final currentUser = await dbHelper.getCurrentUser();
-          final username = (currentUser != null && currentUser['username'] != null) ? currentUser['username'] as String : Session.currentUsername ?? 'admin';
+          final username = (currentUser != null && currentUser['username'] != null)
+              ? currentUser['username'] as String
+              : Session.currentUsername ?? 'admin';
 
           if (paid > 0) {
             if (_paymentType == 'wallet') {
@@ -437,9 +531,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
               // merged cash_or_credit -> infer: paid < totalCost => partial credit, paid == totalCost => full cash
               final latestStarting = await dbHelper.getLatestDrawerStartingAmount();
               final newStarting = latestStarting - paid;
-              final notePrefix = (paid < totalCost)
-                  ? 'Partial payment for credit purchase'
-                  : 'Full cash payment for purchase';
+              final notePrefix = (paid < totalCost) ? 'Partial payment for credit purchase' : 'Full cash payment for purchase';
               await dbHelper.setDrawerStartingAmount(
                 newStarting,
                 username,
@@ -448,27 +540,27 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
             }
           }
 
-
+          // show dialog summarizing result
           showDialog(
             context: context,
             builder: (_) => AlertDialog(
               backgroundColor: AppColorsDark.bgCardColor,
-              title: Center(child: const Text('تم الاستلام',style: TextStyle(color: Colors.white),)),
+              title: Center(child: const Text('تم الاستلام', style: TextStyle(color: Colors.white))),
               content: Text(
                 'تم إضافة $added وحدة. الإجمالي: ${totalCostRes.toStringAsFixed(2)}. المدفوع: ${paid.toStringAsFixed(2)}. المتبقي: ${due.toStringAsFixed(2)}.',
                 style: const TextStyle(color: Colors.white),
               ),
               actions: [
                 TextButton(
-                    style: TextButton.styleFrom(
-                        backgroundColor: AppColorsDark.bgColor
-                    ),
-                    onPressed: () => Navigator.of(context).pop(), child: const Text('حسناً',style: TextStyle(color: Colors.white),)),
+                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('حسناً', style: TextStyle(color: Colors.white)),
+                ),
               ],
             ),
           );
 
-          // Reset form
+          // Reset form fields
           _formKey.currentState!.reset();
           _cartonsCtrl.text = '0';
           _unitsCtrl.text = '0';
@@ -477,14 +569,11 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
           _purchasePricePerUnitCtrl.clear();
           _sellingPriceIfNewCtrl.clear();
 
-          // reset existing units display
           _existingUnitsCtrl.text = '0';
-
-          // reset paid: for the merged behavior we default to full total after submit
           _paidAmountCtrl.text = totalCostRes.toStringAsFixed(2);
           _paidTouched = false;
 
-          // reload any relevant aggregates (optional)
+          // reload any relevant aggregates
           await _loadAfterSubmit();
         } catch (e) {
           debugPrint('Error while applying post-payment effects: $e');
@@ -651,6 +740,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                     ),
                   ],
                 ),
+
                 const SizedBox(height: 10),
                 Row(
                   children: [

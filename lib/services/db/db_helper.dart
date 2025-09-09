@@ -2178,6 +2178,43 @@ class DBHelper {
       }
     });
   }
+  /// Deduct user's starting amount from the global drawer starting.
+  /// This inserts a new cash_drawer row with the updated global starting amount:
+  /// newGlobal = max(latestGlobal - userStarting, 0.0)
+  /// Returns the inserted row id.
+  Future<int> deductUserStartingFromGlobalDrawer(String username) async {
+    final db = await database;
+    // ensure table exists
+    await _ensureCashDrawerTable(db);
+
+    // latest global starting amount
+    final latestRows = await db.rawQuery('SELECT amount FROM cash_drawer ORDER BY id DESC LIMIT 1');
+    final latestGlobal = (latestRows.isNotEmpty && latestRows.first['amount'] != null)
+        ? (latestRows.first['amount'] as num).toDouble()
+        : 0.0;
+
+    // latest starting set by this user (if any)
+    final userRows = await db.rawQuery(
+      'SELECT amount FROM cash_drawer WHERE updated_by = ? ORDER BY id DESC LIMIT 1',
+      [username],
+    );
+    final userStarting = (userRows.isNotEmpty && userRows.first['amount'] != null)
+        ? (userRows.first['amount'] as num).toDouble()
+        : 0.0;
+
+    // compute new global starting (do not go negative)
+    final newGlobal = (latestGlobal - userStarting).clamp(0.0, double.infinity);
+
+    final now = DateTime.now().toIso8601String();
+    final id = await db.insert('cash_drawer', {
+      'amount': newGlobal,
+      'updated_by': username,
+      'note': 'Deduct starting ($userStarting) for $username on shift close',
+      'created_at': now,
+    });
+
+    return id;
+  }
 
 
 }

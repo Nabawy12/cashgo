@@ -429,14 +429,38 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       final dbHelper = DBHelper.instance;
       final db = await dbHelper.database;
 
-      // احصل على آخر سجل (نحتاج الـ id عشان نعمل UPDATE)
+      // نحاول حساب صافي المبيعات النقدي ومدفوعات المشتريات النقدية
+      final fromStr = _fromDate != null ? _dateFormat.format(_fromDate!) : null;
+      final toStr = _toDate != null ? _dateFormat.format(_toDate!) : null;
+
+      final totals = await dbHelper.getDrawerTotals(fromDate: fromStr, toDate: toStr);
+      final salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
+          ?? (totals['sales_net'] as num?)?.toDouble()
+          ?? 0.0;
+
+      double purchasePaidCash = 0.0;
+      try {
+        final rows = await db.rawQuery(
+            "SELECT SUM(COALESCE(paid_amount,0)) AS total FROM purchase_receipts WHERE payment_type = 'cash'"
+        );
+        purchasePaidCash = (rows.isNotEmpty && rows.first['total'] != null)
+            ? (rows.first['total'] as num).toDouble()
+            : 0.0;
+      } catch (e) {
+        debugPrint('Failed to compute purchasePaidCash in _saveStartingAmount_replace: $e');
+        purchasePaidCash = 0.0;
+      }
+
+      // نريد أن نجعل: desiredStarting + salesNetCash - purchasePaidCash == entered
+      final double desiredStarting = entered - (salesNetCash - purchasePaidCash);
+
+      // اقرأ السجل الأخير لكي نحدّثه أو ندخله جديداً
       final lastRows = await db.query(
         'cash_drawer',
         orderBy: 'created_at DESC',
         limit: 1,
       );
 
-      double newAmount;
       final currentUser = await dbHelper.getCurrentUser();
       final username = (currentUser != null && currentUser['username'] != null)
           ? currentUser['username'] as String
@@ -444,48 +468,43 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
 
       if (lastRows.isNotEmpty) {
         final last = lastRows.first;
-        final lastId = last['id']; // لو اسم العمود مختلف عندك غيّره هنا
-        // بدل ما نزيد على القديم، نضع القيمة الّي ادخلتها بالظبط
-        newAmount = entered;
-
+        final lastId = last['id'];
         await db.transaction((txn) async {
           await txn.update(
             'cash_drawer',
             {
-              'amount': newAmount,
+              'amount': desiredStarting,
               'updated_by': username,
-              'note': 'Replaced with entered value ${entered.toStringAsFixed(2)}',
-              'created_at': DateTime.now().toIso8601String(), // أو احتفظ بالقيمة القديمة لو تحب
+              'note': 'Replaced to force drawer to EGP ${entered.toStringAsFixed(2)} (desired starting set to ${desiredStarting.toStringAsFixed(2)})',
+              'created_at': DateTime.now().toIso8601String(),
             },
             where: 'id = ?',
             whereArgs: [lastId],
           );
         });
       } else {
-        // لو مافيش سجلات من قبل، نعمل INSERT بالقيمة الّتي أدخلتها
-        newAmount = entered;
         await db.transaction((txn) async {
           await txn.insert('cash_drawer', {
-            'amount': newAmount,
+            'amount': desiredStarting,
             'updated_by': username,
-            'note': 'Initial starting amount (set to entered value)',
+            'note': 'Initial starting amount set to ${desiredStarting.toStringAsFixed(2)} to match forced drawer value ${entered.toStringAsFixed(2)}',
             'created_at': DateTime.now().toIso8601String(),
           });
         });
       }
 
+      // حدّث واجهة المستخدم فوراً: نُظهر أن المبلغ الظاهر في الدرج يساوي "entered"
       if (mounted) {
         setState(() {
-          // عرض القيمة مباشرةً كما أدخلتها
-          _drawerController.text = newAmount.toStringAsFixed(2);
+          _drawerController.text = entered.toStringAsFixed(2);
+          _startingAmount = desiredStarting;
+          _currentDrawer = entered; // عرض فوري؛ حدث بيانات حقيقية عبر _loadData لاحقًا
         });
       }
 
+      // لإعادة التحقق من البيانات وتحديث كل الحقول المنبثقة
       await _loadData();
-      if (mounted)
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم ضبط رصيد الدرج إلى ${newAmount.toStringAsFixed(2)}')),
-        );
+
     } catch (e, st) {
       debugPrint('Error replacing drawer amount: $e\n$st');
       if (mounted)

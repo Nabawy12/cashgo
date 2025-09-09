@@ -674,7 +674,6 @@ class _CashierScreenState extends State<CashierScreen> {
         // بعد النجاح: أعد تحميل القيم في الواجهة
         await _loadCardTotals();
 
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم نقل EGP ${amount.toStringAsFixed(2)} من الدرج إلى المحفظة بنجاح')));
       } else {
         // from wallet -> drawer (إيداع: ننقص المحفظة ونزيد الدرج)
         if (amount > latestWallet + 0.000001) {
@@ -705,7 +704,6 @@ class _CashierScreenState extends State<CashierScreen> {
 
         // reload UI values
         await _loadCardTotals();
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم نقل EGP ${amount.toStringAsFixed(2)} من المحفظة إلى الدرج')));
       }
     } catch (e, st) {
       debugPrint('transferBetweenDrawerAndWallet (helpers) failed: $e\n$st');
