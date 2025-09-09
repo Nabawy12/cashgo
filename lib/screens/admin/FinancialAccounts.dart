@@ -424,46 +424,26 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     final text = _drawerController.text.trim();
     final enteredCurrent = double.tryParse(text.replaceAll(',', '')) ?? 0.0;
 
-
     setState(() => _loading = true);
     try {
       final dbHelper = DBHelper.instance;
-      final db = await dbHelper.database;
 
-      final fromStr = _fromDate != null ? _dateFormat.format(_fromDate!) : null;
-      final toStr = _toDate != null ? _dateFormat.format(_toDate!) : null;
-
-      final totals = await dbHelper.getDrawerTotals(fromDate: fromStr, toDate: toStr);
-      final salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
-          ?? (totals['sales_net'] as num?)?.toDouble()
-          ?? 0.0;
-
-      double purchasePaidCash = 0.0;
-      if (fromStr != null && toStr != null) {
-        final rows = await db.rawQuery(
-          "SELECT SUM(COALESCE(paid_amount,0)) as total FROM purchase_receipts WHERE date(created_at) BETWEEN ? AND ?",
-          [fromStr, toStr],
-        );
-        purchasePaidCash = (rows.isNotEmpty && rows.first['total'] != null) ? (rows.first['total'] as num).toDouble() : 0.0;
-      } else {
-        final paidReceipts = await dbHelper.getPaidPurchaseReceipts();
-        double sum = 0.0;
-        for (final r in paidReceipts) sum += (r['paid_amount'] as num?)?.toDouble() ?? 0.0;
-        purchasePaidCash = sum;
-      }
-
-      final desiredStarting = enteredCurrent - salesNetCash + purchasePaidCash;
+      // مباشرة نستخدم القيمة الّتي أدخلها المستخدم
+      final desiredStarting = enteredCurrent;
 
       await dbHelper.ensureCashDrawerTable();
       final currentUser = await dbHelper.getCurrentUser();
-      final username = (currentUser != null && currentUser['username'] != null) ? currentUser['username'] as String : 'admin';
+      final username = (currentUser != null && currentUser['username'] != null)
+          ? currentUser['username'] as String
+          : 'admin';
 
       final now = DateTime.now().toIso8601String();
-      await (await dbHelper.database).transaction((txn) async {
+      final db = await dbHelper.database;
+      await db.transaction((txn) async {
         await txn.insert('cash_drawer', {
           'amount': desiredStarting,
           'updated_by': username,
-          'note': 'Set starting so that current matches entered value',
+          'note': 'Set starting to exact entered value',
           'created_at': now,
         });
       });
@@ -475,10 +455,16 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       }
 
       await _loadData();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم تعيين المبلغ المبدئي ليتوافق مع المبلغ المدخل في الدرج')));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم تعيين المبلغ المبدئي كما هو (بدون حسابات إضافية)')),
+        );
     } catch (e, st) {
-      debugPrint('Error saving starting drawer (computed): $e\n$st');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ أثناء الحفظ: $e')));
+      debugPrint('Error saving starting drawer (direct): $e\n$st');
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ أثناء الحفظ: $e')),
+        );
     } finally {
       if (mounted) setState(() => _loading = false);
     }
