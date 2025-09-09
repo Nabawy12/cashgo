@@ -567,9 +567,9 @@ class _CashierScreenState extends State<CashierScreen> {
       // تأكد من وجود جداول أساسية
       await dbHelper.ensureCardWalletTable();
       await dbHelper.ensureCashDrawerTable();
-      await dbHelper.ensureDrawerWithdrawnColumnExists(); // موجودة في DBHelper اللي بعته
+      await dbHelper.ensureDrawerWithdrawnColumnExists();
 
-      // تأكد من وجود العمود drawer_withdrawn_amount في جدول sales (لو مش موجود - أضفه هنا)
+      // تأكد وجود العمود drawer_withdrawn_amount (migration آمنة)
       final dbForMigration = await dbHelper.database;
       try {
         final cols = await dbForMigration.rawQuery("PRAGMA table_info('sales');");
@@ -579,7 +579,6 @@ class _CashierScreenState extends State<CashierScreen> {
           debugPrint('Migration: added drawer_withdrawn_amount column to sales');
         }
       } catch (e, st) {
-        // لو فشل التحقق/الإضافة، نكتفي باللوق وحاول تتابع — العملية قد تفشل لاحقًا لو استدعى الكود العمود
         debugPrint('Warning: ensure drawer_withdrawn_amount column check failed: $e\n$st');
       }
 
@@ -588,10 +587,9 @@ class _CashierScreenState extends State<CashierScreen> {
           ? currentUser['username'] as String
           : widget.cashierUsername;
 
-      // أعد تحميل القيم المعروضة (لو عندك)
       await _loadCardTotals();
 
-      // اقرأ القيم الأساسية من DB (نحتاجها للحسابات والـ rollback المحتمل)
+      // اقرأ القيم الأساسية
       final latestWallet = await dbHelper.getLatestCardWalletAmount();
       final latestDrawerStarting = await dbHelper.getLatestDrawerStartingAmount();
 
@@ -599,36 +597,45 @@ class _CashierScreenState extends State<CashierScreen> {
       const double eps = 0.0001;
 
       if (fromDrawerToWallet) {
-        // سحب من الدُرج إلى المحفظة
+        // --- PRE-CHECK: احسب إجمالي المتاح (فواتير متاحة + بداية الدرج)
+        final totalRowBefore = await db.rawQuery(
+          '''
+        SELECT SUM(
+          CASE
+            WHEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0
+            THEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0))
+            ELSE 0
+          END
+        ) as total_available
+        FROM sales
+        WHERE payment_method = ?
+        ''',
+          ['cash'],
+        );
+
+        final availableFromSalesBefore = (totalRowBefore.isNotEmpty && totalRowBefore.first['total_available'] != null)
+            ? (totalRowBefore.first['total_available'] as num).toDouble()
+            : 0.0;
+
+        double availableTotal = (availableFromSalesBefore + latestDrawerStarting).clamp(0.0, double.infinity);
+
+        // لو المطلوب أكبر من المتاح: نعمل cap تلقائيًا للمبلغ المطلوب
+        if (amount > availableTotal + eps) {
+          debugPrint('Requested amount ${amount.toStringAsFixed(2)} is larger than available ${availableTotal.toStringAsFixed(2)} — capping to available.');
+          amount = availableTotal;
+        }
+
+        // لو ما فيش حاجة للسحب بعد الكاب (بقى صفر) — نخرج بهدوء بدون snackbar
+        if (amount <= eps) {
+          debugPrint('No available drawer amount to withdraw (after capping). Aborting silently.');
+          if (mounted) setState(() => _saving = false);
+          return;
+        }
+
+        // الآن ننفذ التحويل داخل transaction كما قبل
         await db.transaction((txn) async {
-          // 1) حساب إجمالي المبلغ المتاح من فواتير الكاش (نأخذ بعين الاعتبار المسحوبات الجزئية)
-          final totalRow = await txn.rawQuery(
-            '''
-          SELECT SUM(
-            CASE
-              WHEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0
-              THEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0))
-              ELSE 0
-            END
-          ) as total_available
-          FROM sales
-          WHERE payment_method = ?
-          ''',
-            ['cash'],
-          );
-
-          final availableFromSales = (totalRow.isNotEmpty && totalRow.first['total_available'] != null)
-              ? (totalRow.first['total_available'] as num).toDouble()
-              : 0.0;
-
-          // التأكد أن المجموع الكلي (sales available + starting) يغطي الطلب
-          if (availableFromSales + latestDrawerStarting + eps < amount) {
-            throw 'لا يوجد ما يكفي في الدرج (المتوفر من فواتير الكاش: ${availableFromSales.toStringAsFixed(2)} ، وبداية الدرج: ${latestDrawerStarting.toStringAsFixed(2)})';
-          }
-
           double remaining = amount;
 
-          // 2) اختر فواتير الكاش بالترتيب القديم → جديد (نقرأ net وdrawer_withdrawn_amount)
           final rows = await txn.rawQuery(
             '''
           SELECT id,
@@ -641,26 +648,22 @@ class _CashierScreenState extends State<CashierScreen> {
             ['cash'],
           );
 
-          // 3) تكرار الفواتير واستهلاك المبلغ (قد نأخذ جزءاً من الفاتورة)
           for (final r in rows) {
             if (remaining <= eps) break;
             final int id = (r['id'] as num).toInt();
             final double net = (r['net'] as num).toDouble();
             final double alreadyWithdrawn = (r['withdrawn'] as num).toDouble();
             final double availableFromThisSale = (net - alreadyWithdrawn).clamp(0.0, double.infinity);
-            if (availableFromThisSale <= eps) continue; // لا شيء متاح من هذه الفاتورة
+            if (availableFromThisSale <= eps) continue;
 
             if (availableFromThisSale <= remaining + eps) {
-              // نأخذ ما تبقى من هذه الفاتورة بالكامل (قد يكون جزءًا يكمل الفاتورة)
               final double newWithdrawn = (alreadyWithdrawn + availableFromThisSale).clamp(0.0, net);
               await txn.rawUpdate(
                 'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
                 [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
               );
               remaining -= availableFromThisSale;
-              // استمر للفاتورة التالية
             } else {
-              // نحتاج فقط جزءًا من هذه الفاتورة ليغطّي remaining
               final double take = remaining;
               final double newWithdrawn = (alreadyWithdrawn + take).clamp(0.0, net);
               await txn.rawUpdate(
@@ -672,10 +675,9 @@ class _CashierScreenState extends State<CashierScreen> {
             }
           }
 
-          // 4) إذا بقي مبلغ (remaining) — نخصمه من بداية الدُرج (latestDrawerStarting)
+          // إذا بقي شيء — نقصه من بداية الدرج
           if (remaining > eps) {
-            final double deductFromStarting = remaining;
-            final double newStarting = (latestDrawerStarting - deductFromStarting).clamp(0.0, double.infinity);
+            final double newStarting = (latestDrawerStarting - remaining).clamp(0.0, double.infinity);
             final now = DateTime.now().toIso8601String();
             await txn.insert('cash_drawer', {
               'amount': newStarting,
@@ -683,11 +685,11 @@ class _CashierScreenState extends State<CashierScreen> {
               'note': 'سحب إلى المحفظة (-${amount.toStringAsFixed(2)})',
               'created_at': now,
             });
-            // remaining أصبح 0 بعد خصم البداية
             remaining = 0.0;
           } else {
-            // حالة استهلاك كامل من الفواتير فقط — لو أردت توثيق تصفير بداية الدرج يمكنك إضافته كما قبلاً
-            if ((amount >= (latestDrawerStarting + availableFromSales) - eps) && latestDrawerStarting > eps) {
+            // لو استُهلك كل شيء (اختياري) نوّثق تصفير البداية
+            // (لا نُظهر SnackBar هنا)
+            if ((amount >= (latestDrawerStarting + availableFromSalesBefore) - eps) && latestDrawerStarting > eps) {
               final now = DateTime.now().toIso8601String();
               await txn.insert('cash_drawer', {
                 'amount': 0.0,
@@ -698,7 +700,7 @@ class _CashierScreenState extends State<CashierScreen> {
             }
           }
 
-          // 5) أخيراً: أدخل قيد في card_wallet (زيادة المحفظة بالمبلغ المنقول)
+          // سجل إضافة للمحفظة
           final now = DateTime.now().toIso8601String();
           await txn.insert('card_wallet', {
             'amount': amount,
@@ -706,20 +708,20 @@ class _CashierScreenState extends State<CashierScreen> {
             'note': 'تحويل من الدرج إلى المحفظة',
             'created_at': now,
           });
-        }); // نهاية الـ transaction
+        });
 
-        // بعد النجاح: أعد تحميل القيم في الواجهة
+        // reload UI
         await _loadCardTotals();
       } else {
-        // from wallet -> drawer (إيداع)
+        // من المحفظة -> الدرج (إيداع)
         if (amount > latestWallet + 0.000001) {
+          // هنا نحتفظ بالـ snackbar لأن قصّة المحفظة مختلفة (قد تريد منّع الإيداع لو الرصيد مش كافي)
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('الرصيد في المحفظة غير كافٍ. المتاح: EGP ${latestWallet.toStringAsFixed(2)}')));
           return;
         }
 
         await db.transaction((txn) async {
           final now = DateTime.now().toIso8601String();
-          // نخصم من المحفظة (سجل قيد سالب)
           await txn.insert('card_wallet', {
             'amount': -amount,
             'updated_by': username,
@@ -727,7 +729,6 @@ class _CashierScreenState extends State<CashierScreen> {
             'created_at': now,
           });
 
-          // ثم نسجل بداية درج جديدة (نضيف المبلغ إلى latestDrawerStarting)
           final newStarting = latestDrawerStarting + amount;
           await txn.insert('cash_drawer', {
             'amount': newStarting,
@@ -737,11 +738,11 @@ class _CashierScreenState extends State<CashierScreen> {
           });
         });
 
-        // reload UI values
         await _loadCardTotals();
       }
     } catch (e, st) {
       debugPrint('transferBetweenDrawerAndWallet failed: $e\n$st');
+      // احتفظنا بعرض Snackbar فقط للأخطاء العامة (يمكنك التعطيل لو تريد)
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التحويل: $e')));
     } finally {
       if (mounted) setState(() => _saving = false);
