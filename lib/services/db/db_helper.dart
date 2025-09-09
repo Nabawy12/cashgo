@@ -1294,9 +1294,10 @@ class DBHelper {
   Future<Map<String, double>> getDrawerTotals({String? fromDate, String? toDate}) async {
     final db = await instance.database;
 
-    // check if drawer_withdrawn column exists (to stay compatible with older DBs)
+    // تحقق من وجود عمود drawer_withdrawn_amount
     final cols = await db.rawQuery("PRAGMA table_info(sales);");
-    final hasDrawerWithdrawn = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
+    final hasWithdrawnFlag = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
+    final hasWithdrawnAmount = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn_amount');
 
     String dateCondition = '';
     List<Object?> args = [];
@@ -1311,17 +1312,26 @@ class DBHelper {
       args = [toDate];
     }
 
-    // build the cash sales condition (exclude drawer_withdrawn if column exists)
-    String cashWhere = "payment_method = ?";
-    if (hasDrawerWithdrawn) {
-      cashWhere += " AND COALESCE(drawer_withdrawn,0) = 0";
+    // نكوّن شرط الكاش بحيث إننا نطرح drawer_withdrawn_amount إذا كان موجود
+    String salesNetCashSql;
+    if (hasWithdrawnAmount) {
+      // نحسب SUM(MAX(net - drawer_withdrawn_amount, 0))
+      salesNetCashSql =
+      'SELECT SUM(CASE WHEN ((COALESCE(paid_amount,0)-COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0 THEN ((COALESCE(paid_amount,0)-COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) ELSE 0 END) as sales_net_cash '
+          'FROM sales WHERE payment_method = ? $dateCondition';
+    } else if (hasWithdrawnFlag) {
+      // قديم: استبعد الفواتير المعلّمة drawer_withdrawn = 1
+      salesNetCashSql =
+      'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_cash '
+          'FROM sales WHERE payment_method = ? AND COALESCE(drawer_withdrawn,0) = 0 $dateCondition';
+    } else {
+      // لا عمود تتبع: اجمع كل النقدي
+      salesNetCashSql =
+      'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_cash '
+          'FROM sales WHERE payment_method = ? $dateCondition';
     }
 
-    final salesRow = await db.rawQuery(
-      'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_cash '
-          'FROM sales WHERE $cashWhere $dateCondition',
-      ['cash', ...args],
-    );
+    final salesRow = await db.rawQuery(salesNetCashSql, ['cash', ...args]);
     final salesNetCash = (salesRow.isNotEmpty && salesRow.first['sales_net_cash'] != null)
         ? (salesRow.first['sales_net_cash'] as num).toDouble()
         : 0.0;
@@ -1334,6 +1344,7 @@ class DBHelper {
         ? (cardRow.first['sales_net_card'] as num).toDouble()
         : 0.0;
 
+    // بقية الحسابات كما كانت
     String purchaseDateCond = '';
     List<Object?> purchaseArgs = [];
     if (fromDate != null && toDate != null) {
