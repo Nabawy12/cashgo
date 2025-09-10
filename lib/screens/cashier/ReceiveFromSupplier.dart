@@ -132,12 +132,24 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     final cartons = _parseInt(_cartonsCtrl.text);
     final units = _parseInt(_unitsCtrl.text);
     final unitsInCarton = _parseInt(_unitsInCartonCtrl.text).clamp(1, 1000000);
-    final purchasePerCarton = _purchasePricePerCartonCtrl.text.trim().isEmpty
+
+    final rawCartonText = _purchasePricePerCartonCtrl.text.trim();
+    final rawUnitText = _purchasePricePerUnitCtrl.text.trim();
+
+    final purchasePerCarton = rawCartonText.isEmpty
         ? null
-        : double.tryParse(_purchasePricePerCartonCtrl.text.replaceAll(',', ''));
-    final purchasePerUnit = _purchasePricePerUnitCtrl.text.trim().isEmpty
+        : double.tryParse(rawCartonText.replaceAll(',', ''));
+
+    // treat an explicit 0 in per-unit as "not provided" when carton price exists,
+    // because most users type 0 by mistake — but allow 0 if there is no carton price.
+    double? purchasePerUnit = rawUnitText.isEmpty
         ? null
-        : double.tryParse(_purchasePricePerUnitCtrl.text.replaceAll(',', ''));
+        : double.tryParse(rawUnitText.replaceAll(',', ''));
+
+    if (purchasePerUnit != null && purchasePerUnit == 0.0 && purchasePerCarton != null) {
+      // ignore the explicit 0 and derive from carton price instead
+      purchasePerUnit = null;
+    }
 
     // determine carton unit price and unit price
     double cartonPrice = 0.0;
@@ -145,7 +157,9 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
     if (purchasePerCarton != null) {
       cartonPrice = purchasePerCarton;
-      unitPrice = (purchasePerUnit != null) ? purchasePerUnit : (unitsInCarton > 0 ? purchasePerCarton / unitsInCarton : 0.0);
+      unitPrice = (purchasePerUnit != null)
+          ? purchasePerUnit
+          : (unitsInCarton > 0 ? purchasePerCarton / unitsInCarton : 0.0);
     } else {
       // no carton price
       if (purchasePerUnit != null) {
@@ -161,6 +175,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     final total = cartons * cartonPrice + units * unitPrice;
     return total;
   }
+
 
   /// Update paid field depending on selected payment type and computed total.
   /// Behavior (after merging cash & credit into one option):
@@ -299,16 +314,16 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     if (purchaseCarton > 0) {
       _purchasePricePerCartonCtrl.text = purchaseCarton.toStringAsFixed(2);
       if (purchaseUnit <= 0 && unitsInCarton > 0) {
-        _purchasePricePerUnitCtrl.text = (purchaseCarton / unitsInCarton).toStringAsFixed(2);
+        _purchasePricePerUnitCtrl.text = 0.0.toString();
       } else if (purchaseUnit > 0) {
-        _purchasePricePerUnitCtrl.text = purchaseUnit.toStringAsFixed(2);
+        _purchasePricePerUnitCtrl.text = 0.0.toString();
       }
     } else if (purchaseUnit > 0) {
-      _purchasePricePerUnitCtrl.text = purchaseUnit.toStringAsFixed(2);
+      _purchasePricePerUnitCtrl.text = 0.0.toString();
     }
 
     if (sellingUnit > 0) {
-      _sellingPriceIfNewCtrl.text = sellingUnit.toStringAsFixed(2);
+      _purchasePricePerUnitCtrl.text = 0.0.toString();
     }
 
     // set a human readable stock summary so the user clearly sees the full count
@@ -398,28 +413,76 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     final cartonsInput = int.tryParse(_cartonsCtrl.text) ?? 0;
     final unitsInput = int.tryParse(_unitsCtrl.text) ?? 0;
     final unitsInCartonInput = int.tryParse(_unitsInCartonCtrl.text) ?? 1;
-    final purchasePerCarton = double.tryParse(_purchasePricePerCartonCtrl.text.replaceAll(',', ''));
-    final purchasePerUnit = double.tryParse(_purchasePricePerUnitCtrl.text.replaceAll(',', ''));
-    final sellingIfNew = double.tryParse(_sellingPriceIfNewCtrl.text.replaceAll(',', ''));
+
+    // read raw price fields (may be null if empty)
+    double? purchasePerCarton = _purchasePricePerCartonCtrl.text.trim().isEmpty
+        ? null
+        : double.tryParse(_purchasePricePerCartonCtrl.text.replaceAll(',', ''));
+    double? purchasePerUnit = _purchasePricePerUnitCtrl.text.trim().isEmpty
+        ? null
+        : double.tryParse(_purchasePricePerUnitCtrl.text.replaceAll(',', ''));
+
+    final sellingIfNew = _sellingPriceIfNewCtrl.text.trim().isEmpty
+        ? null
+        : double.tryParse(_sellingPriceIfNewCtrl.text.replaceAll(',', ''));
+
     final rawPaid = double.tryParse(_paidAmountCtrl.text.replaceAll(',', '')) ?? 0.0;
 
-    try {
-      final totalCost = _computeTotalCost();
+    // Normalization: if user explicitly entered 0 for per-unit but a carton price exists,
+    // ignore the 0 and derive per-unit from carton price. This ensures total reflects carton price.
+    if (purchasePerUnit != null && purchasePerUnit == 0.0 && purchasePerCarton != null) {
+      purchasePerUnit = null;
+    }
 
-      // normalize paid value
+    // Helper local function to compute total using the normalized values
+    double computeTotalFromValues({
+      required int cartons,
+      required int units,
+      required int unitsInCarton,
+      double? purchaseCarton,
+      double? purchaseUnit,
+    }) {
+      final uic = unitsInCarton.clamp(1, 1000000);
+      double cartonPrice = 0.0;
+      double unitPrice = 0.0;
+
+      if (purchaseCarton != null) {
+        cartonPrice = purchaseCarton;
+        unitPrice = (purchaseUnit != null) ? purchaseUnit : (uic > 0 ? purchaseCarton / uic : 0.0);
+      } else {
+        if (purchaseUnit != null) {
+          unitPrice = purchaseUnit;
+          cartonPrice = purchaseUnit * uic;
+        } else {
+          cartonPrice = 0.0;
+          unitPrice = 0.0;
+        }
+      }
+
+      return cartons * cartonPrice + units * unitPrice;
+    }
+
+    try {
+      // compute total cost using normalized values (this will reflect carton price
+      // even if per-unit was set to 0 by the user)
+      final totalCost = computeTotalFromValues(
+        cartons: cartonsInput,
+        units: unitsInput,
+        unitsInCarton: unitsInCartonInput,
+        purchaseCarton: purchasePerCarton,
+        purchaseUnit: purchasePerUnit,
+      );
+
+      // normalize paid value relative to computed total
       double paid = rawPaid;
       if (paid < 0) paid = 0.0;
       if (paid > totalCost) paid = totalCost;
 
       final dbHelper = DBHelper.instance;
 
-      // ---------------------------
-      // IMPORTANT: if product is selected, sync new units_in_carton BEFORE calling receiveFromSupplier
-      // This preserves totalUnits and redistributes them using the new units_in_carton value.
-      // ---------------------------
+      // --- keep existing sync of units_in_carton before receive (unchanged) ---
       if (_selectedProductId != null) {
         try {
-          // Load product (getAllProducts returns total_units computed)
           final products = await DBHelper.instance.getAllProducts();
           final prod = products.firstWhere(
                 (p) => (p['id'] as num).toInt() == _selectedProductId,
@@ -427,7 +490,6 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
           );
 
           if (prod.isNotEmpty) {
-            // compute current totalUnits (prefer total_units if present)
             int totalUnits = 0;
             try {
               if (prod.containsKey('total_units') && prod['total_units'] != null) {
@@ -442,10 +504,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
               totalUnits = 0;
             }
 
-            // new units-in-carton from form (ensure >= 1)
             int newUnitsInCarton = unitsInCartonInput <= 0 ? 1 : unitsInCartonInput;
-
-            // redistribute totalUnits into cartons + remainder using newUnitsInCarton
             int newCartons = 0;
             int newRemainder = 0;
             if (newUnitsInCarton > 0) {
@@ -456,7 +515,6 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
               newRemainder = 0;
             }
 
-            // prepare update map - preserve other fields where possible
             final prodUpdate = {
               'id': _selectedProductId,
               'barcode': prod['barcode'] ?? _barcodeCtrl.text.trim(),
@@ -472,7 +530,6 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
             await DBHelper.instance.updateProduct(prodUpdate);
 
-            // update UI to reflect redistribution before adding new received cartons
             _unitsInCartonCtrl.text = newUnitsInCarton.toString();
             _cartonsCtrl.text = newCartons.toString();
             _unitsCtrl.text = newRemainder.toString();
@@ -483,13 +540,11 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
           }
         } catch (e) {
           debugPrint('Warning: failed to sync units_in_carton before receive: $e');
-          // لا نوقف العملية هنا — نتابع receiveFromSupplier لكن قد يستخدم القيمة القديمة في DB
         }
       }
 
-      // ---------------------------
-      // call receiveFromSupplier to persist the incoming receipt (this will use the updated units_in_carton)
-      // ---------------------------
+      // call receiveFromSupplier using the original parsed values (note: we pass
+      // purchasePerUnit which may be null after normalization above)
       final res = await dbHelper.receiveFromSupplier(
         barcode: barcode.isEmpty ? null : barcode,
         name: name.isEmpty ? null : name,
@@ -505,14 +560,13 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
       );
 
       if (res['status'] == 'need_selling_price') {
-        // product not found and UI must ask for selling price
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير موجود. الرجاء إدخال سعر البيع وإنشاء المنتج.')));
       } else if (res['status'] == 'ok') {
-        final totalCostRes = (res['total_cost'] ?? 0.0) as double;
-        final due = (res['due_amount'] ?? 0.0) as double;
+        final totalCostRes = (res['total_cost'] ?? totalCost) as double;
+        final due = (res['due_amount'] ?? (totalCostRes - paid)) as double;
         final added = res['added_units'] ?? 0;
 
-        // apply payment-side effects (drawer / card_wallet) as in original logic
+        // payment side effects (unchanged)
         try {
           final currentUser = await dbHelper.getCurrentUser();
           final username = (currentUser != null && currentUser['username'] != null)
@@ -528,10 +582,9 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                 note: 'Payment for purchase (wallet) -${paid.toStringAsFixed(2)}',
               );
             } else {
-              // merged cash_or_credit -> infer: paid < totalCost => partial credit, paid == totalCost => full cash
               final latestStarting = await dbHelper.getLatestDrawerStartingAmount();
               final newStarting = latestStarting - paid;
-              final notePrefix = (paid < totalCost) ? 'Partial payment for credit purchase' : 'Full cash payment for purchase';
+              final notePrefix = (paid < totalCostRes) ? 'Partial payment for credit purchase' : 'Full cash payment for purchase';
               await dbHelper.setDrawerStartingAmount(
                 newStarting,
                 username,
@@ -540,7 +593,6 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
             }
           }
 
-          // show dialog summarizing result
           showDialog(
             context: context,
             builder: (_) => AlertDialog(
@@ -573,7 +625,6 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
           _paidAmountCtrl.text = totalCostRes.toStringAsFixed(2);
           _paidTouched = false;
 
-          // reload any relevant aggregates
           await _loadAfterSubmit();
         } catch (e) {
           debugPrint('Error while applying post-payment effects: $e');
