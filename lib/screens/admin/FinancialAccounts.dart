@@ -124,6 +124,13 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   double _cardNetSales = 0.0;
   final _walletController = TextEditingController();
 
+  String _formatWithSign(double value) {
+    if (value < 0) {
+      return '-${_formatMoney(value.abs())}';
+    }
+    return _formatMoney(value);
+  }
+
   Future<void> _loadData() async {
     if (!mounted) return;
     setState(() => _loading = true);
@@ -234,7 +241,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       }
       // حساب القيمة الحالية للدرج (starting + مبيعات كاش - مشتريات كاش)
       final double computedFromParts = starting + salesNetCash - purchasePaidCash;
-      final double adjustedCurrent = computedFromParts < 0.0 ? 0.0 : computedFromParts;
+      final double adjustedCurrent = computedFromParts; // لا نقومّ السالب — نريد إظهاره كما هو
 
       // قراءة سندات الشراء لتعبئة paid/due
       final purchaseReceipts = await DBHelper.instance.getCreditPurchaseReceipts();
@@ -765,7 +772,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                               style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold,color: Colors.white)),
                                           SizedBox(width: 10,),
                                           Text(
-                                              _formatMoney(_currentDrawer),
+                                              _formatWithSign(_currentDrawer),
                                               style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold,color: Colors.white)),
                                         ],
                                       ),

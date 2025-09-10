@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:intl/intl.dart' hide TextDirection ;
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../models/cart.dart';
 import '../../models/product.dart';
 import '../../services/cashier/print.dart';
@@ -206,7 +207,9 @@ class _CashierScreenState extends State<CashierScreen> {
       FocusScope.of(context).requestFocus(_barcodeFocus);
     });
     _loadCurrentUser();
-    _loadCardTotals(); // load wallet + card totals for display
+    _loadCardTotals();
+    WakelockPlus.enable();
+
   }
 
   Future<void> _loadCurrentUser() async {
@@ -240,6 +243,7 @@ class _CashierScreenState extends State<CashierScreen> {
     _inlineDebounce?.cancel();
     _inlineScrollController.dispose();
     _inlineKeyboardNode.dispose();
+    WakelockPlus.disable();
     super.dispose();
   }
 
@@ -492,6 +496,21 @@ class _CashierScreenState extends State<CashierScreen> {
         : 0.0;
     return value < 0 ? 0.0 : value;
   }
+  final NumberFormat _moneyFmt = NumberFormat.currency(locale: 'ar', symbol: '', decimalDigits: 0);
+  final NumberFormat _moneyFmtNoDecimal = NumberFormat.currency(locale: 'ar', symbol: '', decimalDigits: 0);
+  String _formatMoney(double value) {
+    const eps = 0.000001;
+    final isWhole = (value - value.truncate()).abs() < eps;
+    // Fixed: avoid recursive call. Use decimal format when needed.
+    return isWhole ? _moneyFmtNoDecimal.format(value) : _moneyFmt.format(value);
+  }
+  String _formatWithSign(double value) {
+    if (value < 0) {
+      return '-${_formatMoney(value.abs())}';
+    }
+    return _formatMoney(value);
+  }
+
 
   Future<void> _loadCardTotals() async {
     try {
@@ -536,8 +555,8 @@ class _CashierScreenState extends State<CashierScreen> {
           purchasePaidCash = 0.0;
         }
       }
-      final computedFromParts = starting + salesNetCash - purchasePaidCash;
-      final adjustedCurrent = computedFromParts < 0.0 ? 0.0 : computedFromParts;
+      final double computedFromParts = starting + salesNetCash - purchasePaidCash;
+      final double adjustedCurrent = computedFromParts;
 
       // ===== استخدم adjustedCurrent في التقرير بدل computeCurrentDrawerAmount =====
 
@@ -555,21 +574,21 @@ class _CashierScreenState extends State<CashierScreen> {
   }
 
 
-  Future<void> _transferBetweenDrawerAndWallet(double amount, {required bool fromDrawerToWallet}) async {
+// 1) تعديل الدالة لتُعيد نتيجة مفصّلة
+  Future<Map<String, dynamic>> _transferBetweenDrawerAndWallet(double amount, {required bool fromDrawerToWallet}) async {
+    const double eps = 0.0001;
     if (amount <= 0) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صالحًا أكبر من صفر')));
-      return;
+      return {'transferred': 0.0, 'capped': false, 'reason': 'invalid', 'available': 0.0};
     }
 
     setState(() => _saving = true);
     final dbHelper = DBHelper.instance;
     try {
-      // تأكد من وجود جداول أساسية
       await dbHelper.ensureCardWalletTable();
       await dbHelper.ensureCashDrawerTable();
       await dbHelper.ensureDrawerWithdrawnColumnExists();
 
-      // تأكد وجود العمود drawer_withdrawn_amount (migration آمنة)
       final dbForMigration = await dbHelper.database;
       try {
         final cols = await dbForMigration.rawQuery("PRAGMA table_info('sales');");
@@ -594,10 +613,12 @@ class _CashierScreenState extends State<CashierScreen> {
       final latestDrawerStarting = await dbHelper.getLatestDrawerStartingAmount();
 
       final db = await dbHelper.database;
-      const double eps = 0.0001;
+
+      double requestedAmount = amount;
+      bool wasCapped = false;
 
       if (fromDrawerToWallet) {
-        // --- PRE-CHECK: احسب إجمالي المتاح (فواتير متاحة + بداية الدرج)
+        // حساب المتاح من الفواتير + بداية الدرج
         final totalRowBefore = await db.rawQuery(
           '''
         SELECT SUM(
@@ -619,20 +640,27 @@ class _CashierScreenState extends State<CashierScreen> {
 
         double availableTotal = (availableFromSalesBefore + latestDrawerStarting).clamp(0.0, double.infinity);
 
-        // لو المطلوب أكبر من المتاح: نعمل cap تلقائيًا للمبلغ المطلوب
+
+
         if (amount > availableTotal + eps) {
-          debugPrint('Requested amount ${amount.toStringAsFixed(2)} is larger than available ${availableTotal.toStringAsFixed(2)} — capping to available.');
-          amount = availableTotal;
+          debugPrint('Requested amount ${amount.toStringAsFixed(2)} is larger than available ${availableTotal.toStringAsFixed(2)} — aborting without transfer.');
+          if (mounted) setState(() => _saving = false);
+          return {
+            'transferred': 0.0,
+            'capped': false,
+            'reason': 'requested_exceeds_available',
+            'available': availableTotal
+          };
         }
 
-        // لو ما فيش حاجة للسحب بعد الكاب (بقى صفر) — نخرج بهدوء بدون snackbar
+
         if (amount <= eps) {
           debugPrint('No available drawer amount to withdraw (after capping). Aborting silently.');
           if (mounted) setState(() => _saving = false);
-          return;
+          return {'transferred': 0.0, 'capped': wasCapped, 'reason': 'insufficient_drawer', 'available': availableTotal};
         }
 
-        // الآن ننفذ التحويل داخل transaction كما قبل
+        // تنفيذ التحويل داخل transaction
         await db.transaction((txn) async {
           double remaining = amount;
 
@@ -675,20 +703,17 @@ class _CashierScreenState extends State<CashierScreen> {
             }
           }
 
-          // إذا بقي شيء — نقصه من بداية الدرج
           if (remaining > eps) {
             final double newStarting = (latestDrawerStarting - remaining).clamp(0.0, double.infinity);
             final now = DateTime.now().toIso8601String();
             await txn.insert('cash_drawer', {
               'amount': newStarting,
               'updated_by': username,
-              'note': 'سحب إلى المحفظة (-${amount.toStringAsFixed(2)})',
+              'note': 'سحب إلى المحفظة (-${requestedAmount.toStringAsFixed(2)})',
               'created_at': now,
             });
             remaining = 0.0;
           } else {
-            // لو استُهلك كل شيء (اختياري) نوّثق تصفير البداية
-            // (لا نُظهر SnackBar هنا)
             if ((amount >= (latestDrawerStarting + availableFromSalesBefore) - eps) && latestDrawerStarting > eps) {
               final now = DateTime.now().toIso8601String();
               await txn.insert('cash_drawer', {
@@ -710,14 +735,16 @@ class _CashierScreenState extends State<CashierScreen> {
           });
         });
 
-        // reload UI
         await _loadCardTotals();
+        return {'transferred': amount, 'capped': wasCapped, 'reason': null, 'available': (availableFromSalesBefore + latestDrawerStarting)};
+
       } else {
         // من المحفظة -> الدرج (إيداع)
-        if (amount > latestWallet + 0.000001) {
-          // هنا نحتفظ بالـ snackbar لأن قصّة المحفظة مختلفة (قد تريد منّع الإيداع لو الرصيد مش كافي)
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('الرصيد في المحفظة غير كافٍ. المتاح: EGP ${latestWallet.toStringAsFixed(2)}')));
-          return;
+        if (amount > latestWallet + eps) {
+          if (mounted) {
+            // لا نُظهر هنا snackbar نهائيًا — نُعيد السبب للـ caller ليعرض الرسالة المناسبة
+          }
+          return {'transferred': 0.0, 'capped': false, 'reason': 'insufficient_wallet', 'available': latestWallet};
         }
 
         await db.transaction((txn) async {
@@ -739,11 +766,12 @@ class _CashierScreenState extends State<CashierScreen> {
         });
 
         await _loadCardTotals();
+        return {'transferred': amount, 'capped': false, 'reason': null, 'available': latestWallet};
       }
     } catch (e, st) {
       debugPrint('transferBetweenDrawerAndWallet failed: $e\n$st');
-      // احتفظنا بعرض Snackbar فقط للأخطاء العامة (يمكنك التعطيل لو تريد)
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التحويل: $e')));
+      return {'transferred': 0.0, 'capped': false, 'reason': 'exception: $e', 'available': 0.0};
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -779,9 +807,7 @@ class _CashierScreenState extends State<CashierScreen> {
                         child: ElevatedButton(
                           style: ElevatedButton.styleFrom(backgroundColor: isDeposit ? Colors.green : AppColorsDark.bgColor),
                           onPressed: isProcessing ? null : () => setState2(() => isDeposit = true),
-                          child: const Text('إيداع',style: TextStyle(
-                              color: Colors.white
-                          ),),
+                          child: const Text('إيداع', style: TextStyle(color: Colors.white)),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -789,9 +815,7 @@ class _CashierScreenState extends State<CashierScreen> {
                         child: ElevatedButton(
                           style: ElevatedButton.styleFrom(backgroundColor: !isDeposit ? Colors.red : AppColorsDark.bgColor),
                           onPressed: isProcessing ? null : () => setState2(() => isDeposit = false),
-                          child: const Text('سحب',style: TextStyle(
-                              color: Colors.white
-                          ),),
+                          child: const Text('سحب', style: TextStyle(color: Colors.white)),
                         ),
                       ),
                     ],
@@ -826,27 +850,44 @@ class _CashierScreenState extends State<CashierScreen> {
                     setState2(() => isProcessing = true);
 
                     try {
-                      // NEW BEHAVIOR:
-                      // - If isDeposit == true => transfer from wallet -> drawer (إيداع: يزيد الدرج وينقص المحفظة)
-                      // - If isDeposit == false => transfer from drawer -> wallet (سحب: ينقص الدرج ويزيد المحفظة)
-                      if (isDeposit) {
-                        await _transferBetweenDrawerAndWallet(value, fromDrawerToWallet: false);
-                      } else {
-                        await _transferBetweenDrawerAndWallet(value, fromDrawerToWallet: true);
-                      }
+                      // استدعاء الدالة التي تعيد نتيجة مفصّلة
+                      final result = await _transferBetweenDrawerAndWallet(value, fromDrawerToWallet: !isDeposit);
+                      final transferred = (result['transferred'] as double?) ?? 0.0;
+                      final reason = result['reason'] as String?;
+                      final available = (result['available'] as double?) ?? 0.0;
+                      final bool capped = (result['capped'] as bool?) ?? false;
 
-                      // canonical reload after success
+                      // إعادة تحميل القيم canonical
                       await _loadCardTotals();
 
                       Navigator.of(ctx).pop();
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isDeposit
-                          ? 'تم الإيداع — تم نقل EGP ${value.toStringAsFixed(2)} من المحفظة إلى الدرج'
-                          : 'تم السحب — تم نقل EGP ${value.toStringAsFixed(2)} من الدرج إلى المحفظة')));
+
+                      if (transferred > 0.0001) {
+                        // عرض نجاح فقط لو تم تحويل فعلي
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+                            isDeposit
+                                ? 'تم الإيداع — تم نقل EGP ${transferred.toStringAsFixed(2)} من المحفظة إلى الدرج'
+                                : 'تم السحب — تم نقل EGP ${transferred.toStringAsFixed(2)} من الدرج إلى المحفظة'
+                        )));
+                        // في حال أردت إبلاغ أنّ المستخدم طلب أكثر من المتاح (لو الدالة تدعم الكَبّ) — نعرض أيضاً
+                        if (capped) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('المبلغ الأصلي كان أكبر من المتاح — تم تحويل ${transferred.toStringAsFixed(2)} فقط. المتاح: EGP ${available.toStringAsFixed(2)}')));
+                        }
+                      } else {
+                        // لم يحدث تحويل فعلي — نعرض سبب واضح ولا نعرض "تم التحويل"
+                        if (reason == 'insufficient_wallet') {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('الرصيد في المحفظة غير كافٍ. المتاح: EGP ${available.toStringAsFixed(2)}')));
+                        } else if (reason == 'insufficient_drawer' || reason == 'requested_exceeds_available') {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('المبلغ المطلوب أكبر من الموجود في الدرج. المتاح: EGP ${available.toStringAsFixed(2)} — لم يتم تنفيذ تحويل')));
+                        } else if (reason != null && reason.startsWith('exception')) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تنفيذ العملية: $reason')));
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم يتم تنفيذ أي تحويل')));
+                        }
+                      }
                     } catch (e) {
                       debugPrint('Withdraw/Deposit failed: $e');
-                      // rollback to canonical DB values to avoid inconsistent negative UI
                       await _loadCardTotals();
-                      setState2(() => dialogWallet = _walletAmount);
                       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تنفيذ العملية: $e')));
                     } finally {
                       setState2(() => isProcessing = false);
@@ -1845,7 +1886,7 @@ class _CashierScreenState extends State<CashierScreen> {
                 ),
                 SizedBox(height: 10,),
                 Text(
-                  NumberFormat("#,###").format(Drawer),
+                  _formatWithSign(Drawer),
                   style: const TextStyle(color: Colors.white70, fontSize: 14),
                 ),
               ],
@@ -1952,8 +1993,9 @@ class _CashierScreenState extends State<CashierScreen> {
                     },
                     child: Directionality(
                       textDirection: TextDirection.rtl,
-                      child: TextField(
+                      child: CustomFormField(
                         controller: _barcodeController,
+                        hint: "امسح الباركود أو اكتب اسم المنتج ثم اضغط Enter",
                         focusNode: _barcodeFocus,
                         onTap: () {
                           // تأكد إن node الخاص بالكيبورد يستلم الفوكس أيضاً عند الضغط في الحقل
@@ -1973,7 +2015,7 @@ class _CashierScreenState extends State<CashierScreen> {
                             });
                           }
                         },
-                        onSubmitted: (v) async {
+                        onFieldSubmitted:  (v) async {
                           final trimmed = v.trim();
                           if (trimmed.isEmpty) return;
 
@@ -2012,28 +2054,6 @@ class _CashierScreenState extends State<CashierScreen> {
                             FocusScope.of(context).requestFocus(_barcodeFocus);
                           }
                         },
-                        decoration: InputDecoration(
-                          hintText: 'امسح الباركود أو اكتب اسم المنتج ثم اضغط Enter',
-                          filled: true,
-                          fillColor: Colors.white10,
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                          suffixIcon: IconButton(
-                            icon: const Icon(Icons.search),
-                            onPressed: () async {
-                              final q = _barcodeController.text.trim();
-                              if (q.isEmpty) return;
-                              final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(q);
-                              if (containsLetters) {
-                                _scheduleInlineSearch(q);
-                                if (!_inlineKeyboardNode.hasFocus) FocusScope.of(context).requestFocus(_inlineKeyboardNode);
-                              } else {
-                                await _onBarcodeSubmitted(q);
-                              }
-                            },
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
-                        ),
-                        style: const TextStyle(color: Colors.white),
                         keyboardType: TextInputType.text,
                       ),
                     ),
