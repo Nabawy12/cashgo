@@ -240,7 +240,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         }
       }
       // حساب القيمة الحالية للدرج (starting + مبيعات كاش - مشتريات كاش)
-      final double computedFromParts = starting + salesNetCash - purchasePaidCash;
+      final double computedFromParts = starting +_salesNet;
       final double adjustedCurrent = computedFromParts; // لا نقومّ السالب — نريد إظهاره كما هو
 
       // قراءة سندات الشراء لتعبئة paid/due

@@ -66,6 +66,11 @@ class _CashierScreenState extends State<CashierScreen> {
   bool _inlineLoading = false;
   Timer? _inlineDebounce;
   int _inlineSelectedIndex = -1;
+  // user-specific starting + net sales (to show in AppBar)
+  double _userStarting = 0.0;
+  double _userNetSales = 0.0;
+  double get _userStartingPlusNet => (_userStarting + _userNetSales);
+/////////////////////
   final ScrollController _inlineScrollController = ScrollController();
   final FocusNode _inlineKeyboardNode = FocusNode();
 
@@ -76,51 +81,81 @@ class _CashierScreenState extends State<CashierScreen> {
     await _inlineScrollController.animateTo(offset, duration: const Duration(milliseconds: 200), curve: Curves.easeInOut);
   }
 
-  void _handleInlineKey(RawKeyEvent event) {
-    if (event is! RawKeyDownEvent) return; // تعامل فقط مع أحداث الضغط
-    if (_inlineSearchResults.isEmpty) return;
+  /// حمّل بداية الدرج المسجّلة بواسطة المستخدم الحالي + صافي مبيعاته النقدية لليوم
+  /// حمّل البداية العامة + صافي (المتبقي) من مبيعات الكاشير النقدية لليوم
+  Future<void> _loadUserStartingAndNetSales() async {
+    try {
+      final username = _currentUsername ?? widget.cashierUsername;
+      final db = await DBHelper.instance.database;
 
-    final key = event.logicalKey;
+      // 1) global starting
+      final start = await DBHelper.instance.getLatestDrawerStartingAmount();
 
-    if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() {
-        _inlineSelectedIndex = (_inlineSelectedIndex + 1).clamp(0, _inlineSearchResults.length - 1);
-      });
-      _scrollInlineToIndex(_inlineSelectedIndex);
-    } else if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() {
-        _inlineSelectedIndex = (_inlineSelectedIndex - 1).clamp(0, _inlineSearchResults.length - 1);
-      });
-      _scrollInlineToIndex(_inlineSelectedIndex);
-    } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
-      final idx = _inlineSelectedIndex >= 0 ? _inlineSelectedIndex : 0;
-      if (idx >= 0 && idx < _inlineSearchResults.length) {
-        final item = _inlineSearchResults[idx];
+      // 2) today's date
+      final now = DateTime.now();
+      final dateOnly = now.toIso8601String().split('T').first;
 
-        // منع الاستدعاء المزدوج
-        if (_dialogOpening) return;
-        _dialogOpening = true;
+      // 3) تفقّد وجود أعمدة drawer_withdrawn_amount / drawer_withdrawn
+      final cols = await db.rawQuery("PRAGMA table_info(sales);");
+      final hasWithdrawnAmount = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn_amount');
+      final hasWithdrawnFlag = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
 
-        Future.microtask(() async {
-          try {
-            await _showProductDetailDialog(item);
-          } finally {
-            if (!mounted) return;
-            setState(() {
-              _inlineSearchResults = [];
-              _inlineLoading = false;
-              _inlineSelectedIndex = -1;
-              _dialogOpening = false;
-            });
-          }
-        });
+      double netUnwithdrawn = 0.0;
+
+      if (hasWithdrawnAmount) {
+        // المعادلة: (paid - change) - drawer_withdrawn_amount لكل فاتورة
+        final rows = await db.rawQuery('''
+          SELECT SUM(
+            (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)
+          ) as net_unwithdrawn
+          FROM sales
+          WHERE payment_method = 'cash'
+            AND cashier_username = ?
+            AND date(date) = ?
+        ''', [username, dateOnly]);
+
+        netUnwithdrawn = (rows.isNotEmpty && rows.first['net_unwithdrawn'] != null)
+            ? (rows.first['net_unwithdrawn'] as num).toDouble()
+            : 0.0;
+      } else if (hasWithdrawnFlag) {
+        // قديم: الفواتير الموسومة drawer_withdrawn = 1 تعتبر مُسحوبة كليًا، فنجمع فقط الفواتير غير المسحوبة
+        final rows = await db.rawQuery('''
+          SELECT SUM((COALESCE(paid_amount,0) - COALESCE(change_amount,0))) as net_unwithdrawn
+          FROM sales
+          WHERE payment_method = 'cash'
+            AND cashier_username = ?
+            AND COALESCE(drawer_withdrawn,0) = 0
+            AND date(date) = ?
+        ''', [username, dateOnly]);
+
+        netUnwithdrawn = (rows.isNotEmpty && rows.first['net_unwithdrawn'] != null)
+            ? (rows.first['net_unwithdrawn'] as num).toDouble()
+            : 0.0;
+      } else {
+        // لا عمود تتبع موجود — نجمع كل النقدي من فواتير الكاشير لليوم
+        final rows = await db.rawQuery('''
+          SELECT SUM((COALESCE(paid_amount,0) - COALESCE(change_amount,0))) as net_unwithdrawn
+          FROM sales
+          WHERE payment_method = 'cash'
+            AND cashier_username = ?
+            AND date(date) = ?
+        ''', [username, dateOnly]);
+
+        netUnwithdrawn = (rows.isNotEmpty && rows.first['net_unwithdrawn'] != null)
+            ? (rows.first['net_unwithdrawn'] as num).toDouble()
+            : 0.0;
       }
-    } else if (key == LogicalKeyboardKey.escape) {
+
+      // لا نسمح بالقيمة السالبة
+      if (netUnwithdrawn < 0) netUnwithdrawn = 0.0;
+
+      if (!mounted) return;
       setState(() {
-        _inlineSearchResults = [];
-        _inlineLoading = false;
-        _inlineSelectedIndex = -1;
+        _userStarting = start;            // global starting (كما طلبت)
+        _userNetSales = netUnwithdrawn;  // المتبقي فعلاً من مبيعات الكاشير
       });
+    } catch (e, st) {
+      debugPrint('Failed to load user starting+net: $e\n$st');
     }
   }
 
@@ -221,17 +256,22 @@ class _CashierScreenState extends State<CashierScreen> {
         });
         Session.currentUsername = _currentUsername;
         Session.currentRole = (cur['role'] ?? Session.currentRole) as String?;
+        // تحميل بداية الدرج وصافي المبيعات الخاص بالمستخدم الآن بعد معرفة اسمه
+        await _loadUserStartingAndNetSales();
       } else {
         // fallback to widget prop if DB has no current user
         setState(() {
           _currentUsername = widget.cashierUsername;
         });
+        // and still try to load
+        await _loadUserStartingAndNetSales();
       }
     } catch (e) {
       debugPrint('Failed to load current user: $e');
       setState(() {
         _currentUsername = widget.cashierUsername;
       });
+      await _loadUserStartingAndNetSales();
     }
   }
 
@@ -555,7 +595,7 @@ class _CashierScreenState extends State<CashierScreen> {
           purchasePaidCash = 0.0;
         }
       }
-      final double computedFromParts = starting + salesNetCash - purchasePaidCash;
+      final double computedFromParts = starting + salesNetCash;
       final double adjustedCurrent = computedFromParts;
 
       // ===== استخدم adjustedCurrent في التقرير بدل computeCurrentDrawerAmount =====
@@ -566,8 +606,9 @@ class _CashierScreenState extends State<CashierScreen> {
         _cardReceived = untransferred;
         _cardTotalAvailable = (_walletAmount) + (_cardReceived);
         Drawer = adjustedCurrent;
-
       });
+      await _loadUserStartingAndNetSales();
+
     } catch (e, st) {
       debugPrint('Failed to load card totals: $e\n$st');
     }
@@ -589,6 +630,7 @@ class _CashierScreenState extends State<CashierScreen> {
       await dbHelper.ensureCashDrawerTable();
       await dbHelper.ensureDrawerWithdrawnColumnExists();
 
+      // تأكد من وجود عمود drawer_withdrawn_amount (migration-safe)
       final dbForMigration = await dbHelper.database;
       try {
         final cols = await dbForMigration.rawQuery("PRAGMA table_info('sales');");
@@ -601,171 +643,174 @@ class _CashierScreenState extends State<CashierScreen> {
         debugPrint('Warning: ensure drawer_withdrawn_amount column check failed: $e\n$st');
       }
 
+      // تحديث القيم الخاصة بالمستخدم (userNetSales + userStarting)
+      await _loadUserStartingAndNetSales();
+
       final currentUser = await dbHelper.getCurrentUser();
       final username = (currentUser != null && currentUser['username'] != null)
           ? currentUser['username'] as String
           : widget.cashierUsername;
 
-      await _loadCardTotals();
-
-      // اقرأ القيم الأساسية
+      // إعادة تحميل القيم الأساسية
       final latestWallet = await dbHelper.getLatestCardWalletAmount();
-      final latestDrawerStarting = await dbHelper.getLatestDrawerStartingAmount();
-
+      final latestDrawerStarting = await dbHelper.getLatestDrawerStartingAmount(); // global starting
       final db = await dbHelper.database;
 
       double requestedAmount = amount;
       bool wasCapped = false;
 
       if (fromDrawerToWallet) {
-        // حساب المتاح من الفواتير + بداية الدرج
+        // نحسب المتاح من مبيعات الكاشير (cash, فقط لهذا الكاشير)
         final totalRowBefore = await db.rawQuery(
           '''
-        SELECT SUM(
-          CASE
-            WHEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0
-            THEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0))
-            ELSE 0
-          END
-        ) as total_available
-        FROM sales
-        WHERE payment_method = ?
-        ''',
-          ['cash'],
+      SELECT SUM(
+        CASE
+          WHEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0
+          THEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0))
+          ELSE 0
+        END
+      ) as total_available
+      FROM sales
+      WHERE payment_method = ?
+        AND cashier_username = ?
+      ''',
+          ['cash', username],
         );
 
         final availableFromSalesBefore = (totalRowBefore.isNotEmpty && totalRowBefore.first['total_available'] != null)
             ? (totalRowBefore.first['total_available'] as num).toDouble()
             : 0.0;
 
-        double availableTotal = (availableFromSalesBefore + latestDrawerStarting).clamp(0.0, double.infinity);
+        // استخدم القيم المحمَّلة في الواجهة كـ fallback/عرض
+        final userNet = _userNetSales.clamp(0.0, double.infinity);
+        final userStart = _userStarting.clamp(0.0, double.infinity);
 
+        // الفعلية: مجموع ما هو متاح فعلاً لدى الكاشير + البداية العامة
+        final totalAvailableForThisCashier = (availableFromSalesBefore + latestDrawerStarting).clamp(0.0, double.infinity);
 
-
-        if (amount > availableTotal + eps) {
-          debugPrint('Requested amount ${amount.toStringAsFixed(2)} is larger than available ${availableTotal.toStringAsFixed(2)} — aborting without transfer.');
+        // لو المطلوب أكبر من مجموع المخصص نرفض
+        if (requestedAmount > (availableFromSalesBefore + latestDrawerStarting) + eps) {
           if (mounted) setState(() => _saving = false);
           return {
             'transferred': 0.0,
             'capped': false,
             'reason': 'requested_exceeds_available',
-            'available': availableTotal
+            'available': (availableFromSalesBefore + latestDrawerStarting)
           };
         }
 
+        double remaining = requestedAmount;
 
-        if (amount <= eps) {
-          debugPrint('No available drawer amount to withdraw (after capping). Aborting silently.');
-          if (mounted) setState(() => _saving = false);
-          return {'transferred': 0.0, 'capped': wasCapped, 'reason': 'insufficient_drawer', 'available': availableTotal};
+        // 1) أخذ المبلغ أولًا من فواتير الكاشير (المبالغ المتاحة في كل فاتورة)
+        final rows = await db.rawQuery(
+          '''
+      SELECT id,
+             (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS net,
+             COALESCE(drawer_withdrawn_amount,0) as withdrawn
+      FROM sales
+      WHERE payment_method = ?
+        AND cashier_username = ?
+      ORDER BY date ASC
+      ''',
+          ['cash', username],
+        );
+
+        for (final r in rows) {
+          if (remaining <= eps) break;
+          final int id = (r['id'] as num).toInt();
+          final double net = (r['net'] as num).toDouble();
+          final double alreadyWithdrawn = (r['withdrawn'] as num).toDouble();
+          final double availableFromThisSale = (net - alreadyWithdrawn).clamp(0.0, double.infinity);
+          if (availableFromThisSale <= eps) continue;
+
+          if (availableFromThisSale <= remaining + eps) {
+            final double newWithdrawn = (alreadyWithdrawn + availableFromThisSale).clamp(0.0, net);
+            await db.rawUpdate(
+              'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
+              [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
+            );
+            remaining -= availableFromThisSale;
+          } else {
+            final double take = remaining;
+            final double newWithdrawn = (alreadyWithdrawn + take).clamp(0.0, net);
+            await db.rawUpdate(
+              'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
+              [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
+            );
+            remaining = 0.0;
+            break;
+          }
         }
 
-        // تنفيذ التحويل داخل transaction
-        await db.transaction((txn) async {
-          double remaining = amount;
-
-          final rows = await txn.rawQuery(
-            '''
-          SELECT id,
-                 (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS net,
-                 COALESCE(drawer_withdrawn_amount,0) as withdrawn
-          FROM sales
-          WHERE payment_method = ?
-          ORDER BY date ASC
-          ''',
-            ['cash'],
-          );
-
-          for (final r in rows) {
-            if (remaining <= eps) break;
-            final int id = (r['id'] as num).toInt();
-            final double net = (r['net'] as num).toDouble();
-            final double alreadyWithdrawn = (r['withdrawn'] as num).toDouble();
-            final double availableFromThisSale = (net - alreadyWithdrawn).clamp(0.0, double.infinity);
-            if (availableFromThisSale <= eps) continue;
-
-            if (availableFromThisSale <= remaining + eps) {
-              final double newWithdrawn = (alreadyWithdrawn + availableFromThisSale).clamp(0.0, net);
-              await txn.rawUpdate(
-                'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
-                [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
-              );
-              remaining -= availableFromThisSale;
-            } else {
-              final double take = remaining;
-              final double newWithdrawn = (alreadyWithdrawn + take).clamp(0.0, net);
-              await txn.rawUpdate(
-                'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
-                [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
-              );
-              remaining = 0.0;
-              break;
-            }
-          }
-
-          if (remaining > eps) {
-            final double newStarting = (latestDrawerStarting - remaining).clamp(0.0, double.infinity);
-            final now = DateTime.now().toIso8601String();
-            await txn.insert('cash_drawer', {
-              'amount': newStarting,
-              'updated_by': username,
-              'note': 'سحب إلى المحفظة (-${requestedAmount.toStringAsFixed(2)})',
-              'created_at': now,
-            });
-            remaining = 0.0;
-          } else {
-            if ((amount >= (latestDrawerStarting + availableFromSalesBefore) - eps) && latestDrawerStarting > eps) {
-              final now = DateTime.now().toIso8601String();
-              await txn.insert('cash_drawer', {
-                'amount': 0.0,
-                'updated_by': username,
-                'note': 'سحب إلى المحفظة — تصفير الدرج بعد استهلاك كامل الرصيد',
-                'created_at': now,
-              });
-            }
-          }
-
-          // سجل إضافة للمحفظة
+        // 2) إذا بقي مبلغ، نقتطع الباقي من الـ starting (global latestDrawerStarting)
+        if (remaining > eps) {
+          final newStarting = (latestDrawerStarting - remaining).clamp(0.0, double.infinity);
           final now = DateTime.now().toIso8601String();
-          await txn.insert('card_wallet', {
-            'amount': amount,
+          await db.insert('cash_drawer', {
+            'amount': newStarting,
             'updated_by': username,
-            'note': 'تحويل من الدرج إلى المحفظة',
+            'note': 'سحب إلى المحفظة (-${requestedAmount.toStringAsFixed(2)})',
             'created_at': now,
           });
+          remaining = 0.0;
+        }
+
+        // 3) سجل الإيداع في محفظة الكارت (تحويل من الدرج للمحفظة)
+        final now = DateTime.now().toIso8601String();
+        await db.insert('card_wallet', {
+          'amount': requestedAmount,
+          'updated_by': username,
+          'note': 'تحويل من الدرج إلى المحفظة',
+          'created_at': now,
         });
 
         await _loadCardTotals();
-        return {'transferred': amount, 'capped': wasCapped, 'reason': null, 'available': (availableFromSalesBefore + latestDrawerStarting)};
+        await _loadUserStartingAndNetSales(); // تحديث القيم المعروضة بعد التعديل
 
+        return {'transferred': requestedAmount, 'capped': wasCapped, 'reason': null, 'available': totalAvailableForThisCashier};
       } else {
         // من المحفظة -> الدرج (إيداع)
         if (amount > latestWallet + eps) {
-          if (mounted) {
-            // لا نُظهر هنا snackbar نهائيًا — نُعيد السبب للـ caller ليعرض الرسالة المناسبة
-          }
           return {'transferred': 0.0, 'capped': false, 'reason': 'insufficient_wallet', 'available': latestWallet};
         }
 
-        await db.transaction((txn) async {
-          final now = DateTime.now().toIso8601String();
-          await txn.insert('card_wallet', {
-            'amount': -amount,
-            'updated_by': username,
-            'note': 'تحويل إلى الدرج (-${amount.toStringAsFixed(2)})',
-            'created_at': now,
-          });
+        // نغلق العملية في transaction واحدة لضمان الاتساق:
+        // - نُخصم من card_wallet
+        // - نُنشئ سجل في sales (فاتورة نقدية) يمثل هذا الإيداع لصافي المبيعات للكاشير
+        // ملاحظة مهمة: **لا نضيف سجل في cash_drawer** هنا لأن إضافة سجل cash_drawer + إضافة سجل sales سيؤديان لحساب المبلغ مرتين.
+        try {
+          await db.transaction((txn) async {
+            final now = DateTime.now().toIso8601String();
 
-          final newStarting = latestDrawerStarting + amount;
-          await txn.insert('cash_drawer', {
-            'amount': newStarting,
-            'updated_by': username,
-            'note': 'إيداع من المحفظة (+${amount.toStringAsFixed(2)})',
-            'created_at': now,
-          });
-        });
+            // 1) خصم من المحفظة (محفوظ كقيد سالب)
+            await txn.insert('card_wallet', {
+              'amount': -amount,
+              'updated_by': username,
+              'note': 'تحويل إلى الدرج (-${amount.toStringAsFixed(2)})',
+              'created_at': now,
+            });
 
+            // 2) سجل فاتورة نقدية بسيطة في جدول sales — هذا يجعل هذا المبلغ يظهر كصافي مبيعات لذلك الكاشير فقط.
+            // لاحظ: حذفت حقل 'note' لأن جدول sales عندك لا يحتويه، وأدخَلنا فقط الحقول الأساسية
+            await txn.insert('sales', {
+              'total': amount,
+              'paid_amount': amount,
+              'change_amount': 0.0,
+              'cashier_username': username,
+              'payment_method': 'cash',
+              'date': now,
+            });
+          });
+        } catch (e, st) {
+          debugPrint('Failed to perform deposit transaction (wallet->drawer): $e\n$st');
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تنفيذ العملية: $e')));
+          return {'transferred': 0.0, 'capped': false, 'reason': 'exception', 'available': latestWallet};
+        }
+
+        // بعد النجاح، أعد تحميل المجاميع المعروضة
         await _loadCardTotals();
+        await _loadUserStartingAndNetSales();
+
         return {'transferred': amount, 'capped': false, 'reason': null, 'available': latestWallet};
       }
     } catch (e, st) {
@@ -1209,58 +1254,58 @@ class _CashierScreenState extends State<CashierScreen> {
         purchasesPaid += (p['paid_amount'] as num?)?.toDouble() ?? 0.0;
       }
 
-      // ===== هنا نحسب adjustedCurrent بنفس منطق الدالة اللي بعتهالك =====
-      // نأخذ: starting + salesNetCash - purchasePaidCash ، ثم نمنع السالب
+      // ===== هنا نحسب بعض القيم المساعدة per-user =====
       final dbHelper = DBHelper.instance;
+
+      // 1) user-specific starting
+      final userStarting = await dbHelper.getLatestDrawerStartingAmountByUser(username);
+
+      // 2) sales net cash for this cashier (within the day)
+      final salesNetCashForCashier = await dbHelper.getSalesNetCashByCashierBetweenDates(
+        cashierUsername: username,
+        fromDate: fromDateStr,
+        toDate: toDateStr,
+      );
+
+      // 3) returns for this cashier
+      final returnsDeltaForCashier = await dbHelper.getReturnsDeltaByCashierBetweenDates(
+        cashierUsername: username,
+        fromDate: fromDateStr,
+        toDate: toDateStr,
+      );
+
+      // 4) purchases paid by this user
+      final purchasesPaidByUser = await dbHelper.getPurchasePaidCashByUserBetweenDates(
+        username: username,
+        fromDate: fromDateStr,
+        toDate: toDateStr,
+      );
+
+      // ===== هنا نحتسب مبلغ الإيداعات من المحفظة إلى الدرج بواسطة هذا الكاشير في نفس اليوم =====
+      // (نقرأ سجل card_wallet ونبحث عن مداخل note التي تحتوي على 'تحويل إلى الدرج')
       final db = await dbHelper.database;
-
-      // 1) starting
-      final starting = await dbHelper.getLatestDrawerStartingAmount();
-
-      // 2) sales net cash: نحاول الحصول من totals إذا متاح، وإلا نستخدم استعلام احتياطي
-      double salesNetCash = 0.0;
+      double depositFromWalletForUser = 0.0;
       try {
-        final totals = await dbHelper.getDrawerTotals(fromDate: null, toDate: null);
-        salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
-            ?? (totals['sales_net'] as num?)?.toDouble()
-            ?? 0.0;
-      } catch (e) {
-        debugPrint('Could not get totals for drawer during closeShift: $e');
-        salesNetCash = 0.0;
-      }
-
-      // 3) purchasePaidCash: مجموع المدفوعات النقدية على سندات الشراء (بدون فلترة)
-      double purchasePaidCash = 0.0;
-      try {
-        // محاولة استعلام SUM مباشرة
         final rows = await db.rawQuery(
-            "SELECT SUM(COALESCE(paid_amount,0)) AS total FROM purchase_receipts WHERE payment_type = 'cash'"
+          "SELECT SUM(COALESCE(amount,0)) as sum_amount FROM card_wallet WHERE updated_by = ? AND date(created_at) = ? AND note LIKE ?",
+          [username, fromDateStr, '%تحويل إلى الدرج%'],
         );
-        purchasePaidCash = (rows.isNotEmpty && rows.first['total'] != null)
-            ? (rows.first['total'] as num).toDouble()
+        final sum = (rows.isNotEmpty && rows.first['sum_amount'] != null)
+            ? (rows.first['sum_amount'] as num).toDouble()
             : 0.0;
+        // الإدخالات في card_wallet عند تحويل إلى الدرج تُسجَّل بالسالب (مثال: -100)
+        // لذلك المبلغ المودع يساوي -sum (ولو sum صفر أو موجب نُعتبر 0)
+        depositFromWalletForUser = (-sum).clamp(0.0, double.infinity);
       } catch (e) {
-        debugPrint('Failed to compute purchasePaidCash in closeShift: $e');
-        // fallback: جمع من getPaidPurchaseReceipts
-        try {
-          final paidReceipts = await dbHelper.getPaidPurchaseReceipts();
-          double sum = 0.0;
-          for (final r in paidReceipts) {
-            final type = r['payment_type'] as String? ?? 'cash';
-            if (type == 'cash') sum += (r['paid_amount'] as num?)?.toDouble() ?? 0.0;
-          }
-          purchasePaidCash = sum;
-        } catch (e2) {
-          debugPrint('Fallback also failed: $e2');
-          purchasePaidCash = 0.0;
-        }
+        debugPrint('Failed to compute depositFromWalletForUser: $e');
+        depositFromWalletForUser = 0.0;
       }
 
-      final computedFromParts = starting + salesNetCash - purchasePaidCash;
-      final adjustedCurrent = computedFromParts < 0.0 ? 0.0 : computedFromParts;
-
-      // ===== استخدم adjustedCurrent في التقرير بدل computeCurrentDrawerAmount =====
-      final drawerCurrent = adjustedCurrent;
+      // ===== تصحيح الازدواج: لا نجمع depositFromWalletForUser مرتين =====
+      // لأننا نسجل الإيداع كفاتورة نقدية (sales) عند تنفيذ التحويل من المحفظة -> الدرج،
+      // فـ salesNetCashForCashier يحتوي بالفعل على هذا المبلغ.
+      // نستخدم salesNetCashForCashier مباشرة كقيمة الدرْج الخاصة بهذا الكاشير.
+      final drawerForCashier = salesNetCashForCashier;
 
       final walletAmount = await dbHelper.getLatestCardWalletAmount();
       final untransferredCard = await _getUntransferredCardAmountSafe();
@@ -1296,9 +1341,16 @@ class _CashierScreenState extends State<CashierScreen> {
           'sales_paid_cash': salesPaidCash,
           'sales_paid_card': salesPaidCard,
           'purchases_paid': purchasesPaid,
+          // إضافات مفيدة للطباعة التفصيلية
+          'user_starting': userStarting,
+          'user_net_sales': salesNetCashForCashier,
+          // قمنا بعدم جمع depositFromWalletForUser هنا لتفادي الازدواج
+          'drawer_for_cashier': drawerForCashier,
+          'deposit_from_wallet': depositFromWalletForUser, // نحتفظ به كحقل منفصل للعرض لو احتجته
         },
         width: 280,
-        drawerCurrent: drawerCurrent,
+        // هنا نمرّر القيمة التي ستُطبع كـ "اجمالي الدرج" للاسم الكاشير
+        drawerCurrent: drawerForCashier,
         cardForCashier: cardTotalAvailable,
         creditOutstandingForCashier: creditOutstandingForCashier,
         purchaseReceiptsOutstandingForUser: purchaseReceiptsOutstandingForUser,
@@ -1311,6 +1363,45 @@ class _CashierScreenState extends State<CashierScreen> {
       } catch (e, st) {
         debugPrint('Shift print failed: $e\n$st');
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل طباعة تقرير الشفت')));
+      }
+
+      // === صفر صافي المبيعات للكاشير الذي غلق الشفت (فقط لفواتير اليوم وبطريقة آمنة) ===
+      try {
+        await db.transaction((txn) async {
+          // نختار كل الفواتير النقدية الخاصة بهذا الكاشير لليوم مع صافي كل فاتورة
+          final rows = await txn.rawQuery(
+            '''
+        SELECT id, (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS net
+        FROM sales
+        WHERE cashier_username = ? AND payment_method = ? AND date(date) = ?
+        ''',
+            [username, 'cash', fromDateStr],
+          );
+
+          for (final r in rows) {
+            final int id = (r['id'] as num).toInt();
+            final double net = (r['net'] as num?)?.toDouble() ?? 0.0;
+            if (net <= 0) continue; // تجاهل الفواتير الصفرية/السالبة
+
+            // ضع قيمة drawer_withdrawn_amount مساويةً للصافي (بمعنى: تم سحبها/تصفيرها)
+            await txn.rawUpdate(
+              'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
+              [net, 1, id],
+            );
+          }
+        });
+
+        // إعادة تحميل القيم المعروضة للكاشير الآن (ستجعل _userNetSales = 0)
+        await _loadUserStartingAndNetSales();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('تم تصفير صافي المبيعات لهذا الكاشير لليوم')),
+          );
+        }
+      } catch (e, st) {
+        debugPrint('Failed to zero cashier net sales on closeShift: $e\n$st');
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذّر تصفير صافي المبيعات: $e')));
       }
 
     } catch (e, st) {
@@ -1886,7 +1977,7 @@ class _CashierScreenState extends State<CashierScreen> {
                 ),
                 SizedBox(height: 10,),
                 Text(
-                  _formatWithSign(Drawer),
+                  _formatWithSign(_userStartingPlusNet),
                   style: const TextStyle(color: Colors.white70, fontSize: 14),
                 ),
               ],

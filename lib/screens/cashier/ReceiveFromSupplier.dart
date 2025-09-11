@@ -29,15 +29,23 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   // for showing/editing existing single units
   final _existingUnitsCtrl = TextEditingController(text: '0');
 
+  // Focus nodes for moving to next field on submit
+  final FocusNode _barcodeFocusNode = FocusNode();
+  final FocusNode _nameFocusNode = FocusNode();
+  final FocusNode _cartonsFocusNode = FocusNode();
+  final FocusNode _unitsFocusNode = FocusNode();
+  final FocusNode _unitsInCartonFocusNode = FocusNode();
+  final FocusNode _purchaseCartonFocusNode = FocusNode();
+  final FocusNode _purchaseUnitFocusNode = FocusNode();
+  final FocusNode _sellingFocusNode = FocusNode();
+  final FocusNode _paidFocusNode = FocusNode();
+
   // merged نقدي و آجل into a single option: we'll infer "credit" vs "cash" from paid vs total
   String _paymentType = 'cash_or_credit';
   bool _loading = false;
 
   // NEW: track whether user manually edited the paid field
   bool _paidTouched = false;
-
-  // NEW: focus node so we can lookup when user finishes barcode input
-  final FocusNode _barcodeFocusNode = FocusNode();
 
   // products cache for picker
   List<Map<String, dynamic>> _products = [];
@@ -89,7 +97,17 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     _sellingPriceIfNewCtrl.dispose();
     _paidAmountCtrl.dispose();
     _existingUnitsCtrl.dispose();
+
     _barcodeFocusNode.dispose();
+    _nameFocusNode.dispose();
+    _cartonsFocusNode.dispose();
+    _unitsFocusNode.dispose();
+    _unitsInCartonFocusNode.dispose();
+    _purchaseCartonFocusNode.dispose();
+    _purchaseUnitFocusNode.dispose();
+    _sellingFocusNode.dispose();
+    _paidFocusNode.dispose();
+
     super.dispose();
   }
 
@@ -404,8 +422,8 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     }
   }
 
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
+  Future<bool> _submit() async {
+    if (!_formKey.currentState!.validate()) return false;
     setState(() => _loading = true);
 
     final barcode = _barcodeCtrl.text.trim();
@@ -414,7 +432,6 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     final unitsInput = int.tryParse(_unitsCtrl.text) ?? 0;
     final unitsInCartonInput = int.tryParse(_unitsInCartonCtrl.text) ?? 1;
 
-    // read raw price fields (may be null if empty)
     double? purchasePerCarton = _purchasePricePerCartonCtrl.text.trim().isEmpty
         ? null
         : double.tryParse(_purchasePricePerCartonCtrl.text.replaceAll(',', ''));
@@ -428,13 +445,10 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
     final rawPaid = double.tryParse(_paidAmountCtrl.text.replaceAll(',', '')) ?? 0.0;
 
-    // Normalization: if user explicitly entered 0 for per-unit but a carton price exists,
-    // ignore the 0 and derive per-unit from carton price. This ensures total reflects carton price.
     if (purchasePerUnit != null && purchasePerUnit == 0.0 && purchasePerCarton != null) {
       purchasePerUnit = null;
     }
 
-    // Helper local function to compute total using the normalized values
     double computeTotalFromValues({
       required int cartons,
       required int units,
@@ -463,8 +477,6 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     }
 
     try {
-      // compute total cost using normalized values (this will reflect carton price
-      // even if per-unit was set to 0 by the user)
       final totalCost = computeTotalFromValues(
         cartons: cartonsInput,
         units: unitsInput,
@@ -473,14 +485,13 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         purchaseUnit: purchasePerUnit,
       );
 
-      // normalize paid value relative to computed total
       double paid = rawPaid;
       if (paid < 0) paid = 0.0;
       if (paid > totalCost) paid = totalCost;
 
       final dbHelper = DBHelper.instance;
 
-      // --- keep existing sync of units_in_carton before receive (unchanged) ---
+      // --- (Optional) sync units_in_carton before receive when product existed ---
       if (_selectedProductId != null) {
         try {
           final products = await DBHelper.instance.getAllProducts();
@@ -543,8 +554,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         }
       }
 
-      // call receiveFromSupplier using the original parsed values (note: we pass
-      // purchasePerUnit which may be null after normalization above)
+      // ---- Call receiveFromSupplier as before ----
       final res = await dbHelper.receiveFromSupplier(
         barcode: barcode.isEmpty ? null : barcode,
         name: name.isEmpty ? null : name,
@@ -561,81 +571,62 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
       if (res['status'] == 'need_selling_price') {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير موجود. الرجاء إدخال سعر البيع وإنشاء المنتج.')));
+        setState(() => _loading = false);
+        return false;
       } else if (res['status'] == 'ok') {
         final totalCostRes = (res['total_cost'] ?? totalCost) as double;
         final due = (res['due_amount'] ?? (totalCostRes - paid)) as double;
         final added = res['added_units'] ?? 0;
 
-        // payment side effects (unchanged)
-        try {
-          final currentUser = await dbHelper.getCurrentUser();
-          final username = (currentUser != null && currentUser['username'] != null)
-              ? currentUser['username'] as String
-              : Session.currentUsername ?? 'admin';
+        // ======= IMPORTANT CHANGE HERE ========
+        // We DO NOT modify drawer/wallet balances here.
+        // Earlier code changed the drawer or wallet; now we only record the receive
+        // in the DB (handled by receiveFromSupplier) and show success to the user.
+        // ======================================
 
-          if (paid > 0) {
-            if (_paymentType == 'wallet') {
-              await dbHelper.ensureCardWalletTable();
-              await dbHelper.changeCardWalletBy(
-                -paid,
-                username,
-                note: 'Payment for purchase (wallet) -${paid.toStringAsFixed(2)}',
-              );
-            } else {
-              final latestStarting = await dbHelper.getLatestDrawerStartingAmount();
-              final newStarting = latestStarting - paid;
-              final notePrefix = (paid < totalCostRes) ? 'Partial payment for credit purchase' : 'Full cash payment for purchase';
-              await dbHelper.setDrawerStartingAmount(
-                newStarting,
-                username,
-                note: '$notePrefix -${paid.toStringAsFixed(2)}',
-              );
-            }
-          }
-
-          showDialog(
-            context: context,
-            builder: (_) => AlertDialog(
-              backgroundColor: AppColorsDark.bgCardColor,
-              title: Center(child: const Text('تم الاستلام', style: TextStyle(color: Colors.white))),
-              content: Text(
-                'تم إضافة $added وحدة. الإجمالي: ${totalCostRes.toStringAsFixed(2)}. المدفوع: ${paid.toStringAsFixed(2)}. المتبقي: ${due.toStringAsFixed(2)}.',
-                style: const TextStyle(color: Colors.white),
-              ),
-              actions: [
-                TextButton(
-                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('حسناً', style: TextStyle(color: Colors.white)),
-                ),
-              ],
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            backgroundColor: AppColorsDark.bgCardColor,
+            title: Center(child: const Text('تم الاستلام', style: TextStyle(color: Colors.white))),
+            content: Text(
+              'تم إضافة $added وحدة. الإجمالي: ${totalCostRes.toStringAsFixed(2)}. المدفوع: ${paid.toStringAsFixed(2)}. المتبقي: ${due.toStringAsFixed(2)}.',
+              style: const TextStyle(color: Colors.white),
             ),
-          );
+            actions: [
+              TextButton(
+                style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('حسناً', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
 
-          // Reset form fields
-          _formKey.currentState!.reset();
-          _cartonsCtrl.text = '0';
-          _unitsCtrl.text = '0';
-          _unitsInCartonCtrl.text = '1';
-          _purchasePricePerCartonCtrl.clear();
-          _purchasePricePerUnitCtrl.clear();
-          _sellingPriceIfNewCtrl.clear();
+        // Reset form fields
+        _formKey.currentState!.reset();
+        _cartonsCtrl.text = '0';
+        _unitsCtrl.text = '0';
+        _unitsInCartonCtrl.text = '1';
+        _purchasePricePerCartonCtrl.clear();
+        _purchasePricePerUnitCtrl.clear();
+        _sellingPriceIfNewCtrl.clear();
 
-          _existingUnitsCtrl.text = '0';
-          _paidAmountCtrl.text = totalCostRes.toStringAsFixed(2);
-          _paidTouched = false;
+        _existingUnitsCtrl.text = '0';
+        _paidAmountCtrl.text = totalCostRes.toStringAsFixed(2);
+        _paidTouched = false;
 
-          await _loadAfterSubmit();
-        } catch (e) {
-          debugPrint('Error while applying post-payment effects: $e');
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ أثناء تحديث الدرج/المحفظة: $e')));
-        }
+        await _loadAfterSubmit();
+
+        setState(() => _loading = false);
+        return true;
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ: $e')));
     }
 
     setState(() => _loading = false);
+    return false;
   }
 
   /// helper to reload any totals after successful submit (optional)
@@ -752,11 +743,14 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                     Expanded(
                       child: CustomFormField(
                         controller: _barcodeCtrl,
+                        autoFocus: true,
+                        label: true,
                         hint: 'باركود (اجباري)',
                         focusNode: _barcodeFocusNode,
-                        onFieldSubmitted: (_) => _lookupBarcode(),
-                        onChanged: (_) {
-                          // clear name when barcode changed so user sees updated suggestion
+                        textInputAction: TextInputAction.next,
+                        onFieldSubmitted: (v) async {
+                          await _lookupBarcode();
+                          FocusScope.of(context).requestFocus(_nameFocusNode);
                         },
                       ),
                     ),
@@ -771,7 +765,12 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: _nameCtrl,
+                  label: true,
+
                   hint: 'اسم المنتج',
+                  focusNode: _nameFocusNode,
+                  textInputAction: TextInputAction.next,
+                  onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_cartonsFocusNode),
                 ),
                 // const SizedBox(height: 8),
                 // Row(
@@ -798,17 +797,27 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                     Expanded(
                       child: CustomFormField(
                         controller: _cartonsCtrl,
+                        label: true,
+
                         hint: 'عدد الكراتين',
+                        focusNode: _cartonsFocusNode,
+                        textInputAction: TextInputAction.next,
                         onChanged: (_) => _updateComputedPaid(),
+                        onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_unitsFocusNode),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: CustomFormField(
                         controller: _unitsCtrl,
+                        label: true,
+
                         keyboardType: TextInputType.number,
                         hint: 'عدد وحدات فردية',
+                        focusNode: _unitsFocusNode,
+                        textInputAction: TextInputAction.next,
                         onChanged: (_) => _updateComputedPaid(),
+                        onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_unitsInCartonFocusNode),
                       ),
                     ),
                   ],
@@ -819,18 +828,26 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                     Expanded(
                       child: CustomFormField(
                         controller: _unitsInCartonCtrl,
+                        label: true,
                         keyboardType: TextInputType.number,
                         hint: 'وحدات في الكرتونة',
+                        focusNode: _unitsInCartonFocusNode,
+                        textInputAction: TextInputAction.next,
                         onChanged: (_) => _updateComputedPaid(),
+                        onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_purchaseCartonFocusNode),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: CustomFormField(
                         controller: _purchasePricePerCartonCtrl,
+                        label: true,
                         keyboardType: TextInputType.numberWithOptions(decimal: true),
                         hint: 'سعر شراء للكرتونة',
+                        focusNode: _purchaseCartonFocusNode,
+                        textInputAction: TextInputAction.next,
                         onChanged: (_) => _updateComputedPaid(),
+                        onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_purchaseUnitFocusNode),
                       ),
                     ),
                   ],
@@ -838,16 +855,23 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: _purchasePricePerUnitCtrl,
+                  label: true,
                   keyboardType: TextInputType.numberWithOptions(decimal: true),
                   hint: 'سعر شراء للوحدة (اختياري)',
+                  focusNode: _purchaseUnitFocusNode,
+                  textInputAction: TextInputAction.next,
                   onChanged: (_) => _updateComputedPaid(),
+                  onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_sellingFocusNode),
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
                   controller: _sellingPriceIfNewCtrl,
                   keyboardType: TextInputType.numberWithOptions(decimal: true),
                   hint: 'سعر بيع للوحدة (إجباري إذا المنتج جديد)',
+                  focusNode: _sellingFocusNode,
+                  textInputAction: TextInputAction.next,
                   onChanged: (_) => _updateComputedPaid(),
+                  onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_paidFocusNode),
                 ),
                 const SizedBox(height: 10),
 
@@ -913,21 +937,28 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                   controller: _paidAmountCtrl,
                   keyboardType: TextInputType.numberWithOptions(decimal: true),
                   hint: 'المبلغ المدفوع الآن',
+                  focusNode: _paidFocusNode,
+                  textInputAction: TextInputAction.done,
                   onChanged: (v) {
-                    // mark that user edited the paid field manually
                     _paidTouched = true;
+                  },
+                  onFieldSubmitted: (_) async {
+                    // when user presses done on the last field, submit the form
+                    await _submit();
                   },
                 ),
                 const SizedBox(height: 20),
                 CustomButton(
                   text: 'تسجيل الاستلام',
-                  onPressed: () {
-                    _submit();
-                    Navigator.pushNamedAndRemoveUntil(
-                      context,
-                      CashierScreen.routName,
-                          (Route<dynamic> route) => false,
-                    );
+                  onPressed: () async {
+                    final ok = await _submit();
+                    if (ok) {
+                      Navigator.pushNamedAndRemoveUntil(
+                        context,
+                        CashierScreen.routName,
+                            (Route<dynamic> route) => false,
+                      );
+                    }
                   },
                   isLoading: _loading,
                 )

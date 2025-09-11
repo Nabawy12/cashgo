@@ -31,30 +31,67 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
 
   Future<void> _loadSales({DateTime? date}) async {
     setState(() => loading = true);
-    final all = await DBHelper.instance.getAllSales();
 
-    // تطبيق فلتر التاريخ محليًا كما في كودك
-    List<Map<String, dynamic>> filtered;
-    if (date != null) {
-      filtered = all.where((s) => _matchesDate(s['date'], date)).toList();
-    } else {
-      filtered = all;
+    try {
+      final all = await DBHelper.instance.getAllSales();
+
+      // تطبيق فلتر التاريخ محليًا
+      List<Map<String, dynamic>> filtered;
+      if (date != null) {
+        filtered = all.where((s) => _matchesDate(s['date'], date)).toList();
+      } else {
+        filtered = all;
+      }
+
+      // نجلب عناصر كل فاتورة (بشكل متوازي) ونحتفظ فقط بالفواتير التي تحتوي عناصر
+      // ونعبيّ saleItems حتى لا نعيد الطلب لاحقًا
+      final futures = filtered.map((s) async {
+        final id = (s['id'] as num).toInt();
+        try {
+          final items = await DBHelper.instance.getSaleItemsBySaleId(id);
+          if (items.isNotEmpty) {
+            saleItems[id] = items;
+            return s;
+          } else {
+            return null; // فاتورة بدون عناصر -> نتجاهلها
+          }
+        } catch (e, st) {
+          debugPrint('Error loading items for sale $id: $e\n$st');
+          // في حالة خطأ في جلب العناصر، نتجاهل الفاتورة (أو يمكنك إرجاع s لحالتك الخاصة)
+          return null;
+        }
+      }).toList();
+
+      final results = await Future.wait(futures);
+      final nonEmptySales = results.whereType<Map<String, dynamic>>().toList();
+
+      // تجميع حسب اسم الكاشير لكن فقط للفواتير غير الفارغة
+      final Map<String, List<Map<String, dynamic>>> map = {};
+      for (final s in nonEmptySales) {
+        final cashierName = (s['cashier_username'] ?? s['username'] ?? s['cashier'] ?? s['user'] ?? 'Unknown').toString();
+        map.putIfAbsent(cashierName, () => []);
+        map[cashierName]!.add(s);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        sales = nonEmptySales;
+        groupedSales = map;
+        loading = false;
+      });
+    } catch (e, st) {
+      debugPrint('Error in _loadSales: $e\n$st');
+      if (!mounted) return;
+      setState(() => loading = false);
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('خطأ في تحميل الفواتير'),
+          content: SingleChildScrollView(child: Text(e.toString())),
+          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('حسناً'))],
+        ),
+      );
     }
-
-    // تجميع حسب اسم الكاشير — نحاول عدة مفاتيح محتملة
-    final Map<String, List<Map<String, dynamic>>> map = {};
-    for (final s in filtered) {
-      final cashierName = (s['cashier_username'] ?? s['username'] ?? s['cashier'] ?? s['user'] ?? 'Unknown').toString();
-      map.putIfAbsent(cashierName, () => []);
-      map[cashierName]!.add(s);
-    }
-
-    if (!mounted) return;
-    setState(() {
-      sales = filtered;
-      groupedSales = map;
-      loading = false;
-    });
   }
 
   bool _matchesDate(dynamic rawDate, DateTime date) {
@@ -156,7 +193,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
               SizedBox(height: 25),
               Builder(builder: (_) {
                 final items = saleItems[saleId] ?? [];
-                if (items.isEmpty) return const Text('لا توجد عناصر مسجلة لهذه الفاتورة', style: TextStyle(fontSize: 25, color: Colors.white));
+                if (items.isEmpty) return const SizedBox.shrink();
                 return SizedBox(
                   height: 250,
                   child: ListView.builder(

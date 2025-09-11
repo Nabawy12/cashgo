@@ -11,6 +11,7 @@ class CustomFormField extends StatefulWidget {
   final String? Function(String?)? validator;
   final void Function(String)? onChanged;
   final List<TextInputFormatter>? inputFormatters;
+  final bool label ;
 
   final bool readOnly;
   final VoidCallback? onTap;
@@ -41,6 +42,7 @@ class CustomFormField extends StatefulWidget {
     this.textInputAction,
     this.onFieldSubmitted,
     this.inputFormatters,
+    this.label = false,
   });
 
   @override
@@ -77,68 +79,81 @@ class _CustomFormFieldState extends State<CustomFormField> {
 
   @override
   Widget build(BuildContext context) {
-    return TextFormField(
-      inputFormatters: [
-        ...(widget.inputFormatters ?? []),
-        // ✅ فورماتر يحول أي أرقام عربية إلى إنجليزية
-        TextInputFormatter.withFunction((oldValue, newValue) {
-          const arabic = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
-          const english = ['0','1','2','3','4','5','6','7','8','9'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        if (widget.label == true) ...[
+          Text(
+            widget.hint,
+            style: TextStyle(color: AppColorsDark.mainColor),
+          ),
+          SizedBox(height: 10),
+        ],
+        TextFormField(
+          inputFormatters: [
+            ...(widget.inputFormatters ?? []),
+            // ✅ فورماتر يحول أي أرقام عربية إلى إنجليزية
+            TextInputFormatter.withFunction((oldValue, newValue) {
+              const arabic = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+              const english = ['0','1','2','3','4','5','6','7','8','9'];
 
-          String text = newValue.text;
-          for (int i = 0; i < arabic.length; i++) {
-            text = text.replaceAll(arabic[i], english[i]);
-          }
+              String text = newValue.text;
+              for (int i = 0; i < arabic.length; i++) {
+                text = text.replaceAll(arabic[i], english[i]);
+              }
 
-          return newValue.copyWith(
-            text: text,
-            selection: TextSelection.collapsed(offset: text.length),
-          );
-        }),
+              return newValue.copyWith(
+                text: text,
+                selection: TextSelection.collapsed(offset: text.length),
+              );
+            }),
+          ],
+          controller: widget.controller,
+          obscureText: _obscure,
+          keyboardType: widget.keyboardType,
+          validator: widget.validator,
+          onChanged: widget.onChanged,
+          textAlign: widget.centerHint ? TextAlign.center : TextAlign.start,
+          readOnly: widget.readOnly,
+          onTap: widget.onTap,
+          focusNode: widget.focusNode ?? _internalFocusNode,
+          textInputAction: widget.textInputAction,
+          onFieldSubmitted: widget.onFieldSubmitted,
+          decoration: InputDecoration(
+            hintText: widget.hint,
+            hintStyle: const TextStyle(color: Colors.white70),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(
+                color: AppColorsDark.strokColor,
+                width: 1.5,
+              ),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(
+                color: AppColorsDark.mainColor,
+                width: 2,
+              ),
+            ),
+            suffixIcon: widget.isPassword
+                ? IconButton(
+              icon: Icon(
+                _obscure ? Icons.visibility_off : Icons.visibility,
+                color: Colors.white,
+              ),
+              onPressed: () {
+                setState(() {
+                  _obscure = !_obscure;
+                });
+              },
+            )
+                : null,
+          ),
+          style: const TextStyle(color: Colors.white),
+        ),
       ],
-      controller: widget.controller,
-      obscureText: _obscure,
-      keyboardType: widget.keyboardType,
-      validator: widget.validator,
-      onChanged: widget.onChanged,
-      textAlign: widget.centerHint ? TextAlign.center : TextAlign.start,
-      readOnly: widget.readOnly,
-      onTap: widget.onTap,
-      focusNode: widget.focusNode ?? _internalFocusNode,
-      textInputAction: widget.textInputAction,
-      onFieldSubmitted: widget.onFieldSubmitted,
-      decoration: InputDecoration(
-        hintText: widget.hint,
-        hintStyle: const TextStyle(color: Colors.white70),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(
-            color: AppColorsDark.strokColor,
-            width: 1.5,
-          ),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(
-            color: AppColorsDark.mainColor,
-            width: 2,
-          ),
-        ),
-        suffixIcon: widget.isPassword
-            ? IconButton(
-          icon: Icon(
-            _obscure ? Icons.visibility_off : Icons.visibility,
-            color: Colors.white,
-          ),
-          onPressed: () {
-            setState(() {
-              _obscure = !_obscure;
-            });
-          },
-        )
-            : null,
-      ),
-      style: const TextStyle(color: Colors.white),
     );
   }
 }
