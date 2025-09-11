@@ -240,7 +240,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         }
       }
       // حساب القيمة الحالية للدرج (starting + مبيعات كاش - مشتريات كاش)
-      final double computedFromParts = starting +_salesNet;
+      final double computedFromParts = starting;
       final double adjustedCurrent = computedFromParts; // لا نقومّ السالب — نريد إظهاره كما هو
 
       // قراءة سندات الشراء لتعبئة paid/due
@@ -274,8 +274,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       if (!mounted) return;
       setState(() {
         _startingAmount = starting;
-        _currentDrawer = adjustedCurrent;
         _salesNet = dailySalesTotal; // <- هنا تعرض إجمالي اليوم
+        _currentDrawer = adjustedCurrent + _salesNet;
         _cardReceived = untransferredCard;
         _walletAmount = walletAmount;
         _cardTotalAvailable = (_cardReceived) + (_walletAmount);
@@ -287,7 +287,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
 
         _cardNetSales = cardNetSales;
 
-        _drawerController.text = _currentDrawer.toStringAsFixed(2);
+        _drawerController.text = starting.toString();
         _walletController.text = _walletAmount.toStringAsFixed(2);
       });
 

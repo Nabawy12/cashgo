@@ -681,96 +681,156 @@ class _CashierScreenState extends State<CashierScreen> {
             ? (totalRowBefore.first['total_available'] as num).toDouble()
             : 0.0;
 
-        // استخدم القيم المحمَّلة في الواجهة كـ fallback/عرض
-        final userNet = _userNetSales.clamp(0.0, double.infinity);
-        final userStart = _userStarting.clamp(0.0, double.infinity);
+        // ======= جديد: لا نسمح بأن يقل الدرج عن latestDrawerStarting =======
+        // نأخذ آخر سجل موجب في cash_drawer ليعرف currentStartAmount
+        final startRowsCheck = await db.rawQuery(
+            "SELECT rowid, amount FROM cash_drawer WHERE amount > 0 ORDER BY created_at DESC LIMIT 1;"
+        );
+        final double currentStartAmount = (startRowsCheck.isNotEmpty && startRowsCheck.first['amount'] != null)
+            ? (startRowsCheck.first['amount'] as num).toDouble()
+            : latestDrawerStarting;
 
-        // الفعلية: مجموع ما هو متاح فعلاً لدى الكاشير + البداية العامة
-        final totalAvailableForThisCashier = (availableFromSalesBefore + latestDrawerStarting).clamp(0.0, double.infinity);
+        // availableFromStarting = فقط الجزء الذي يتجاوز الـ starting المسجل (لا نلمس قيمة الـ starting نفسها)
+        final double availableFromStarting = (currentStartAmount - latestDrawerStarting).clamp(0.0, double.infinity);
 
-        // لو المطلوب أكبر من مجموع المخصص نرفض
-        if (requestedAmount > (availableFromSalesBefore + latestDrawerStarting) + eps) {
+        // إجمالي المتاح للسحب من الدرج/المبيعات (لا نسمح بأخذ من الـ starting نفسها)
+        final double totalAvailableForThisCashier = (availableFromSalesBefore + availableFromStarting).clamp(0.0, double.infinity);
+
+        // رفض فوري لو المطلوب أكبر من المتاح
+        if (requestedAmount > totalAvailableForThisCashier + eps) {
           if (mounted) setState(() => _saving = false);
           return {
             'transferred': 0.0,
             'capped': false,
             'reason': 'requested_exceeds_available',
-            'available': (availableFromSalesBefore + latestDrawerStarting)
+            'available': totalAvailableForThisCashier
           };
         }
 
-        double remaining = requestedAmount;
+        // نغلف السيرورة كلها في transaction لatomicity:
+        bool success = false;
+        try {
+          await db.transaction((txn) async {
+            double remaining = requestedAmount;
 
-        // 1) أخذ المبلغ أولًا من فواتير الكاشير (المبالغ المتاحة في كل فاتورة)
-        final rows = await db.rawQuery(
-          '''
-      SELECT id,
-             (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS net,
-             COALESCE(drawer_withdrawn_amount,0) as withdrawn
-      FROM sales
-      WHERE payment_method = ?
-        AND cashier_username = ?
-      ORDER BY date ASC
-      ''',
-          ['cash', username],
-        );
-
-        for (final r in rows) {
-          if (remaining <= eps) break;
-          final int id = (r['id'] as num).toInt();
-          final double net = (r['net'] as num).toDouble();
-          final double alreadyWithdrawn = (r['withdrawn'] as num).toDouble();
-          final double availableFromThisSale = (net - alreadyWithdrawn).clamp(0.0, double.infinity);
-          if (availableFromThisSale <= eps) continue;
-
-          if (availableFromThisSale <= remaining + eps) {
-            final double newWithdrawn = (alreadyWithdrawn + availableFromThisSale).clamp(0.0, net);
-            await db.rawUpdate(
-              'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
-              [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
+            // 1) أخذ المبلغ أولًا من فواتير الكاشير (المبالغ المتاحة في كل فاتورة)، بالترتيب الزمني (أقدم أولاً)
+            final rows = await txn.rawQuery(
+              '''
+          SELECT id,
+                 (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS net,
+                 COALESCE(drawer_withdrawn_amount,0) as withdrawn
+          FROM sales
+          WHERE payment_method = ?
+            AND cashier_username = ?
+          ORDER BY date ASC
+          ''',
+              ['cash', username],
             );
-            remaining -= availableFromThisSale;
-          } else {
-            final double take = remaining;
-            final double newWithdrawn = (alreadyWithdrawn + take).clamp(0.0, net);
-            await db.rawUpdate(
-              'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
-              [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
-            );
-            remaining = 0.0;
-            break;
-          }
+
+            for (final r in rows) {
+              if (remaining <= eps) break;
+              final int id = (r['id'] as num).toInt();
+              final double net = (r['net'] as num).toDouble();
+              final double alreadyWithdrawn = (r['withdrawn'] as num).toDouble();
+              final double availableFromThisSale = (net - alreadyWithdrawn).clamp(0.0, double.infinity);
+              if (availableFromThisSale <= eps) continue;
+
+              if (availableFromThisSale <= remaining + eps) {
+                final double newWithdrawn = (alreadyWithdrawn + availableFromThisSale).clamp(0.0, net);
+                await txn.rawUpdate(
+                  'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
+                  [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
+                );
+                remaining -= availableFromThisSale;
+              } else {
+                final double take = remaining;
+                final double newWithdrawn = (alreadyWithdrawn + take).clamp(0.0, net);
+                await txn.rawUpdate(
+                  'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
+                  [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
+                );
+                remaining = 0.0;
+                break;
+              }
+            }
+
+            // 2) إذا بقي مبلغ، نقتطع الباقي من الـ starting (global latestDrawerStarting)
+            if (remaining > eps) {
+              // اقرأ آخر سجل بدء داخل الترانزاكشن لضمان القيم المحدثة
+              final startRows = await txn.rawQuery(
+                  "SELECT rowid, amount FROM cash_drawer WHERE amount > 0 ORDER BY created_at DESC LIMIT 1;"
+              );
+
+              if (startRows.isNotEmpty && startRows.first['rowid'] != null) {
+                final int rowid = (startRows.first['rowid'] as num).toInt();
+                final double currentStartAmountTx = (startRows.first['amount'] as num).toDouble();
+
+                // لا نأخذ أكثر مما هو متاح في الجزء الذي يتجاوز الـ starting المسجل
+                final double maxTakeFromStarting = (currentStartAmountTx - latestDrawerStarting).clamp(0.0, double.infinity);
+                final double toTake = remaining.clamp(0.0, maxTakeFromStarting);
+
+                // if nothing can be taken from starting, leave remaining as-is (but this shouldn't happen due to earlier check)
+                if (toTake > eps) {
+                  final double newStarting = (currentStartAmountTx - toTake).clamp(latestDrawerStarting, double.infinity);
+
+                  final nowIso = DateTime.now().toIso8601String();
+                  final rowsAffected = await txn.rawUpdate(
+                    'UPDATE cash_drawer SET amount = ?, updated_by = ?, note = ?, created_at = ? WHERE rowid = ?',
+                    [newStarting, username, 'سحب إلى المحفظة (-${requestedAmount.toStringAsFixed(2)})', nowIso, rowid],
+                  );
+
+                  debugPrint('Updated existing starting rowid=$rowid: old=$currentStartAmountTx new=$newStarting rowsAffected=$rowsAffected');
+
+                  remaining -= toTake;
+                }
+              } else {
+                // fallback: لو مافيش سجل starting سابق — لا نسمح بإقحام قيمة أقل من latestDrawerStarting
+                // لذلك نأخذ الحد الأدنى الممكن (لا شيء إذا latestDrawerStarting == 0)
+                final double computedNewStarting = (latestDrawerStarting).clamp(0.0, double.infinity);
+                final nowIso = DateTime.now().toIso8601String();
+                final inserted = await txn.insert('cash_drawer', {
+                  'amount': computedNewStarting,
+                  'updated_by': username,
+                  'note': 'سحب إلى المحفظة (-${requestedAmount.toStringAsFixed(2)}) [fallback insert]',
+                  'created_at': nowIso,
+                });
+                debugPrint('Fallback: inserted new starting rowid=$inserted amount=$computedNewStarting');
+                // after fallback we consider we took nothing from starting (remaining should be 0 if earlier totalAvailableForThisCashier check passed)
+                // remaining unchanged here
+              }
+            }
+
+            // 3) سجل الإيداع في محفظة الكارت (تحويل من الدرج للمحفظة)
+            final now = DateTime.now().toIso8601String();
+            await txn.insert('card_wallet', {
+              'amount': requestedAmount,
+              'updated_by': username,
+              'note': 'تحويل من الدرج إلى المحفظة',
+              'created_at': now,
+            });
+
+            // كل شيء تم داخل الtransaction بنجاح
+            success = true;
+          }); // end transaction
+        } catch (e, st) {
+          debugPrint('transfer from drawer->wallet transaction failed: $e\n$st');
+          success = false;
         }
 
-        // 2) إذا بقي مبلغ، نقتطع الباقي من الـ starting (global latestDrawerStarting)
-        if (remaining > eps) {
-          final newStarting = (latestDrawerStarting - remaining).clamp(0.0, double.infinity);
-          final now = DateTime.now().toIso8601String();
-          await db.insert('cash_drawer', {
-            'amount': newStarting,
-            'updated_by': username,
-            'note': 'سحب إلى المحفظة (-${requestedAmount.toStringAsFixed(2)})',
-            'created_at': now,
-          });
-          remaining = 0.0;
+        // بعد الtransaction — نعيد تحميل المجاميع المعروضة
+        if (success) {
+          await _loadCardTotals();
+          await _loadUserStartingAndNetSales(); // تحديث القيم المعروضة بعد التعديل
+          if (mounted) setState(() => _saving = false);
+          return {'transferred': requestedAmount, 'capped': wasCapped, 'reason': null, 'available': totalAvailableForThisCashier};
+        } else {
+          if (mounted) setState(() => _saving = false);
+          return {'transferred': 0.0, 'capped': false, 'reason': 'exception', 'available': totalAvailableForThisCashier};
         }
-
-        // 3) سجل الإيداع في محفظة الكارت (تحويل من الدرج للمحفظة)
-        final now = DateTime.now().toIso8601String();
-        await db.insert('card_wallet', {
-          'amount': requestedAmount,
-          'updated_by': username,
-          'note': 'تحويل من الدرج إلى المحفظة',
-          'created_at': now,
-        });
-
-        await _loadCardTotals();
-        await _loadUserStartingAndNetSales(); // تحديث القيم المعروضة بعد التعديل
-
-        return {'transferred': requestedAmount, 'capped': wasCapped, 'reason': null, 'available': totalAvailableForThisCashier};
       } else {
         // من المحفظة -> الدرج (إيداع)
         if (amount > latestWallet + eps) {
+          if (mounted) setState(() => _saving = false);
           return {'transferred': 0.0, 'capped': false, 'reason': 'insufficient_wallet', 'available': latestWallet};
         }
 
@@ -791,31 +851,33 @@ class _CashierScreenState extends State<CashierScreen> {
             });
 
             // 2) سجل فاتورة نقدية بسيطة في جدول sales — هذا يجعل هذا المبلغ يظهر كصافي مبيعات لذلك الكاشير فقط.
-            // لاحظ: حذفت حقل 'note' لأن جدول sales عندك لا يحتويه، وأدخَلنا فقط الحقول الأساسية
             await txn.insert('sales', {
               'total': amount,
               'paid_amount': amount,
               'change_amount': 0.0,
               'cashier_username': username,
               'payment_method': 'cash',
-              'date': now,
+              'date': DateTime.now().toIso8601String(),
             });
           });
         } catch (e, st) {
           debugPrint('Failed to perform deposit transaction (wallet->drawer): $e\n$st');
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تنفيذ العملية: $e')));
+          if (mounted) setState(() => _saving = false);
           return {'transferred': 0.0, 'capped': false, 'reason': 'exception', 'available': latestWallet};
         }
 
         // بعد النجاح، أعد تحميل المجاميع المعروضة
         await _loadCardTotals();
         await _loadUserStartingAndNetSales();
+        if (mounted) setState(() => _saving = false);
 
         return {'transferred': amount, 'capped': false, 'reason': null, 'available': latestWallet};
       }
     } catch (e, st) {
       debugPrint('transferBetweenDrawerAndWallet failed: $e\n$st');
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التحويل: $e')));
+      if (mounted) setState(() => _saving = false);
       return {'transferred': 0.0, 'capped': false, 'reason': 'exception: $e', 'available': 0.0};
     } finally {
       if (mounted) setState(() => _saving = false);
