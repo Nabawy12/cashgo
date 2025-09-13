@@ -1328,7 +1328,6 @@ class _CashierScreenState extends State<CashierScreen> {
       final userStarting = await dbHelper.getLatestDrawerStartingAmountByUser(username);
 
       // 2) sales net cash for this cashier (within the day)
-      // -> استخدمنا القيمة المحسوبة من الفواتير المفلترة لضمان الاتساق (لا نستخدم استدعاء خارجي قد يتضمن فواتير مُصفّرة)
       final salesNetCashForCashier = salesPaidCash;
 
       // 3) returns for this cashier
@@ -1442,19 +1441,36 @@ class _CashierScreenState extends State<CashierScreen> {
             args.add('cash');
             args.add(fromDateStr);
 
-            // نضيف شرط إضافي حتى لا نُعيد تصفير فواتير سبق تصفيرها
-            final sql = '''
-            UPDATE sales
-            SET drawer_withdrawn_amount = (COALESCE(paid_amount,0) - COALESCE(change_amount,0)),
-                drawer_withdrawn = 1
-            WHERE id IN ($placeholders)
-              AND cashier_username = ?
-              AND payment_method = ?
-              AND date(date) = ?
-              AND (drawer_withdrawn IS NULL OR drawer_withdrawn = 0)
-          ''';
+            // ======= التأكد من وجود العمود قبل محاولة تحديثه =======
+            final cols = await txn.rawQuery("PRAGMA table_info(sales);");
+            final hasDrawerWithdrawnAmount = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn_amount');
 
-            await txn.rawUpdate(sql, args);
+            if (hasDrawerWithdrawnAmount) {
+              // نستخدم SQL الأصلي لو العمود موجود
+              final sql = '''
+              UPDATE sales
+              SET drawer_withdrawn_amount = (COALESCE(paid_amount,0) - COALESCE(change_amount,0)),
+                  drawer_withdrawn = 1
+              WHERE id IN ($placeholders)
+                AND cashier_username = ?
+                AND payment_method = ?
+                AND date(date) = ?
+                AND (drawer_withdrawn IS NULL OR drawer_withdrawn = 0)
+            ''';
+              await txn.rawUpdate(sql, args);
+            } else {
+              // لو العمود مش موجود، نكتفي بتعيين العلم drawer_withdrawn فقط (نتجنّب الخطأ)
+              final sqlNoAmount = '''
+              UPDATE sales
+              SET drawer_withdrawn = 1
+              WHERE id IN ($placeholders)
+                AND cashier_username = ?
+                AND payment_method = ?
+                AND date(date) = ?
+                AND (drawer_withdrawn IS NULL OR drawer_withdrawn = 0)
+            ''';
+              await txn.rawUpdate(sqlNoAmount, args);
+            }
           });
 
           // إعادة تحميل القيم المعروضة للكاشير الآن (ستجعل _userNetSales = 0 لو كانت هذه الفواتير هي السبب)
@@ -1477,7 +1493,6 @@ class _CashierScreenState extends State<CashierScreen> {
         debugPrint('Failed to zero cashier net sales on closeShift: $e\n$st');
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذّر تصفير صافي المبيعات: $e')));
       }
-
     } catch (e, st) {
       debugPrint('Error while closing shift: $e\n$st');
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تقفيل الشفت: $e')));
