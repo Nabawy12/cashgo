@@ -472,86 +472,84 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       final dbHelper = DBHelper.instance;
       final db = await dbHelper.database;
 
-      // نحاول حساب صافي المبيعات النقدي ومدفوعات المشتريات النقدية
-      final fromStr = _fromDate != null ? _dateFormat.format(_fromDate!) : null;
-      final toStr = _toDate != null ? _dateFormat.format(_toDate!) : null;
-
-      final totals = await dbHelper.getDrawerTotals(fromDate: fromStr, toDate: toStr);
-      final salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
-          ?? (totals['sales_net'] as num?)?.toDouble()
-          ?? 0.0;
-
-      double purchasePaidCash = 0.0;
-      try {
-        final rows = await db.rawQuery(
-            "SELECT SUM(COALESCE(paid_amount,0)) AS total FROM purchase_receipts WHERE payment_type = 'cash'"
-        );
-        purchasePaidCash = (rows.isNotEmpty && rows.first['total'] != null)
-            ? (rows.first['total'] as num).toDouble()
-            : 0.0;
-      } catch (e) {
-        debugPrint('Failed to compute purchasePaidCash in _saveStartingAmount_replace: $e');
-        purchasePaidCash = 0.0;
-      }
-
-      // نريد أن نجعل: desiredStarting + salesNetCash - purchasePaidCash == entered
-      final double desiredStarting = entered - (salesNetCash - purchasePaidCash);
-
-      // اقرأ السجل الأخير لكي نحدّثه أو ندخله جديداً
-      final lastRows = await db.query(
-        'cash_drawer',
-        orderBy: 'created_at DESC',
-        limit: 1,
-      );
-
       final currentUser = await dbHelper.getCurrentUser();
       final username = (currentUser != null && currentUser['username'] != null)
           ? currentUser['username'] as String
           : 'admin';
+      final nowIso = DateTime.now().toIso8601String();
 
-      if (lastRows.isNotEmpty) {
-        final last = lastRows.first;
-        final lastId = last['id'];
-        await db.transaction((txn) async {
-          await txn.update(
-            'cash_drawer',
-            {
-              'amount': desiredStarting,
-              'updated_by': username,
-              'note': 'Replaced to force drawer to EGP ${entered.toStringAsFixed(2)} (desired starting set to ${desiredStarting.toStringAsFixed(2)})',
-              'created_at': DateTime.now().toIso8601String(),
-            },
-            where: 'id = ?',
-            whereArgs: [lastId],
-          );
+      // تنفيذ معاملة واحدة: أرشفة المبيعات القديمة ثم تحديث سجل الدرج
+      await db.transaction((txn) async {
+        // 1) (اختياري) أنشئ جدول drawer_resets و أدخِل marker (يساعد للتتبع)
+        await txn.execute('''
+        CREATE TABLE IF NOT EXISTS drawer_resets(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at TEXT NOT NULL,
+          note TEXT,
+          created_by TEXT
+        );
+      ''');
+
+        await txn.insert('drawer_resets', {
+          'created_at': nowIso,
+          'note': 'Hard reset via UI - archive older sales and set drawer to ${entered.toStringAsFixed(2)}',
+          'created_by': username,
         });
-      } else {
-        await db.transaction((txn) async {
-          await txn.insert('cash_drawer', {
-            'amount': desiredStarting,
+
+        // 2) أرشف مبيعات ما قبل الآن — عن طريق تعديل payment_method حتى تستبعدها استعلاماتك الحالية
+        //    نضع بادئة 'archived_' لتمييزها. هنا نغطي 'cash' و 'card' و 'credit' (تعديل حسب حاجتك).
+        //    الشرط datetime(date) < nowIso يضمن أننا نؤرشف السجلات القديمة فقط.
+        await txn.rawUpdate('''
+        UPDATE sales
+        SET payment_method = 'archived_' || payment_method
+        WHERE datetime(date) < ?
+          AND payment_method IN ('cash','card','credit')
+      ''', [nowIso]);
+
+        // 3) حدّث أو أدخل سجل cash_drawer بحيث يصبح المبلغ المبدئي = القيمة المدخلة (عرض فوري)
+        final lastRows = await txn.query('cash_drawer', orderBy: 'created_at DESC', limit: 1);
+        if (lastRows.isNotEmpty) {
+          final lastId = lastRows.first['id'];
+          await txn.update('cash_drawer', {
+            'amount': entered, // نعطي المستخدم القيمة المدخلة مباشرة كبداية جديدة
             'updated_by': username,
-            'note': 'Initial starting amount set to ${desiredStarting.toStringAsFixed(2)} to match forced drawer value ${entered.toStringAsFixed(2)}',
-            'created_at': DateTime.now().toIso8601String(),
+            'note': 'Hard reset starting amount to ${entered.toStringAsFixed(2)} (archived older sales)',
+            'created_at': nowIso,
+          }, where: 'id = ?', whereArgs: [lastId]);
+        } else {
+          await txn.insert('cash_drawer', {
+            'amount': entered,
+            'updated_by': username,
+            'note': 'Initial hard reset starting amount ${entered.toStringAsFixed(2)} (archived older sales)',
+            'created_at': nowIso,
           });
-        });
-      }
+        }
+      });
 
-      // حدّث واجهة المستخدم فوراً: نُظهر أن المبلغ الظاهر في الدرج يساوي "entered"
+      // تحديث الواجهة فورًا: نعرض القيمة الجديدة ونصفر صافي المبيعات والمقادير المرتبطة
       if (mounted) {
         setState(() {
           _drawerController.text = entered.toStringAsFixed(2);
-          _startingAmount = desiredStarting;
-          _currentDrawer = entered; // عرض فوري؛ حدث بيانات حقيقية عبر _loadData لاحقًا
+          _startingAmount = entered;
+          _currentDrawer = entered;
+          _salesNet = 0.0;
+          _cardNetSales = 0.0;
+          _cardReceived = 0.0;
+          _cardTotalAvailable = _walletAmount + _cardReceived;
         });
       }
 
-      // لإعادة التحقق من البيانات وتحديث كل الحقول المنبثقة
+      // إعادة تحميل canonical: بعد الأرشفة، استعلامات _loadData التي تبحث عن payment_method='cash' أو 'card' لن تعدّ السجلات المؤرشفة
       await _loadData();
 
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم ضبط الدرج والبدء من جديد: EGP ${entered.toStringAsFixed(2)} (الأرصدة القديمة مؤرشفة)')),
+        );
+      }
     } catch (e, st) {
-      debugPrint('Error replacing drawer amount: $e\n$st');
-      if (mounted)
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ: $e')));
+      debugPrint('Error in hard-save-and-archive: $e\n$st');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ: $e')));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
