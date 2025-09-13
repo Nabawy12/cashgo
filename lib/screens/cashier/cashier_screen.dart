@@ -1266,27 +1266,21 @@ class _CashierScreenState extends State<CashierScreen> {
 
     try {
       final now = DateTime.now();
-
-      // استخدم بداية اليوم فقط -> هذا يضمن التقفيل سيكون خاص باليوم الحالي
       final startOfDay = DateTime(now.year, now.month, now.day);
       final fromDateStr = startOfDay.toIso8601String().split('T').first;
-      final toDateStr = fromDateStr; // يوم واحد (اليوم)
+      final toDateStr = fromDateStr;
 
-      // جلب مبيعات الكاشير لليوم (جميعها من DB)
       final allSales = await DBHelper.instance.getSalesByCashierBetweenDates(
         cashierUsername: username,
         fromDate: fromDateStr,
         toDate: toDateStr,
       );
 
-      // فلترة: نعمل فقط على الفواتير التي لم تُصفّر بعد (drawer_withdrawn == 0 أو null)
       final sales = allSales.where((s) {
         final dw = s['drawer_withdrawn'];
-        // قد يكون null أو 0 أو 1 — نأخذ فقط اللي مش مُصفّرة
         return (dw == null) || ((dw as num).toInt() == 0);
       }).toList();
 
-      // جلب عناصر كل فاتورة
       final Map<int, List<Map<String, dynamic>>> saleItemsMap = {};
       for (final s in sales) {
         final sid = (s['id'] as num).toInt();
@@ -1294,14 +1288,13 @@ class _CashierScreenState extends State<CashierScreen> {
         saleItemsMap[sid] = items;
       }
 
-      // جلب سندات الشراء المسجلة بواسطة الكاشير لليوم
       final purchases = await DBHelper.instance.getPurchaseReceiptsByUserBetweenDates(
         username: username,
         fromDate: fromDateStr,
         toDate: toDateStr,
       );
 
-      // حسابات تجميعية بسيطة على الفواتير المفلترة فقط
+      // حسابات التجميع والاعداد للتقرير (كما كان)
       double salesTotal = 0.0;
       double salesPaidCash = 0.0;
       double salesPaidCard = 0.0;
@@ -1321,30 +1314,21 @@ class _CashierScreenState extends State<CashierScreen> {
         purchasesPaid += (p['paid_amount'] as num?)?.toDouble() ?? 0.0;
       }
 
-      // ===== هنا نحسب بعض القيم المساعدة per-user =====
       final dbHelper = DBHelper.instance;
-
-      // 1) user-specific starting
       final userStarting = await dbHelper.getLatestDrawerStartingAmountByUser(username);
-
-      // 2) sales net cash for this cashier (within the day)
       final salesNetCashForCashier = salesPaidCash;
-
-      // 3) returns for this cashier
       final returnsDeltaForCashier = await dbHelper.getReturnsDeltaByCashierBetweenDates(
         cashierUsername: username,
         fromDate: fromDateStr,
         toDate: toDateStr,
       );
-
-      // 4) purchases paid by this user
       final purchasesPaidByUser = await dbHelper.getPurchasePaidCashByUserBetweenDates(
         username: username,
         fromDate: fromDateStr,
         toDate: toDateStr,
       );
 
-      // ===== هنا نحتسب مبلغ الإيداعات من المحفظة إلى الدرج بواسطة هذا الكاشير في نفس اليوم =====
+      // depositFromWalletForUser كما كان
       final db = await dbHelper.database;
       double depositFromWalletForUser = 0.0;
       try {
@@ -1361,17 +1345,10 @@ class _CashierScreenState extends State<CashierScreen> {
         depositFromWalletForUser = 0.0;
       }
 
-      // ===== تصحيح الازدواج: لا نجمع depositFromWalletForUser مرتين =====
       final drawerForCashier = salesNetCashForCashier;
-
       final walletAmount = await dbHelper.getLatestCardWalletAmount();
       final untransferredCard = await _getUntransferredCardAmountSafe();
       final cardTotalAvailable = untransferredCard + walletAmount;
-      final cardForCashier = await DBHelper.instance.getCardAmountByCashierBetweenDates(
-        cashierUsername: username,
-        fromDate: fromDateStr,
-        toDate: toDateStr,
-      );
 
       final creditOutstandingForCashier = await DBHelper.instance.getCreditOutstandingByCashierBetweenDates(
         cashierUsername: username,
@@ -1385,7 +1362,7 @@ class _CashierScreenState extends State<CashierScreen> {
         toDate: toDateStr,
       );
 
-      // build report widget (ShiftReportWidget is assumed to accept these fields)
+      // بناء وطباعة التقرير (كما كان)
       final reportWidget = ShiftReportWidget(
         cashierUsername: username,
         fromDate: fromDateStr,
@@ -1410,7 +1387,6 @@ class _CashierScreenState extends State<CashierScreen> {
         purchaseReceiptsOutstandingForUser: purchaseReceiptsOutstandingForUser,
       );
 
-      // طباعة التقرير
       try {
         await PrintService.printWidgetUsingOverlay(context, reportWidget, width: 280, pixelRatio: 2.0);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم طباعة تقرير الشفت لليوم')));
@@ -1419,80 +1395,9 @@ class _CashierScreenState extends State<CashierScreen> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل طباعة تقرير الشفت')));
       }
 
-      // === صفر صافي المبيعات للكاشير الذي غلق الشفت (فقط للفواتير التي عرضناها في هذا التقرير) ===
-      try {
-        final db = await dbHelper.database;
+      // *** هنا أزلنا كلياً أي تحديث على جدول sales (لا مزيد من UPDATE drawer_withdrawn/amount) ***
+      // يمكنك إن احتجت حفظ حالة "شفت مُغلق" أن تسجّل ذلك في جدول منفصل، وليس بتعديل عمود غير موحّد.
 
-        // بنجمع الـ ids من المتغير sales الذي جلبناه وفّلترناه فوق
-        final List<int> saleIds = sales
-            .map<int?>((s) => (s['id'] as num?)?.toInt())
-            .where((id) => id != null)
-            .cast<int>()
-            .toList();
-
-        if (saleIds.isNotEmpty) {
-          await db.transaction((txn) async {
-            // نصنع placeholders مثل "?, ?, ?" حسب طول القائمة
-            final placeholders = List.filled(saleIds.length, '?').join(',');
-            // نعدّ الـ args: أولًا الـ ids، ثم اسم الكاشير، ثم طريقة الدفع، ثم التاريخ
-            final List<Object?> args = <Object?>[];
-            args.addAll(saleIds);
-            args.add(username);
-            args.add('cash');
-            args.add(fromDateStr);
-
-            // ======= التأكد من وجود العمود قبل محاولة تحديثه =======
-            final cols = await txn.rawQuery("PRAGMA table_info(sales);");
-            final hasDrawerWithdrawnAmount = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn_amount');
-
-            if (hasDrawerWithdrawnAmount) {
-              // نستخدم SQL الأصلي لو العمود موجود
-              final sql = '''
-              UPDATE sales
-              SET drawer_withdrawn_amount = (COALESCE(paid_amount,0) - COALESCE(change_amount,0)),
-                  drawer_withdrawn = 1
-              WHERE id IN ($placeholders)
-                AND cashier_username = ?
-                AND payment_method = ?
-                AND date(date) = ?
-                AND (drawer_withdrawn IS NULL OR drawer_withdrawn = 0)
-            ''';
-              await txn.rawUpdate(sql, args);
-            } else {
-              // لو العمود مش موجود، نكتفي بتعيين العلم drawer_withdrawn فقط (نتجنّب الخطأ)
-              final sqlNoAmount = '''
-              UPDATE sales
-              SET drawer_withdrawn = 1
-              WHERE id IN ($placeholders)
-                AND cashier_username = ?
-                AND payment_method = ?
-                AND date(date) = ?
-                AND (drawer_withdrawn IS NULL OR drawer_withdrawn = 0)
-            ''';
-              await txn.rawUpdate(sqlNoAmount, args);
-            }
-          });
-
-          // إعادة تحميل القيم المعروضة للكاشير الآن (ستجعل _userNetSales = 0 لو كانت هذه الفواتير هي السبب)
-          await _loadUserStartingAndNetSales();
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('تم تصفير صافي المبيعات لهذا الكاشير لليوم')),
-            );
-          }
-        } else {
-          // لا توجد فواتير غير مصفّرة لهذا الكاشير اليوم — لا نفعل شيئًا
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('لا توجد فواتير لتصفيرها لهذا الكاشير اليوم')),
-            );
-          }
-        }
-      } catch (e, st) {
-        debugPrint('Failed to zero cashier net sales on closeShift: $e\n$st');
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذّر تصفير صافي المبيعات: $e')));
-      }
     } catch (e, st) {
       debugPrint('Error while closing shift: $e\n$st');
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تقفيل الشفت: $e')));
