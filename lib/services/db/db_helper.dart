@@ -122,10 +122,14 @@ class DBHelper {
     return_note TEXT,
     customer_name TEXT,
     payment_method TEXT NOT NULL DEFAULT 'cash',
-    discount_type TEXT NOT NULL DEFAULT 'fixed',   -- NEW
-    discount_value REAL NOT NULL DEFAULT 0        -- NEW
+    discount_type TEXT NOT NULL DEFAULT 'fixed',
+    discount_value REAL NOT NULL DEFAULT 0,
+    -- new columns to track drawer clearing
+    drawer_withdrawn INTEGER NOT NULL DEFAULT 0,
+    drawer_withdrawn_amount REAL NOT NULL DEFAULT 0
   )""",
     );
+
 
 
     // sale_items

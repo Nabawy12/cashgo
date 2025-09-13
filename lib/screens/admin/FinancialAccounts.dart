@@ -462,7 +462,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     }
   }
 
-  bool _overrideDrawer = false;
 
   Future<void> _saveStartingAmount_replace() async {
     final text = _drawerController.text.trim();
@@ -473,11 +472,10 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       final dbHelper = DBHelper.instance;
       final db = await dbHelper.database;
 
-      // حدود التاريخ (لتقييد التصفير لنطاق التواريخ إذا كان محددًا)
+      // نحاول حساب صافي المبيعات النقدي ومدفوعات المشتريات النقدية
       final fromStr = _fromDate != null ? _dateFormat.format(_fromDate!) : null;
       final toStr = _toDate != null ? _dateFormat.format(_toDate!) : null;
 
-      // نحسب القيم التقليدية للاحتياط
       final totals = await dbHelper.getDrawerTotals(fromDate: fromStr, toDate: toStr);
       final salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
           ?? (totals['sales_net'] as num?)?.toDouble()
@@ -496,103 +494,64 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         purchasePaidCash = 0.0;
       }
 
-      // إذا override مفعل: نرغب بأن يصبح صافي المبيعات = 0 فعليًا عن طريق تعليم المبيعات كـ "مسحوبة"
-      final double desiredStarting = _overrideDrawer
-          ? entered
-          : (entered - (salesNetCash - purchasePaidCash));
+      // نريد أن نجعل: desiredStarting + salesNetCash - purchasePaidCash == entered
+      final double desiredStarting = entered - (salesNetCash - purchasePaidCash);
+
+      // اقرأ السجل الأخير لكي نحدّثه أو ندخله جديداً
+      final lastRows = await db.query(
+        'cash_drawer',
+        orderBy: 'created_at DESC',
+        limit: 1,
+      );
 
       final currentUser = await dbHelper.getCurrentUser();
       final username = (currentUser != null && currentUser['username'] != null)
           ? currentUser['username'] as String
           : 'admin';
 
-      // نفعل إعادة التعيين داخل معاملة لضمان الاتساق
-      await db.transaction((txn) async {
-        // backup بسيط لجدول الدرج
-        try {
-          await txn.execute('CREATE TABLE IF NOT EXISTS cash_drawer_backup AS SELECT * FROM cash_drawer WHERE 0;');
-          await txn.execute('INSERT INTO cash_drawer_backup SELECT * FROM cash_drawer;');
-        } catch (e) {
-          debugPrint('Could not create/copy cash_drawer_backup: $e');
-        }
-
-        // نحذف السجلات الحالية في الدرج لبدء "نظيف"
-        await txn.delete('cash_drawer');
-
-        // ---- إذا override مفعل، نملأ/ننشئ عمود drawer_withdrawn_amount ونصفر صافي المبيعات (بواسطة وسم السجلات) ---
-        if (_overrideDrawer) {
-          // تأكد من وجود العمود، وإلا أضفه
-          try {
-            final cols = await txn.rawQuery("PRAGMA table_info(sales);");
-            final hasDrawerWithdrawn = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn_amount');
-            if (!hasDrawerWithdrawn) {
-              await txn.execute("ALTER TABLE sales ADD COLUMN drawer_withdrawn_amount REAL NOT NULL DEFAULT 0;");
-              // لو ALTER TABLE لم يدعم وضع قيم افتراضية، العمود سيأخذ القيمة 0 تلقائياً
-            }
-
-            // جهّز شرط التاريخ إن وجد
-            String dateCondition = '';
-            final List<Object?> args = <Object?>[];
-            if (fromStr != null && toStr != null) {
-              dateCondition = " AND date(date) BETWEEN ? AND ?";
-              args.addAll([fromStr, toStr]);
-            } else if (fromStr != null) {
-              dateCondition = " AND date(date) >= ?";
-              args.add(fromStr);
-            } else if (toStr != null) {
-              dateCondition = " AND date(date) <= ?";
-              args.add(toStr);
-            }
-
-            // حدّث كل مبيعات النقد لتُعامل كأنها "مسحوبة" (بذلك يكون صافي المبيعات النقدي = 0 عند الاستعلامات التي تطرح drawer_withdrawn_amount).
-            await txn.rawUpdate('''
-            UPDATE sales
-            SET drawer_withdrawn_amount = (COALESCE(paid_amount,0) - COALESCE(change_amount,0))
-            WHERE payment_method = 'cash'
-              $dateCondition
-          ''', args);
-          } catch (e) {
-            debugPrint('Failed to mark sales as withdrawn for override: $e');
-            // لا نفشل المعاملة كاملة بسبب فشل التصفير، لكن نعلم في السجل
-          }
-        }
-
-        // إدخال صف البداية الجديد في cash_drawer
-        final now = DateTime.now().toIso8601String();
-        await txn.insert('cash_drawer', {
-          'amount': desiredStarting,
-          'updated_by': username,
-          'note': _overrideDrawer
-              ? 'Override: set starting amount directly to ${desiredStarting.toStringAsFixed(2)} (sales_net marked withdrawn)'
-              : 'Reset starting amount to ${desiredStarting.toStringAsFixed(2)} to force drawer display EGP ${entered.toStringAsFixed(2)} (full reset)',
-          'created_at': now,
+      if (lastRows.isNotEmpty) {
+        final last = lastRows.first;
+        final lastId = last['id'];
+        await db.transaction((txn) async {
+          await txn.update(
+            'cash_drawer',
+            {
+              'amount': desiredStarting,
+              'updated_by': username,
+              'note': 'Replaced to force drawer to EGP ${entered.toStringAsFixed(2)} (desired starting set to ${desiredStarting.toStringAsFixed(2)})',
+              'created_at': DateTime.now().toIso8601String(),
+            },
+            where: 'id = ?',
+            whereArgs: [lastId],
+          );
         });
-      });
+      } else {
+        await db.transaction((txn) async {
+          await txn.insert('cash_drawer', {
+            'amount': desiredStarting,
+            'updated_by': username,
+            'note': 'Initial starting amount set to ${desiredStarting.toStringAsFixed(2)} to match forced drawer value ${entered.toStringAsFixed(2)}',
+            'created_at': DateTime.now().toIso8601String(),
+          });
+        });
+      }
 
-      // حدث واجهة المستخدم فوراً
+      // حدّث واجهة المستخدم فوراً: نُظهر أن المبلغ الظاهر في الدرج يساوي "entered"
       if (mounted) {
         setState(() {
           _drawerController.text = entered.toStringAsFixed(2);
           _startingAmount = desiredStarting;
-          _currentDrawer = entered;
-          if (_overrideDrawer) {
-            _salesNet = 0.0; // عرض فوري أن صافي المبيعات أصبح صفر
-          }
+          _currentDrawer = entered; // عرض فوري؛ حدث بيانات حقيقية عبر _loadData لاحقًا
         });
       }
 
-      // أعِد تحميل البيانات canonical للتأكد من الاتساق مع DB
+      // لإعادة التحقق من البيانات وتحديث كل الحقول المنبثقة
       await _loadData();
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم إعادة تعيين الدرج وبداية جديدة بقيمة EGP ${entered.toStringAsFixed(2)}')),
-        );
-      }
     } catch (e, st) {
-      debugPrint('Error replacing drawer amount (full reset): $e\n$st');
+      debugPrint('Error replacing drawer amount: $e\n$st');
       if (mounted)
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ أثناء إعادة التعيين: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ: $e')));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
