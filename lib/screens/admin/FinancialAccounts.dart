@@ -1,3 +1,4 @@
+import 'package:cashgo/screens/admin/waletScreen.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 
@@ -130,15 +131,25 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     }
     return _formatMoney(value);
   }
+  double? _total;
+
+  Future<void> _init() async {
+    // تحميل المعاملات أولا (ستقوم بتحديث _loading و _grouped)
+    // ثم احسب الإجمالي وحدّث الحالة لعرضه
+    final total = await getTotalDrawerToWallet();
+    setState(() {
+      _total = total;
+    });
+  }
 
   Future<void> _loadData() async {
+    _init();
     if (!mounted) return;
     setState(() => _loading = true);
 
     try {
       final dbHelper = DBHelper.instance;
       final db = await dbHelper.database;
-
 
       // تاريخ الفلترة
       final fromStr = _fromDate != null ? _dateFormat.format(_fromDate!) : null;
@@ -147,8 +158,44 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       // البداية: المبلغ المبدئي
       final starting = await dbHelper.getLatestDrawerStartingAmount();
 
-      // المجاميع الأساسية
+      // المجاميع الأساسية (نستخدم هذا للحقول الأخرى مثل returns_delta وغيرها)
       final totals = await dbHelper.getDrawerTotals(fromDate: fromStr, toDate: toStr);
+
+      // ------ حساب صافي المبيعات النقدي بطريقة لا تعتمد على drawer_withdrawn_amount ------
+      double salesNetCash = 0.0;
+      try {
+        String dateCondition = '';
+        final List<Object?> args = <Object?>['cash'];
+        if (fromStr != null && toStr != null) {
+          dateCondition = " AND date(date) BETWEEN ? AND ?";
+          args.addAll([fromStr, toStr]);
+        } else if (fromStr != null) {
+          dateCondition = " AND date(date) >= ?";
+          args.add(fromStr);
+        } else if (toStr != null) {
+          dateCondition = " AND date(date) <= ?";
+          args.add(toStr);
+        }
+
+        final rows = await db.rawQuery('''
+        SELECT SUM( (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) ) AS sales_net_cash
+        FROM sales
+        WHERE payment_method = ? $dateCondition
+      ''', args);
+
+        salesNetCash = (rows.isNotEmpty && rows.first['sales_net_cash'] != null)
+            ? (rows.first['sales_net_cash'] as num).toDouble()
+            : 0.0;
+        if (salesNetCash < 0) salesNetCash = 0.0;
+      } catch (e) {
+        debugPrint('Failed to compute salesNetCash directly: $e');
+        // fallback to totals if direct query failed
+        salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
+            ?? (totals['sales_net'] as num?)?.toDouble()
+            ?? 0.0;
+      }
+      // -------------------------------------------------------------------------------------
+
       DateTime computeDate;
       if (_fromDate != null && _toDate != null) {
         final sameDay = _fromDate!.year == _toDate!.year &&
@@ -189,10 +236,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         purchaseReceiptsOutstanding = 0.0;
       }
 
-      // defensive values
-      final salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
-          ?? (totals['sales_net'] as num?)?.toDouble()
-          ?? 0.0;
+      // returnsDelta من totals (أو صفر)
       final returnsDelta = (totals['returns_delta'] as num?)?.toDouble() ?? 0.0;
 
       // صافي مبيعات الكارت
@@ -216,7 +260,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       // ===== المشتريات المدفوعة كاش فقط =====
       double purchasePaidCash = 0.0;
       try {
-        // محاولة استعلام SUM مباشرة
         final rows = await db.rawQuery(
             "SELECT SUM(COALESCE(paid_amount,0)) AS total FROM purchase_receipts WHERE payment_type = 'cash'"
         );
@@ -224,8 +267,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
             ? (rows.first['total'] as num).toDouble()
             : 0.0;
       } catch (e) {
-        debugPrint('Failed to compute purchasePaidCash in closeShift: $e');
-        // fallback: جمع من getPaidPurchaseReceipts
+        debugPrint('Failed to compute purchasePaidCash in _loadData: $e');
         try {
           final paidReceipts = await dbHelper.getPaidPurchaseReceipts();
           double sum = 0.0;
@@ -239,9 +281,10 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           purchasePaidCash = 0.0;
         }
       }
+
       // حساب القيمة الحالية للدرج (starting + مبيعات كاش - مشتريات كاش)
-      final double computedFromParts = starting;
-      final double adjustedCurrent = computedFromParts; // لا نقومّ السالب — نريد إظهاره كما هو
+      final double computedFromParts = starting + salesNetCash;
+      final double adjustedCurrent = computedFromParts;
 
       // قراءة سندات الشراء لتعبئة paid/due
       final purchaseReceipts = await DBHelper.instance.getCreditPurchaseReceipts();
@@ -264,18 +307,12 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         walletAmount = 0.0;
       }
 
-      // Debug
-      debugPrint('LOAD DRAWER DEBUG: starting=$starting, salesNetCash=$salesNetCash, '
-          'purchasePaidCash=$purchasePaidCash, computedFromParts=$computedFromParts, '
-          'adjustedCurrent=$adjustedCurrent, untransferredCard=$untransferredCard, '
-          'cardNetSales=$cardNetSales, walletAmount=$walletAmount');
-
       // تحديث الحالة
       if (!mounted) return;
       setState(() {
         _startingAmount = starting;
-        _salesNet = dailySalesTotal; // <- هنا تعرض إجمالي اليوم
-        _currentDrawer = adjustedCurrent + _salesNet;
+        _currentDrawer = adjustedCurrent - _total!;
+        _salesNet = salesNetCash; // <-- الآن يعرض المجموع بدون تأثير drawer_withdrawn_amount
         _cardReceived = untransferredCard;
         _walletAmount = walletAmount;
         _cardTotalAvailable = (_cardReceived) + (_walletAmount);
@@ -287,13 +324,10 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
 
         _cardNetSales = cardNetSales;
 
-        _drawerController.text = starting.toString();
+        _drawerController.text = _currentDrawer.toStringAsFixed(2);
         _walletController.text = _walletAmount.toStringAsFixed(2);
       });
 
-      debugPrint('After setState in _loadData: starting=$_startingAmount, '
-          'currentDrawer=$_currentDrawer, cardNetSales=$_cardNetSales, '
-          'wallet=$_walletAmount, cardAvailable=$_cardTotalAvailable');
     } catch (e, st) {
       debugPrint('Error loading drawer data: $e\n$st');
       if (mounted) {

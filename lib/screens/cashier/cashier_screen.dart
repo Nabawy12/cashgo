@@ -1274,12 +1274,19 @@ class _CashierScreenState extends State<CashierScreen> {
       final fromDateStr = startOfDay.toIso8601String().split('T').first;
       final toDateStr = fromDateStr; // يوم واحد (اليوم)
 
-      // جلب مبيعات الكاشير لليوم
-      final sales = await DBHelper.instance.getSalesByCashierBetweenDates(
+      // جلب مبيعات الكاشير لليوم (جميعها من DB)
+      final allSales = await DBHelper.instance.getSalesByCashierBetweenDates(
         cashierUsername: username,
         fromDate: fromDateStr,
         toDate: toDateStr,
       );
+
+      // فلترة: نعمل فقط على الفواتير التي لم تُصفّر بعد (drawer_withdrawn == 0 أو null)
+      final sales = allSales.where((s) {
+        final dw = s['drawer_withdrawn'];
+        // قد يكون null أو 0 أو 1 — نأخذ فقط اللي مش مُصفّرة
+        return (dw == null) || ((dw as num).toInt() == 0);
+      }).toList();
 
       // جلب عناصر كل فاتورة
       final Map<int, List<Map<String, dynamic>>> saleItemsMap = {};
@@ -1296,7 +1303,7 @@ class _CashierScreenState extends State<CashierScreen> {
         toDate: toDateStr,
       );
 
-      // حسابات تجميعية بسيطة (يمكنك تعديل العرض لاحقاً)
+      // حسابات تجميعية بسيطة على الفواتير المفلترة فقط
       double salesTotal = 0.0;
       double salesPaidCash = 0.0;
       double salesPaidCard = 0.0;
@@ -1323,11 +1330,8 @@ class _CashierScreenState extends State<CashierScreen> {
       final userStarting = await dbHelper.getLatestDrawerStartingAmountByUser(username);
 
       // 2) sales net cash for this cashier (within the day)
-      final salesNetCashForCashier = await dbHelper.getSalesNetCashByCashierBetweenDates(
-        cashierUsername: username,
-        fromDate: fromDateStr,
-        toDate: toDateStr,
-      );
+      // -> استخدمنا القيمة المحسوبة من الفواتير المفلترة لضمان الاتساق (لا نستخدم استدعاء خارجي قد يتضمن فواتير مُصفّرة)
+      final salesNetCashForCashier = salesPaidCash;
 
       // 3) returns for this cashier
       final returnsDeltaForCashier = await dbHelper.getReturnsDeltaByCashierBetweenDates(
@@ -1344,7 +1348,6 @@ class _CashierScreenState extends State<CashierScreen> {
       );
 
       // ===== هنا نحتسب مبلغ الإيداعات من المحفظة إلى الدرج بواسطة هذا الكاشير في نفس اليوم =====
-      // (نقرأ سجل card_wallet ونبحث عن مداخل note التي تحتوي على 'تحويل إلى الدرج')
       final db = await dbHelper.database;
       double depositFromWalletForUser = 0.0;
       try {
@@ -1355,8 +1358,6 @@ class _CashierScreenState extends State<CashierScreen> {
         final sum = (rows.isNotEmpty && rows.first['sum_amount'] != null)
             ? (rows.first['sum_amount'] as num).toDouble()
             : 0.0;
-        // الإدخالات في card_wallet عند تحويل إلى الدرج تُسجَّل بالسالب (مثال: -100)
-        // لذلك المبلغ المودع يساوي -sum (ولو sum صفر أو موجب نُعتبر 0)
         depositFromWalletForUser = (-sum).clamp(0.0, double.infinity);
       } catch (e) {
         debugPrint('Failed to compute depositFromWalletForUser: $e');
@@ -1364,9 +1365,6 @@ class _CashierScreenState extends State<CashierScreen> {
       }
 
       // ===== تصحيح الازدواج: لا نجمع depositFromWalletForUser مرتين =====
-      // لأننا نسجل الإيداع كفاتورة نقدية (sales) عند تنفيذ التحويل من المحفظة -> الدرج،
-      // فـ salesNetCashForCashier يحتوي بالفعل على هذا المبلغ.
-      // نستخدم salesNetCashForCashier مباشرة كقيمة الدرْج الخاصة بهذا الكاشير.
       final drawerForCashier = salesNetCashForCashier;
 
       final walletAmount = await dbHelper.getLatestCardWalletAmount();
@@ -1403,15 +1401,12 @@ class _CashierScreenState extends State<CashierScreen> {
           'sales_paid_cash': salesPaidCash,
           'sales_paid_card': salesPaidCard,
           'purchases_paid': purchasesPaid,
-          // إضافات مفيدة للطباعة التفصيلية
           'user_starting': userStarting,
           'user_net_sales': salesNetCashForCashier,
-          // قمنا بعدم جمع depositFromWalletForUser هنا لتفادي الازدواج
           'drawer_for_cashier': drawerForCashier,
-          'deposit_from_wallet': depositFromWalletForUser, // نحتفظ به كحقل منفصل للعرض لو احتجته
+          'deposit_from_wallet': depositFromWalletForUser,
         },
         width: 280,
-        // هنا نمرّر القيمة التي ستُطبع كـ "اجمالي الدرج" للاسم الكاشير
         drawerCurrent: drawerForCashier,
         cardForCashier: cardTotalAvailable,
         creditOutstandingForCashier: creditOutstandingForCashier,
@@ -1427,39 +1422,58 @@ class _CashierScreenState extends State<CashierScreen> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل طباعة تقرير الشفت')));
       }
 
-      // === صفر صافي المبيعات للكاشير الذي غلق الشفت (فقط لفواتير اليوم وبطريقة آمنة) ===
+      // === صفر صافي المبيعات للكاشير الذي غلق الشفت (فقط للفواتير التي عرضناها في هذا التقرير) ===
       try {
-        await db.transaction((txn) async {
-          // نختار كل الفواتير النقدية الخاصة بهذا الكاشير لليوم مع صافي كل فاتورة
-          final rows = await txn.rawQuery(
-            '''
-        SELECT id, (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS net
-        FROM sales
-        WHERE cashier_username = ? AND payment_method = ? AND date(date) = ?
-        ''',
-            [username, 'cash', fromDateStr],
-          );
+        final db = await dbHelper.database;
 
-          for (final r in rows) {
-            final int id = (r['id'] as num).toInt();
-            final double net = (r['net'] as num?)?.toDouble() ?? 0.0;
-            if (net <= 0) continue; // تجاهل الفواتير الصفرية/السالبة
+        // بنجمع الـ ids من المتغير sales الذي جلبناه وفّلترناه فوق
+        final List<int> saleIds = sales
+            .map<int?>((s) => (s['id'] as num?)?.toInt())
+            .where((id) => id != null)
+            .cast<int>()
+            .toList();
 
-            // ضع قيمة drawer_withdrawn_amount مساويةً للصافي (بمعنى: تم سحبها/تصفيرها)
-            await txn.rawUpdate(
-              'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
-              [net, 1, id],
+        if (saleIds.isNotEmpty) {
+          await db.transaction((txn) async {
+            // نصنع placeholders مثل "?, ?, ?" حسب طول القائمة
+            final placeholders = List.filled(saleIds.length, '?').join(',');
+            // نعدّ الـ args: أولًا الـ ids، ثم اسم الكاشير، ثم طريقة الدفع، ثم التاريخ
+            final List<Object?> args = <Object?>[];
+            args.addAll(saleIds);
+            args.add(username);
+            args.add('cash');
+            args.add(fromDateStr);
+
+            // نضيف شرط إضافي حتى لا نُعيد تصفير فواتير سبق تصفيرها
+            final sql = '''
+            UPDATE sales
+            SET drawer_withdrawn_amount = (COALESCE(paid_amount,0) - COALESCE(change_amount,0)),
+                drawer_withdrawn = 1
+            WHERE id IN ($placeholders)
+              AND cashier_username = ?
+              AND payment_method = ?
+              AND date(date) = ?
+              AND (drawer_withdrawn IS NULL OR drawer_withdrawn = 0)
+          ''';
+
+            await txn.rawUpdate(sql, args);
+          });
+
+          // إعادة تحميل القيم المعروضة للكاشير الآن (ستجعل _userNetSales = 0 لو كانت هذه الفواتير هي السبب)
+          await _loadUserStartingAndNetSales();
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('تم تصفير صافي المبيعات لهذا الكاشير لليوم')),
             );
           }
-        });
-
-        // إعادة تحميل القيم المعروضة للكاشير الآن (ستجعل _userNetSales = 0)
-        await _loadUserStartingAndNetSales();
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('تم تصفير صافي المبيعات لهذا الكاشير لليوم')),
-          );
+        } else {
+          // لا توجد فواتير غير مصفّرة لهذا الكاشير اليوم — لا نفعل شيئًا
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('لا توجد فواتير لتصفيرها لهذا الكاشير اليوم')),
+            );
+          }
         }
       } catch (e, st) {
         debugPrint('Failed to zero cashier net sales on closeShift: $e\n$st');
