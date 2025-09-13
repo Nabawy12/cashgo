@@ -65,6 +65,10 @@ class DBHelper {
         try { await _ensureSaleDiscountColumns(db); } catch (_) {}
         try { await _ensureProductDatesColumns(db); } catch (_) {}
 
+        try { await _ensureDrawerWithdrawnAmountColumn(db); } catch (_) {}
+
+
+
 
 
 
@@ -2200,6 +2204,23 @@ class DBHelper {
     });
   }
 
+// inside class DBHelper
+
+  Future<void> _ensureDrawerWithdrawnAmountColumn(Database db) async {
+    final cols = await db.rawQuery("PRAGMA table_info(sales);");
+    final has = cols.any((c) => c['name'] == 'drawer_withdrawn_amount');
+    if (!has) {
+      // إضافة العمود كـ REAL أو NUMERIC حسب حاجتك؛ افتراضي 0
+      await db.execute("ALTER TABLE sales ADD COLUMN drawer_withdrawn_amount REAL NOT NULL DEFAULT 0;");
+      // (اختياري) نملأ القيم القديمة بصفر
+      await db.update('sales', {'drawer_withdrawn_amount': 0});
+    }
+  }
+
+  Future<void> ensureDrawerWithdrawnAmountColumn() async {
+    final db = await instance.database;
+    await _ensureDrawerWithdrawnAmountColumn(db);
+  }
 
 
 
