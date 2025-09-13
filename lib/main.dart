@@ -2,6 +2,7 @@
 import 'dart:io' show Platform;
 import 'package:cashgo/screens/admin/receipts.dart';
 import 'package:cashgo/screens/admin/stock_screen.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite/sqflite.dart';
@@ -16,11 +17,10 @@ Future<void> main() async {
   await initializeDateFormatting('ar');
 
 
-  // If running on desktop (Windows / Linux / macOS) initialize sqflite FFI
-  // BEFORE opening the database. This makes `openDatabase` use the
-  // `databaseFactoryFfi` implementation which works on desktop.
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
+  if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    sqfliteFfiInit();                 // يهيئ ffi
+    databaseFactory = databaseFactoryFfi; // يعيد توجيه factory لاستخدام ffi
+  }
 
 
   // Open/create DB and run any migration helpers that expect DB to exist
