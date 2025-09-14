@@ -10,13 +10,36 @@ import '../../services/db/db_helper.dart';
 Future<double> getTotalDrawerToWallet({dynamic database}) async {
   try {
     final db = database ?? await DBHelper.instance.database;
-    final rows = await db.rawQuery('SELECT * FROM card_wallet');
+
+    // today's key e.g. "2025-09-14"
+    final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+    // try SQL filter first (fast when created_at is ISO-like)
+    List<Map<String, dynamic>> rows;
+    try {
+      rows = await db.rawQuery('SELECT * FROM card_wallet WHERE created_at LIKE ?', ['$today%']);
+    } catch (_) {
+      // fallback to selecting all and filtering in Dart
+      rows = await db.rawQuery('SELECT * FROM card_wallet');
+    }
 
     double total = 0.0;
     final fromKeywords = ['درج', 'drawer'];
     final toKeywords = ['محفظة', 'محفظه', 'محفظ', 'wallet'];
 
     for (final r in rows) {
+      // If we selected all in fallback, ensure row is for today
+      final createdStr = (r['created_at'] as String?) ?? '';
+      bool rowIsToday = false;
+      try {
+        final dt = DateTime.parse(createdStr);
+        rowIsToday = DateFormat('yyyy-MM-dd').format(dt) == today;
+      } catch (_) {
+        // if parsing failed, also check textual prefix match
+        rowIsToday = createdStr.startsWith(today);
+      }
+      if (!rowIsToday) continue;
+
       final amt = (r['amount'] as num?)?.toDouble() ?? 0.0;
 
       if (r.containsKey('transfer_type')) {
@@ -32,7 +55,6 @@ Future<double> getTotalDrawerToWallet({dynamic database}) async {
       final hasTo = toKeywords.any((k) => note.contains(k));
       if (hasFrom && hasTo) {
         total += amt;
-        continue;
       }
     }
 
