@@ -4,6 +4,7 @@ import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../../services/Api/Admin/settings.dart';
 import '../../services/db/db_helper.dart';
 
 
@@ -427,7 +428,19 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                   CustomButton(
                       text: 'حفظ التغييرات',
                       onPressed: _changeAdminInfo
-                  )
+                  ),
+                  // Padding(
+                  //   padding: const EdgeInsets.all(12.0),
+                  //   child: CustomButton(
+                  //     text: 'مزامنة مع السيرفر',
+                  //     onPressed: () async {
+                  //       await ApiService.syncUsers();
+                  //       _showSnack("تمت المزامنة بنجاح");
+                  //     },
+                  //     color: AppColorsDark.mainColor.withOpacity(0.5),
+                  //   ),
+                  // ),
+
                 ],
               ),
             ),

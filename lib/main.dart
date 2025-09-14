@@ -1,34 +1,16 @@
 // lib/main.dart
-import 'dart:io' show Platform;
-import 'package:cashgo/screens/admin/receipts.dart';
-import 'package:cashgo/screens/admin/stock_screen.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
-import 'package:cashgo/services/db/db_helper.dart';
 import 'screens/shared/login_screen.dart';
-import 'screens/cashier/cashier_screen.dart';
 import 'screens/admin/dashboard_screen.dart';
-import 'package:intl/date_symbol_data_local.dart'; // << مهم
+import 'screens/cashier/cashier_screen.dart';
+import 'screens/admin/receipts.dart';
+import 'screens/admin/stock_screen.dart';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('ar');
-
-
-  if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
-    sqfliteFfiInit();                 // يهيئ ffi
-    databaseFactory = databaseFactoryFfi; // يعيد توجيه factory لاستخدام ffi
-  }
-
-
-  // Open/create DB and run any migration helpers that expect DB to exist
-  await DBHelper.instance.database;
-  await DBHelper.instance.ensureLowStockSeenColumn();
-  await DBHelper.instance.ensureProductDatesColumns();
-  await DBHelper.instance.ensureExpirySeenColumn();
-
   runApp(const MyApp());
 }
 
@@ -41,8 +23,8 @@ class MyApp extends StatelessWidget {
       title: 'CashGo',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(primarySwatch: Colors.blue),
+      home: LoginScreen(),
       routes: {
-        '/': (context) => const LoginScreen(),
         '/admin': (context) => const AdminDashboardScreen(username: 'admin'),
         CashierScreen.routName: (context) => const CashierScreen(),
         receiptsScreen.routeName: (context) => const receiptsScreen(),

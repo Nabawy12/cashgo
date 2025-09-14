@@ -2,6 +2,7 @@ import 'package:cashgo/screens/cashier/cashier_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../../models/login.dart';
+import '../../services/cashier/app_controller.dart';
 import '../../services/db/db_helper.dart';
 import '../../utils/colors.dart';
 import '../../widgets/custom_button.dart';
@@ -23,6 +24,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
   String errorMessage = '';
   bool loading = true;
+
+
   Future<void> _debugPrintUsers() async {
     final db = await DBHelper.instance.database;
     final rows = await db.query('users', orderBy: 'id');
@@ -35,8 +38,8 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
+    MaintenanceService.checkAndHandle(context);
     _loadCurrentUser();
-    _debugPrintUsers();
   }
 
 
@@ -68,43 +71,50 @@ class _LoginScreenState extends State<LoginScreen> {
       errorMessage = '';
     });
 
-    final username = usernameController.text.trim();
-    final password = passwordController.text.trim();
-
-    if (username.isEmpty || password.isEmpty) {
-      setState(() {
-        errorMessage = 'من فضلك املأ جميع الحقول';
-      });
+    if (MaintenanceService.isInMaintenance) {
+      MaintenanceService.checkAndHandle(context); // يعرض الدايالوج لو مش ظاهر
       return;
-    }
+    }else {
 
-    try {
-      final user = await DBHelper.instance.login(username, password);
-      if (user != null) {
-        // خزّن المستخدم الحالي في الـ DB (بدل SharedPreferences)
-        await DBHelper.instance.setCurrentUserByUsername(user['username'] as String);
+      final username = usernameController.text.trim();
+      final password = passwordController.text.trim();
 
-        // حدث الSession في الذاكرة
-        Session.currentUsername = user['username'];
-        Session.currentRole = user['role'];
-
-        // توجيه للشاشة المناسبة
-        if (user['role'] == 'admin') {
-          Navigator.pushNamed(context, '/admin', arguments: username);
-        } else {
-          Navigator.pushNamed(context, CashierScreen.routName, arguments: username);
-        }
-      } else {
+      if (username.isEmpty || password.isEmpty) {
         setState(() {
-          errorMessage = 'اسم المستخدم أو كلمة المرور غير صحيحه';
+          errorMessage = 'من فضلك املأ جميع الحقول';
         });
+        return;
       }
-    } catch (e) {
-      setState(() {
-        errorMessage = 'حدث خطأ أثناء تسجيل الدخول';
-      });
-      // optionally print or log e
+
+      try {
+        final user = await DBHelper.instance.login(username, password);
+        if (user != null) {
+          // خزّن المستخدم الحالي في الـ DB (بدل SharedPreferences)
+          await DBHelper.instance.setCurrentUserByUsername(user['username'] as String);
+
+          // حدث الSession في الذاكرة
+          Session.currentUsername = user['username'];
+          Session.currentRole = user['role'];
+
+          // توجيه للشاشة المناسبة
+          if (user['role'] == 'admin') {
+            Navigator.pushNamed(context, '/admin', arguments: username);
+          } else {
+            Navigator.pushNamed(context, CashierScreen.routName, arguments: username);
+          }
+        } else {
+          setState(() {
+            errorMessage = 'اسم المستخدم أو كلمة المرور غير صحيحه';
+          });
+        }
+      } catch (e) {
+        setState(() {
+          errorMessage = 'حدث خطأ أثناء تسجيل الدخول';
+        });
+        // optionally print or log e
+      }
     }
+
   }
 
 
