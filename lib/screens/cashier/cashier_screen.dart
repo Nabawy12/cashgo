@@ -759,7 +759,7 @@ class _CashierScreenState extends State<CashierScreen> {
                 TextButton(
                   style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
                   onPressed: () => Navigator.of(ctx2).pop(null),
-                  child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
+                  child: const Text('إلغاء ', style: TextStyle(color: Colors.white)),
                 ),
               ],
             );
