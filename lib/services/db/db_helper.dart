@@ -2228,6 +2228,32 @@ class DBHelper {
   }
 
 
+// ضمن class DBHelper { ... }
+
+  /// نفّذ هذا مرة عند init لنتأكد أن العمود synced موجود
+  Future<void> ensureSyncedColumn() async {
+    final db = await database;
+    final info = await db.rawQuery("PRAGMA table_info(products)");
+    final hasSynced = info.any((col) => (col['name'] as String) == 'synced');
+    if (!hasSynced) {
+      await db.execute("ALTER TABLE products ADD COLUMN synced INTEGER DEFAULT 0");
+    }
+  }
+
+
+
+
+
+  /// علّم المنتج كمُزامَن بعد نجاح الرفع (set synced = 1)
+  Future<int> markProductSynced(int id) async {
+    final db = await database;
+    return await db.update(
+      'products',
+      {'synced': 1},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
 
 
 }

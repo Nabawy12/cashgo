@@ -16,13 +16,10 @@ class CustomFormField extends StatefulWidget {
   final bool readOnly;
   final VoidCallback? onTap;
 
-  // ✅ التحكم في الـ autoFocus
   final bool autoFocus;
 
-  // ✅ عشان نقدر نستقبل focusNode من برة
   final FocusNode? focusNode;
 
-  // ✅ عشان ندعم حركة الكيبورد
   final TextInputAction? textInputAction;
   final void Function(String)? onFieldSubmitted;
 
@@ -151,7 +148,9 @@ class _CustomFormFieldState extends State<CustomFormField> {
             )
                 : null,
           ),
-          style: const TextStyle(color: Colors.white),
+          style: const TextStyle(color: Colors.white,
+          fontSize: 18
+          ),
         ),
       ],
     );

@@ -1,12 +1,16 @@
-import 'package:cashgo/screens/cashier/cashier_screen.dart';
+// lib/screens/shared/login_screen.dart
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
-import '../../models/login.dart';
+
+import '../../models/login.dart'; // يحتوي على Session class (currentUsername, currentRole, optional token)
+import '../../services/Api/Admin/settings.dart'; // يحتوي على ApiService.loginOnline
 import '../../services/cashier/app_controller.dart';
-import '../../services/db/db_helper.dart';
 import '../../utils/colors.dart';
+import '../../widgets/Loading/Shared/login.dart';
 import '../../widgets/custom_button.dart';
 import '../../widgets/custom_form.dart';
+import '../../screens/cashier/cashier_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -23,40 +27,101 @@ class _LoginScreenState extends State<LoginScreen> {
   final passwordFocus = FocusNode();
 
   String errorMessage = '';
-  bool loading = true;
-
-
-  Future<void> _debugPrintUsers() async {
-    final db = await DBHelper.instance.database;
-    final rows = await db.query('users', orderBy: 'id');
-    print('---- users table ----');
-    for (final r in rows) print(r);
-    print('---- end users ----');
-  }
-
+  bool loading = false;
 
   @override
   void initState() {
     super.initState();
+    // لو عندك فحص صيانة أو initialization حطّه هنا
     MaintenanceService.checkAndHandle(context);
-    _loadCurrentUser();
   }
 
+  Future<void> _login() async {
+    setState(() {
+      errorMessage = '';
+    });
 
-  Future<void> _loadCurrentUser() async {
+    if (MaintenanceService.isInMaintenance) {
+      MaintenanceService.checkAndHandle(context);
+      return;
+    }
+
+    final usernameInput = usernameController.text.trim();
+    final password = passwordController.text.trim();
+
+    if (usernameInput.isEmpty || password.isEmpty) {
+      setState(() {
+        errorMessage = 'من فضلك املأ جميع الحقول';
+      });
+      return;
+    }
+
+    setState(() {
+      loading = true;
+    });
+
     try {
-      final current = await DBHelper.instance.getCurrentUser();
-      if (current != null) {
-        final savedUsername = (current['username'] ?? '').toString();
-        final savedRole = (current['role'] ?? '').toString();
+      final raw = await ApiService.loginOnline(usernameInput, password);
 
-        // usernameController.text = savedUsername;
-        Session.currentUsername = savedUsername;
-        Session.currentRole = savedRole;
+      if (kDebugMode) {
+        print('Login response (raw): $raw');
       }
-    } catch (e) {
-      // خطأ بسيط في القراءة من DB — تجاهل أو لوج
-      // print('Failed to load current user: $e');
+
+      // --- تحقق من فشل تسجيل الدخول ---
+      if (raw == null || raw['status'] != 'success') {
+        setState(() {
+          errorMessage = raw?['message']?.toString() ?? 'اسم المستخدم أو كلمة السر غير صحيحة';
+        });
+        return;
+      }
+
+      // --- استخراج الداتا من الرد ---
+      Map<String, dynamic> payload = {};
+      if (raw.containsKey('data') && raw['data'] is Map) {
+        payload = Map<String, dynamic>.from(raw['data'] as Map);
+      } else {
+        payload = Map<String, dynamic>.from(raw);
+      }
+
+      String returnedUsername = payload['username']?.toString() ?? usernameInput;
+      String returnedRole = payload['role']?.toString() ?? 'cashier';
+      String? token = payload['token']?.toString();
+
+      if (kDebugMode) {
+        print('parsed payload: $payload');
+        print('returnedUsername: $returnedUsername');
+        print('returnedRole: $returnedRole');
+        print('token: $token');
+      }
+
+      // --- تخزين الـ Session ---
+      Session.currentUsername = returnedUsername;
+      Session.currentRole = returnedRole;
+      if (token != null) Session.currentToken = token;
+
+      if (!mounted) return;
+
+      // --- التنقل للشاشات حسب الدور ---
+      if (returnedRole == 'admin') {
+        Navigator.pushNamed(context, '/admin', arguments: returnedUsername);
+      } else {
+        Navigator.pushReplacementNamed(
+          context,
+          CashierScreen.routName,
+          arguments: {
+            'username': returnedUsername,
+            'role': returnedRole,
+            'token': Session.currentToken,
+          },
+        );
+      }
+    } catch (e, st) {
+      if (kDebugMode) {
+        print('Login error: $e\n$st');
+      }
+      setState(() {
+        errorMessage = 'حدث خطأ أثناء تسجيل الدخول';
+      });
     } finally {
       if (mounted) {
         setState(() {
@@ -65,59 +130,6 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     }
   }
-
-  void _login() async {
-    setState(() {
-      errorMessage = '';
-    });
-
-    if (MaintenanceService.isInMaintenance) {
-      MaintenanceService.checkAndHandle(context); // يعرض الدايالوج لو مش ظاهر
-      return;
-    }else {
-
-      final username = usernameController.text.trim();
-      final password = passwordController.text.trim();
-
-      if (username.isEmpty || password.isEmpty) {
-        setState(() {
-          errorMessage = 'من فضلك املأ جميع الحقول';
-        });
-        return;
-      }
-
-      try {
-        final user = await DBHelper.instance.login(username, password);
-        if (user != null) {
-          // خزّن المستخدم الحالي في الـ DB (بدل SharedPreferences)
-          await DBHelper.instance.setCurrentUserByUsername(user['username'] as String);
-
-          // حدث الSession في الذاكرة
-          Session.currentUsername = user['username'];
-          Session.currentRole = user['role'];
-
-          // توجيه للشاشة المناسبة
-          if (user['role'] == 'admin') {
-            Navigator.pushNamed(context, '/admin', arguments: username);
-          } else {
-            Navigator.pushNamed(context, CashierScreen.routName, arguments: username);
-          }
-        } else {
-          setState(() {
-            errorMessage = 'اسم المستخدم أو كلمة المرور غير صحيحه';
-          });
-        }
-      } catch (e) {
-        setState(() {
-          errorMessage = 'حدث خطأ أثناء تسجيل الدخول';
-        });
-        // optionally print or log e
-      }
-    }
-
-  }
-
-
 
   @override
   Widget build(BuildContext context) {
@@ -132,7 +144,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
       body: loading
-          ? const Center(child: CircularProgressIndicator())
+          ? LoginLoadingShimmer()
           : Padding(
         padding: const EdgeInsets.all(20),
         child: Center(
@@ -142,16 +154,17 @@ class _LoginScreenState extends State<LoginScreen> {
               mainAxisSize: MainAxisSize.max,
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                const SizedBox(height: 4),
                 Align(
                   alignment: Alignment.center,
                   child: Image.asset(
-                      "assets/images/logo.png",
-                    width: 320,
-                    height: 320,
+                    "assets/images/logo.png",
+                    width: 260,
+                    height: 260,
                     color: AppColorsDark.mainColor.withOpacity(0.3),
                   ),
                 ),
-                SizedBox(height: 12,),
+                const SizedBox(height: 8),
                 CustomFormField(
                   controller: usernameController,
                   focusNode: usernameFocus,
@@ -172,9 +185,16 @@ class _LoginScreenState extends State<LoginScreen> {
                   onFieldSubmitted: (_) => _login(),
                 ),
                 const SizedBox(height: 10),
-                Text(errorMessage, style: const TextStyle(color: Colors.red)),
-                const SizedBox(height: 16),
+                if (errorMessage.isNotEmpty)
+                  Text(
+                    errorMessage,
+                    style: const TextStyle(color: Colors.red,fontSize:23),
+                  )
+                else
+                  const SizedBox(height: 18),
+                const SizedBox(height: 8),
                 CustomButton(text: "تسجيل دخول", onPressed: _login),
+                const SizedBox(height: 8),
               ],
             ),
           ),
@@ -182,6 +202,8 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
     );
   }
+
+
 
   @override
   void dispose() {

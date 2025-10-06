@@ -25,6 +25,7 @@ class CustomButton extends StatelessWidget {
       child: ElevatedButton(
         style: ElevatedButton.styleFrom(
           backgroundColor: color,
+            elevation: 0.0,
           overlayColor: Colors.blueAccent.withOpacity(0.5),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
         ),
@@ -47,7 +48,7 @@ class CustomButton extends StatelessWidget {
             text,
             key: const ValueKey("text"),
             style: const TextStyle(
-              fontSize: 17,
+              fontSize: 22,
               fontWeight: FontWeight.w500,
               color: Colors.white,
             ),

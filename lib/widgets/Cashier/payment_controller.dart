@@ -1,4 +1,5 @@
 // lib/widgets/Cashier/payment_controller.dart
+import 'package:cashgo/models/login.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
@@ -70,7 +71,7 @@ class _PaymentControlsState extends State<PaymentControls> {
                   ? Text(
                 'الباقي: ${remaining.toStringAsFixed(2)}',
                 style: const TextStyle(
-                  fontSize: 17,
+                  fontSize: 20,
                   color: Colors.green,
                   fontWeight: FontWeight.bold,
                 ),
@@ -117,17 +118,20 @@ class _PaymentControlsState extends State<PaymentControls> {
                         infinity: false,
                       ),
                       SizedBox(width: 10),
-                      CustomButton(
-                        text: 'حفظ كآجل',
-                        onPressed: widget.total > 0 && savingButton == null
-                            ? () {
-                          setState(() => savingButton = "delayed");
-                          widget.onSaveAsLater();
-                          setState(() => savingButton = null);
-                        }
-                            : null,
-                        isLoading: savingButton == "delayed",
-                        infinity: false,
+                      Visibility(
+                        visible: Session.pay_credit,
+                        child: CustomButton(
+                          text: 'حفظ كآجل',
+                          onPressed: widget.total > 0 && savingButton == null
+                              ? () {
+                            setState(() => savingButton = "delayed");
+                            widget.onSaveAsLater();
+                            setState(() => savingButton = null);
+                          }
+                              : null,
+                          isLoading: savingButton == "delayed",
+                          infinity: false,
+                        ),
                       ),
                     ],
                   ),

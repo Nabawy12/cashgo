@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # يلزم لإنشاء release ورفع assets
+  contents: write
 
 jobs:
   build:

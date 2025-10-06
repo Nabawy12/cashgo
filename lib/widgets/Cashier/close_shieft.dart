@@ -1,13 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart' hide TextDirection;
 
 class ShiftReportWidget extends StatelessWidget {
   final String cashierUsername;
   final String fromDate;
   final String toDate;
-  final List<Map<String, dynamic>> sales;
-  final Map<int, List<Map<String, dynamic>>> saleItemsMap;
-  final List<Map<String, dynamic>> purchases;
   final Map<String, double> totals;
   final double width;
 
@@ -23,9 +19,6 @@ class ShiftReportWidget extends StatelessWidget {
     required this.cashierUsername,
     required this.fromDate,
     required this.toDate,
-    required this.sales,
-    required this.saleItemsMap,
-    required this.purchases,
     required this.totals,
     this.width = 280,
     // required new fields:
@@ -56,7 +49,7 @@ class ShiftReportWidget extends StatelessWidget {
                   Center(child: Text('تقرير تقفيل شفت', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14))),
                   const SizedBox(height: 8),
                   Text('الكاشير: $cashierUsername', style: const TextStyle(fontWeight: FontWeight.w600)),
-                  Text('من: ${_dateOnly(fromDate)}', style: const TextStyle(fontWeight: FontWeight.w500)),
+                  Text('في يوم: ${_dateOnly(fromDate)}', style: const TextStyle(fontWeight: FontWeight.w500)),
                   _solidDivider(),
 
                   // Here show the four requested numbers prominently

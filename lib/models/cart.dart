@@ -1,5 +1,4 @@
 // Cart model utilities (CartItem + helpers)
-import 'package:flutter/foundation.dart';
 import '../../models/product.dart';
 
 class CartItem {

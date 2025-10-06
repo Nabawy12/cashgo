@@ -50,7 +50,7 @@
 //     setState(() {
 //       loading = true;
 //     });
-//     final rows = await ProductApi.getAllProducts();
+//     final rows = await DBHelper.instance.getAllProducts();
 //     setState(() {
 //       products = rows;
 //       loading = false;
@@ -65,13 +65,9 @@
 //   double computeProductProfit(Map<String, dynamic> p) {
 //     // استخدم total_units إن وُجد، وإلا نحسبه
 //     final unitsInCarton = (p['units_in_carton'] ?? 0) as num;
-//     final totalUnits = (p['total_units'] ??
-//         ((p['quantity'] as num? ?? 0) *
-//             (p['units_in_carton'] as num? ?? 0) +
-//             (p['units_remainder'] ?? 0)))
-//     as num;
-//     final purchasePrice = (p['purchase_price'] as num? ?? 0).toDouble();
-//     final sellingPrice = (p['selling_price'] as num? ?? 0).toDouble();
+//     final totalUnits = (p['total_units'] ?? ((p['quantity'] as num) * (p['units_in_carton'] as num) + (p['units_remainder'] ?? 0))) as num;
+//     final purchasePrice = (p['purchase_price'] as num).toDouble();
+//     final sellingPrice = (p['selling_price'] as num).toDouble();
 //
 //     if (unitsInCarton == 0) {
 //       // لو مفيش تعريف لعدد القطع في الكرتونه، نرجع فرق سعر القطعة مضروب في عدد الوحدات
@@ -91,7 +87,7 @@
 //     if (searchQuery.trim().isEmpty) return products;
 //     final q = searchQuery.toLowerCase();
 //     return products.where((p) {
-//       final name = (p['name'] as String? ?? '').toLowerCase();
+//       final name = (p['name'] as String).toLowerCase();
 //       final barcode = ((p['barcode'] ?? '') as String).toLowerCase();
 //       return name.contains(q) || barcode.contains(q);
 //     }).toList();
@@ -99,69 +95,56 @@
 //
 //   Future<void> onScanBarcodeSubmitted(String code) async {
 //     if (code.trim().isEmpty) return;
-//     // show loader dialog while searching
-//     showDialog(
-//       context: context,
-//       barrierDismissible: false,
-//       builder: (_) => const Center(child: CircularProgressIndicator()),
-//     );
-//     try {
-//       final p = await ProductApi.getProductByBarcode(code.trim());
-//       Navigator.pop(context); // close loader
-//       if (p != null) {
-//         await showDialog(
-//           context: context,
-//           builder: (_) => AlertDialog(
-//             title: const Text('Product found'),
-//             content: Column(
-//               mainAxisSize: MainAxisSize.min,
-//               crossAxisAlignment: CrossAxisAlignment.start,
-//               children: [
-//                 Text('Name: ${p['name']}'),
-//                 Text('Barcode: ${p['barcode'] ?? '-'}'),
-//                 Text('Price: ${p['selling_price']}'),
-//                 Text('Cartons: ${p['quantity']}'),
-//                 Text('Units in carton: ${p['units_in_carton']}'),
-//                 Text('Remainder units: ${p['units_remainder'] ?? 0}'),
-//                 Text('Total units: ${p['total_units'] ?? ((p['quantity'] as num? ?? 0) * (p['units_in_carton'] as num? ?? 0) + (p['units_remainder'] ?? 0))}'),
-//               ],
+//     final p = await DBHelper.instance.getProductByBarcode(code.trim());
+//     if (p != null) {
+//       await showDialog(
+//         context: context,
+//         builder: (_) => AlertDialog(
+//           title: const Text('Product found'),
+//           content: Column(
+//             mainAxisSize: MainAxisSize.min,
+//             crossAxisAlignment: CrossAxisAlignment.start,
+//             children: [
+//               Text('Name: ${p['name']}'),
+//               Text('Barcode: ${p['barcode'] ?? '-'}'),
+//               Text('Price: ${p['selling_price']}'),
+//               Text('Cartons: ${p['quantity']}'),
+//               Text('Units in carton: ${p['units_in_carton']}'),
+//               Text('Remainder units: ${p['units_remainder'] ?? 0}'),
+//               Text('Total units: ${p['total_units'] ?? ((p['quantity'] as num) * (p['units_in_carton'] as num) + (p['units_remainder'] ?? 0))}'),
+//             ],
+//           ),
+//           actions: [
+//             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+//             TextButton(
+//               onPressed: () {
+//                 Navigator.pop(context);
+//                 openAddEditDialog(existing: p);
+//               },
+//               child: const Text('Edit'),
 //             ),
-//             actions: [
-//               TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
-//               TextButton(
-//                 onPressed: () {
-//                   Navigator.pop(context);
-//                   openAddEditDialog(existing: p);
-//                 },
-//                 child: const Text('Edit'),
-//               ),
-//             ],
-//           ),
-//         );
-//       } else {
-//         final add = await showDialog<bool>(
-//           context: context,
-//           builder: (_) => AlertDialog(
-//             title: const Text('Product not found'),
-//             content: Text('No product found for barcode/QR "$code". Add new product with this code?'),
-//             actions: [
-//               TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('No')),
-//               TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Yes')),
-//             ],
-//           ),
-//         );
-//         if (add == true) {
-//           openAddEditDialog(prefillBarcode: code.trim());
-//         }
+//           ],
+//         ),
+//       );
+//     } else {
+//       final add = await showDialog<bool>(
+//         context: context,
+//         builder: (_) => AlertDialog(
+//           title: const Text('Product not found'),
+//           content: Text('No product found for barcode/QR "$code". Add new product with this code?'),
+//           actions: [
+//             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('No')),
+//             TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Yes')),
+//           ],
+//         ),
+//       );
+//       if (add == true) {
+//         openAddEditDialog(prefillBarcode: code.trim());
 //       }
-//     } catch (e) {
-//       Navigator.pop(context); // close loader if error
-//       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error searching barcode: $e')));
-//     } finally {
-//       barcodeController.clear();
-//       barcodeFocusNode.requestFocus();
-//       await refreshProducts();
 //     }
+//     barcodeController.clear();
+//     barcodeFocusNode.requestFocus();
+//     await refreshProducts();
 //   }
 //
 //   Future<void> openAddEditDialog({Map<String, dynamic>? existing, String? prefillBarcode}) async {
@@ -190,6 +173,137 @@
 //     );
 //   }
 //
+//   /// ====== NEW: Upload local products to server ======
+//   Future<void> uploadLocalToServer() async {
+//     // confirm
+//     final confirm = await showDialog<bool>(
+//       context: context,
+//       builder: (_) => AlertDialog(
+//         title: const Text('Upload to server'),
+//         content: const Text('Upload all local products to the server? This will create or update products on the server by barcode.'),
+//         actions: [
+//           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+//           TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Upload')),
+//         ],
+//       ),
+//     );
+//     if (confirm != true) return;
+//
+//     final localProducts = await DBHelper.instance.getAllProducts();
+//     if (localProducts.isEmpty) {
+//       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No local products to upload')));
+//       return;
+//     }
+//
+//     int uploaded = 0;
+//     int failed = 0;
+//     String current = '';
+//
+//     // show progress dialog and perform upload sequentially (safer)
+//     await showDialog(
+//       context: context,
+//       barrierDismissible: false,
+//       builder: (ctx) {
+//         // start upload after dialog shown
+//         Future.delayed(Duration.zero, () async {
+//           for (int i = 0; i < localProducts.length; i++) {
+//             final lp = localProducts[i];
+//             current = '(${i + 1}/${localProducts.length}) ${lp['name'] ?? lp['barcode'] ?? ''}';
+//             // update dialog
+//             (ctx as Element).markNeedsBuild();
+//
+//             try {
+//               final barcode = (lp['barcode'] ?? '').toString().trim();
+//               if (barcode.isEmpty) {
+//                 failed++;
+//                 continue;
+//               }
+//
+//               // check if server has this barcode
+//               final serverProduct = await ProductApi.getProductByBarcode(barcode);
+//
+//               // create payload expected by API
+//               final payload = <String, dynamic>{
+//                 'barcode': barcode,
+//                 'name': lp['name'] ?? '',
+//                 'purchase_price': lp['purchase_price'] ?? 0.0,
+//                 'selling_price': lp['selling_price'] ?? 0.0,
+//                 'units_in_carton': lp['units_in_carton'] ?? 0,
+//                 'quantity': lp['quantity'] ?? 0,
+//                 'units_remainder': lp['units_remainder'] ?? 0,
+//                 'production_date': lp['production_date'] ?? '',
+//                 'expiry_date': lp['expiry_date'] ?? '',
+//               };
+//
+//               bool ok = false;
+//               if (serverProduct != null) {
+//                 // update existing on server: set server id
+//                 payload['id'] = serverProduct['id'];
+//                 ok = await ProductApi.saveProduct(payload);
+//               } else {
+//                 // create new
+//                 ok = await ProductApi.saveProduct(payload);
+//               }
+//
+//               if (ok) {
+//                 uploaded++;
+//               } else {
+//                 failed++;
+//               }
+//             } catch (e) {
+//               failed++;
+//             }
+//
+//             // update dialog UI
+//             (ctx as Element).markNeedsBuild();
+//             await Future.delayed(const Duration(milliseconds: 100)); // tiny pause so UI updates
+//           }
+//
+//           // after loop close dialog
+//           Navigator.of(ctx).pop();
+//         });
+//
+//         // dialog content with progress info
+//         return StatefulBuilder(builder: (context, setState) {
+//           final processed = uploaded + failed;
+//           final total = localProducts.length;
+//           final progress = total > 0 ? processed / total : 0.0;
+//           return AlertDialog(
+//             title: const Text('Uploading...'),
+//             content: SizedBox(
+//               width: 300,
+//               child: Column(
+//                 mainAxisSize: MainAxisSize.min,
+//                 children: [
+//                   Text(current),
+//                   const SizedBox(height: 12),
+//                   LinearProgressIndicator(value: progress),
+//                   const SizedBox(height: 8),
+//                   Text('$processed of $total'),
+//                 ],
+//               ),
+//             ),
+//           );
+//         });
+//       },
+//     );
+//
+//     // show summary
+//     await showDialog(
+//       context: context,
+//       builder: (_) => AlertDialog(
+//         title: const Text('Upload finished'),
+//         content: Text('Uploaded: $uploaded\nFailed: $failed\nTotal: ${localProducts.length}'),
+//         actions: [
+//           TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+//         ],
+//       ),
+//     );
+//
+//     // optionally refresh local list
+//     await refreshProducts();
+//   }
+//
 //   @override
 //   Widget build(BuildContext context) {
 //     return Scaffold(
@@ -198,57 +312,37 @@
 //         backgroundColor: Colors.transparent,
 //         elevation: 0.0,
 //         iconTheme: IconThemeData(
-//           color: Colors.white,
+//             color: Colors.white
 //         ),
 //         title: const Text(
 //           'اداره المنتجات',
-//           style: TextStyle(color: Colors.white),
+//           style: TextStyle(
+//               color: Colors.white
+//           ),
 //         ),
 //         actions: [
 //           IconButton(
-//             tooltip: 'Barcode search',
-//             onPressed: () {
-//               // open small dialog to input barcode
-//               showDialog(
-//                 context: context,
-//                 builder: (_) => AlertDialog(
-//                   title: const Text('Search by barcode'),
-//                   content: TextField(
-//                     controller: barcodeController,
-//                     focusNode: barcodeFocusNode,
-//                     decoration: const InputDecoration(hintText: 'اكتب الباركود واضغط Search'),
-//                     onSubmitted: (v) {
-//                       Navigator.pop(context);
-//                       onScanBarcodeSubmitted(v);
-//                     },
-//                   ),
-//                   actions: [
-//                     TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-//                     TextButton(onPressed: () {
-//                       final v = barcodeController.text.trim();
-//                       Navigator.pop(context);
-//                       onScanBarcodeSubmitted(v);
-//                     }, child: const Text('Search')),
-//                   ],
-//                 ),
-//               );
-//             },
-//             icon: const Icon(Icons.qr_code_2, color: Colors.white),
+//             tooltip: 'Upload local -> server',
+//             onPressed: uploadLocalToServer,
+//             icon: const Icon(Icons.cloud_upload, color: Colors.white),
 //           ),
 //           IconButton(
 //             tooltip: 'Refresh',
 //             onPressed: refreshProducts,
-//             icon: const Icon(Icons.refresh, color: Colors.white, size: 25),
+//             icon: const Icon(Icons.refresh,color: Colors.white,size: 25,),
 //           ),
 //         ],
 //       ),
 //       floatingActionButton: FloatingActionButton.extended(
 //         onPressed: () => openAddEditDialog(),
-//         icon: const Icon(Icons.add, color: Colors.white),
+//         icon: const Icon(Icons.add,color: Colors.white,),
 //         backgroundColor: AppColorsDark.mainColor,
 //         label: const Text(
 //           'اضافه منتج',
-//           style: TextStyle(fontSize: 17, color: Colors.white),
+//           style: TextStyle(
+//               fontSize: 17,
+//               color: Colors.white
+//           ),
 //         ),
 //       ),
 //       body: LayoutBuilder(
@@ -277,7 +371,7 @@
 //                             centerHint: true,
 //                           ),
 //                         ),
-//                         SizedBox(width: 20),
+//                         SizedBox(width: 20,),
 //                         Column(
 //                           crossAxisAlignment: CrossAxisAlignment.center,
 //                           children: [
@@ -286,13 +380,17 @@
 //                               style: TextStyle(
 //                                 fontSize: 15,
 //                                 color: Colors.white,
+//
 //                               ),
 //                               textAlign: TextAlign.center,
 //                             ),
 //                             Text(
 //                               '${computeTotalProfit().toStringAsFixed(2)}',
 //                               style: const TextStyle(
-//                                   fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+//                                   fontSize: 18,
+//                                   fontWeight: FontWeight.bold,
+//                                   color: Colors.white
+//                               ),
 //                             ),
 //                           ],
 //                         ),
@@ -303,11 +401,13 @@
 //                       child: loading
 //                           ? const Center(child: CircularProgressIndicator())
 //                           : filteredProducts.isEmpty
-//                           ? const Center(
-//                           child: Text(
-//                             'لا توجد قائمه منتجات حتي الان',
-//                             style: TextStyle(fontSize: 25, color: Colors.white),
-//                           ))
+//                           ? const Center(child: Text(
+//                         'لا توجد قائمه منتجات حتي الان',
+//                         style: TextStyle(
+//                             fontSize: 25,
+//                             color: Colors.white
+//                         ),
+//                       ))
 //                           : LayoutBuilder(
 //                         builder: (context, constraints) {
 //                           // only show up to displayCount items (lazy load)
@@ -316,7 +416,8 @@
 //                           return SingleChildScrollView(
 //                             scrollDirection: Axis.horizontal,
 //                             child: ConstrainedBox(
-//                               constraints: BoxConstraints(minWidth: constraints.maxWidth),
+//                               constraints:
+//                               BoxConstraints(minWidth: constraints.maxWidth),
 //                               child: SingleChildScrollView(
 //                                 // attach the vertical controller so we can detect reaching bottom
 //                                 scrollDirection: Axis.vertical,
@@ -328,10 +429,8 @@
 //                                   ),
 //                                   child: DataTable(
 //                                     columnSpacing: 18,
-//                                     headingRowColor:
-//                                     MaterialStateProperty.all(AppColorsDark.bgCardColor),
-//                                     dataRowColor:
-//                                     MaterialStateProperty.all(AppColorsDark.bgCardColor),
+//                                     headingRowColor: MaterialStateProperty.all(AppColorsDark.bgCardColor),
+//                                     dataRowColor: MaterialStateProperty.all(AppColorsDark.bgCardColor),
 //                                     columns: const [
 //                                       DataColumn(label: Text('ID', style: TextStyle(color: Colors.white))),
 //                                       DataColumn(label: Text('Barcode', style: TextStyle(color: Colors.white))),
@@ -346,13 +445,9 @@
 //                                     ],
 //                                     rows: visibleProducts.map((p) {
 //                                       final profit = computeProductProfit(p);
-//                                       final totalUnits = ((p['total_units'] ??
-//                                           ((p['quantity'] as num? ?? 0) *
-//                                               (p['units_in_carton'] as num? ?? 0) +
-//                                               (p['units_remainder'] ?? 0))) as num)
-//                                           .toInt();
-//                                       final cartons = (p['quantity'] as num? ?? 0).toInt();
-//                                       final unitsInCarton = (p['units_in_carton'] as num? ?? 0).toInt();
+//                                       final totalUnits = ((p['total_units'] ?? ((p['quantity'] as num) * (p['units_in_carton'] as num) + (p['units_remainder'] ?? 0))) as num).toInt();
+//                                       final cartons = (p['quantity'] as num).toInt();
+//                                       final unitsInCarton = (p['units_in_carton'] as num).toInt();
 //                                       final remainder = (p['units_remainder'] ?? 0) as int;
 //                                       final lowStock = totalUnits <= 5;
 //                                       String stockText;
@@ -368,11 +463,11 @@
 //                                           DataCell(Text('${p['id']}', style: const TextStyle(color: Colors.white))),
 //                                           DataCell(Text(p['barcode']?.toString() ?? '-', style: const TextStyle(color: Colors.white))),
 //                                           DataCell(Text(p['name'], style: const TextStyle(color: Colors.white))),
-//                                           DataCell(Text((p['purchase_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
-//                                           DataCell(Text((p['selling_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
+//                                           DataCell(Text((p['purchase_price'] as num).toString(), style: const TextStyle(color: Colors.white))),
+//                                           DataCell(Text((p['selling_price'] as num).toString(), style: const TextStyle(color: Colors.white))),
 //                                           DataCell(
 //                                             Text(
-//                                               "$cartons",
+//                                               "${cartons}",
 //                                               style: TextStyle(
 //                                                 color: lowStock ? Colors.red : Colors.white,
 //                                               ),
@@ -380,7 +475,7 @@
 //                                           ),
 //                                           DataCell(
 //                                             Text(
-//                                               "$totalUnits",
+//                                               "${totalUnits}",
 //                                               style: TextStyle(
 //                                                 color: lowStock ? Colors.red : Colors.white,
 //                                               ),
@@ -436,13 +531,8 @@
 //                                                     ),
 //                                                   );
 //                                                   if (ok == true) {
-//                                                     final deleted = await ProductApi.deleteProduct(p['id']);
-//                                                     if (deleted) {
-//                                                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Deleted successfully')));
-//                                                       await refreshProducts();
-//                                                     } else {
-//                                                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delete failed')));
-//                                                     }
+//                                                     await DBHelper.instance.deleteProduct(p['id'] as int);
+//                                                     await refreshProducts();
 //                                                   }
 //                                                 },
 //                                               ),
@@ -478,6 +568,7 @@
 //   }
 // }
 //
+// /// Add/Edit dialog remains unchanged (use your existing AddEditProductDialog implementation)
 // class AddEditProductDialog extends StatefulWidget {
 //   final Map<String, dynamic>? existing;
 //   final String? prefillBarcode;
@@ -574,33 +665,11 @@
 //       'expiry_date': expiryDateController.text.trim(),
 //     };
 //
-//     // show loading dialog
-//     showDialog(
-//       context: context,
-//       barrierDismissible: false,
-//       builder: (_) => const Center(child: CircularProgressIndicator()),
-//     );
-//
-//     final success = await ProductApi.saveProduct(prod);
-//
-//     Navigator.pop(context); // close loading
-//
-//     if (!success) {
-//       // show error and keep dialog open
-//       await showDialog(
-//         context: context,
-//         builder: (_) => AlertDialog(
-//           title: const Text('Save failed'),
-//           content: const Text('فشل حفظ المنتج. تأكدي من الاتصال بالإنترنت وإعدادات الـ API.'),
-//           actions: [
-//             TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
-//           ],
-//         ),
-//       );
-//       return;
+//     if (isEdit) {
+//       await DBHelper.instance.updateProduct(prod);
+//     } else {
+//       await DBHelper.instance.insertProduct(prod);
 //     }
-//
-//     // close add/edit dialog and indicate change
 //     Navigator.pop(context, true);
 //   }
 //

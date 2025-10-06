@@ -1,12 +1,16 @@
+import 'dart:convert';
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
-import '../../services/db/db_helper.dart';
+import 'package:http/http.dart' as http;
+
+import '../../services/Api/Admin/Products.dart';
+import '../../models/product.dart';
 
 class ProcessReturnDialog extends StatefulWidget {
   final int originalSaleId;
-  final List<Map<String, dynamic>> items; // items from getSaleItemsBySaleId
+  final List<Map<String, dynamic>> items; // items from getSaleItemsBySaleId (passed by caller)
   final String cashierUsername;
   final void Function() onDone; // notify parent to refresh
 
@@ -33,15 +37,19 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
 
   // replacement productId -> qtyToAdd
   final Map<int, int> _replacementQty = {};
+  // replacement product info stored with keys used later: 'selling_price' and 'total_units', 'name', 'barcode'
   final Map<int, Map<String, dynamic>> _replacementProducts = {};
+
+  static const String apiBase = 'https://nabawisolution.com/invoice_reciept.php';
 
   @override
   void initState() {
     super.initState();
     for (final it in widget.items) {
-      final pid = (it['product_id'] as num).toInt();
+      final pid = ((it['product_id'] as num?)?.toInt() ?? int.tryParse(it['product_id']?.toString() ?? '') ?? 0);
       _selected[pid] = false;
-      _selectedQty[pid] = 1;
+      final orig = _originalQty(pid);
+      _selectedQty[pid] = orig > 0 ? 1 : 0; // default to 1 if original had stock
     }
   }
 
@@ -51,16 +59,34 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     super.dispose();
   }
 
+  // unified original quantity reader (handles qty, quantity, count)
   int _originalQty(int productId) {
-    final found = widget.items.where((e) => (e['product_id'] as num).toInt() == productId);
+    final found = widget.items.where((e) {
+      final id = (e['product_id'] is num)
+          ? (e['product_id'] as num).toInt()
+          : (int.tryParse(e['product_id']?.toString() ?? '') ?? 0);
+      return id == productId;
+    });
     if (found.isEmpty) return 0;
     final it = found.first;
-    return (it['quantity'] as num?)?.toInt() ?? 0;
+    return (it['qty'] as num?)?.toInt()
+        ?? (it['quantity'] as num?)?.toInt()
+        ?? (it['count'] as num?)?.toInt()
+        ?? (int.tryParse(it['qty']?.toString() ?? '') ?? (int.tryParse(it['quantity']?.toString() ?? '') ?? 0));
   }
 
+  // compute line total using the original unit price from the sale record
   double _lineTotal(int productId) {
-    final it = widget.items.firstWhere((e) => (e['product_id'] as num).toInt() == productId);
-    final price = (it['price'] as num?)?.toDouble() ?? 0.0;
+    final found = widget.items.firstWhere(
+            (e) {
+          final id = (e['product_id'] is num) ? (e['product_id'] as num).toInt() : (int.tryParse(e['product_id']?.toString() ?? '') ?? 0);
+          return id == productId;
+        },
+        orElse: () => <String, dynamic>{});
+    if (found == null || (found is Map && found.isEmpty)) return 0.0;
+    final price = (found['price'] as num?)?.toDouble()
+        ?? (found['selling_price'] as num?)?.toDouble()
+        ?? 0.0;
     final qty = _selectedQty[productId] ?? 0;
     return price * qty;
   }
@@ -125,95 +151,45 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     final cur = _replacementQty[pid] ?? 0;
     if (cur > 1) setState(() => _replacementQty[pid] = cur - 1);
   }
-  Future<Map<String, dynamic>?> showProductChoiceDialog(
-      BuildContext context,
-      List<Map<String, dynamic>> products,
-      ) {
-    return showDialog<Map<String, dynamic>>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return Directionality(
-          textDirection: TextDirection.rtl,
-          child: AlertDialog(
-            backgroundColor: AppColorsDark.bgColor,
-            title: Center(child: const Text('اختر المنتج',style: TextStyle(color: Colors.white),)),
-            content: SizedBox(
-              width: double.maxFinite,
-              child: ListView.separated(
-                shrinkWrap: true,
-                itemCount: products.length,
-                separatorBuilder: (_, __) => const Divider(height: 0.5),
-                itemBuilder: (context, i) {
-                  final name = (products[i]['name'] ?? '').toString();
-                  return ListTile(
-                    title: Text(name,style: TextStyle(color: Colors.white,fontSize: 20),),
-                    onTap: () {
-                      Navigator.of(context).pop(products[i]);
-                    },
-                  );
-                },
-              ),
-            ),
-            actions: [
-              TextButton(
-                style: TextButton.styleFrom(
-                  backgroundColor: AppColorsDark.bgCardColor,
-                ),
-                onPressed: () => Navigator.of(context).pop(null),
-                child: const Text('إلغاء',style: TextStyle(color: Colors.white),),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
+
+  /// Use ProductApi.getProductByBarcode (API lookup) instead of DB
   Future<void> _addReplacementByBarcode(String barcode) async {
     final code = barcode.trim();
     if (code.isEmpty) return;
 
-    // جيب كل المنتجات بالباركود (ممكن يرجع أكتر من صف)
-    final productsList = await DBHelper.instance.getProductsByBarcodeList(code);
-
-    if (productsList.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('الباكود غير موجود')),
-      );
-      _replacementBarcodeController.clear();
-      return;
-    }
-
-    Map<String, dynamic>? chosenMap;
-    if (productsList.length == 1) {
-      chosenMap = productsList.first;
-    } else {
-      // اعرض حوار اختيار (اسم المنتج فقط)
-      chosenMap = await showProductChoiceDialog(context, productsList);
-      if (chosenMap == null) {
+    try {
+      final apiProduct = await ProductApi.getProductByBarcode(code);
+      if (apiProduct == null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('المنتج بالباركود $code غير موجود')));
         _replacementBarcodeController.clear();
         return;
       }
-    }
 
-    final pid = (chosenMap['id'] as num).toInt();
-    final available = (chosenMap['total_units'] as num?)?.toInt() ?? 0;
+      final product = Product.fromMap(apiProduct);
+      final pid = product.id!;
+      final available = product.totalUnits ?? 0;
+      if (available <= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير متوفر')));
+        _replacementBarcodeController.clear();
+        return;
+      }
 
-    if (available <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('المنتج غير متوفر')),
-      );
+      setState(() {
+        _replacementProducts[pid] = {
+          'id': pid,
+          'name': product.name ?? '',
+          'barcode': product.barcode ?? code,
+          'selling_price': product.sellingPrice?.toDouble() ?? 0.0,
+          'total_units': product.totalUnits ?? 0,
+        };
+        final cur = _replacementQty[pid] ?? 0;
+        _replacementQty[pid] = (cur + 1) <= available ? (cur + 1) : available;
+      });
       _replacementBarcodeController.clear();
-      return;
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في جلب المنتج: $e')));
+      _replacementBarcodeController.clear();
     }
-
-    setState(() {
-      _replacementProducts[pid] = chosenMap!;
-      final cur = _replacementQty[pid] ?? 0;
-      _replacementQty[pid] = (cur + 1) <= available ? (cur + 1) : available;
-    });
-
-    _replacementBarcodeController.clear();
   }
 
   Future<void> _process() async {
@@ -229,43 +205,95 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
 
     setState(() => _processing = true);
     try {
-      // build maps
-      final Map<int, int> returnsMap = {};
+      // build return items using original sale unit prices and unified 'qty' key
+      final List<Map<String, dynamic>> returnItems = [];
+      double totalReturnValue = 0.0;
       for (final pid in returnsChosen) {
-        returnsMap[pid] = _selectedQty[pid] ?? 0;
+        final qty = _selectedQty[pid] ?? 0;
+        if (qty <= 0) continue;
+        final it = widget.items.firstWhere((e) {
+          final id = (e['product_id'] is num) ? (e['product_id'] as num).toInt() : (int.tryParse(e['product_id']?.toString() ?? '') ?? 0);
+          return id == pid;
+        });
+        final unitPrice = (it['price'] as num?)?.toDouble() ?? (it['selling_price'] as num?)?.toDouble() ?? 0.0;
+        final name = (it['product_name'] ?? it['name'] ?? '').toString();
+        // use 'qty' key to match server expectations
+        returnItems.add({'product_id': pid, 'qty': qty, 'price': unitPrice, 'name': name});
+        totalReturnValue += unitPrice * qty;
       }
 
-      final Map<int, int> additionsMap = {};
+      // build exchange items from replacementProducts
+      final List<Map<String, dynamic>> exchangeItems = [];
+      double totalExchangeCost = 0.0;
       for (final entry in _replacementQty.entries) {
         final pid = entry.key;
         final qty = entry.value;
-        if (qty > 0) additionsMap[pid] = qty;
+        if (qty <= 0) continue;
+        final prod = _replacementProducts[pid];
+        if (prod == null) continue;
+        final unitPrice = (prod['selling_price'] as num?)?.toDouble() ?? 0.0;
+        final name = (prod['name'] ?? '').toString();
+        exchangeItems.add({'product_id': pid, 'qty': qty, 'price': unitPrice, 'name': name});
+        totalExchangeCost += unitPrice * qty;
       }
 
-      // compute paidDelta: positive => customer paid extra, negative => cashier refunded
-      // Use precise sign for DB, but UI shows abs()
-      final net = _netDiff;
-      double paidDelta = net; // net can be negative => means cashier refunds abs(net)
-      // round to 2 decimals
-      paidDelta = double.parse(paidDelta.toStringAsFixed(2));
+      // net = exchangeCost - returnValue
+      // net = exchangeCost - returnValue
+      final double netRaw = totalExchangeCost - totalReturnValue;
+      final double net = double.parse(netRaw.toStringAsFixed(2));
+      // إذا net > 0 => العميل يدفع الفرق (paid = net)
+      // إذا net < 0 => الكاشير يرجع للعميل (refund_amount = -net)
+      final double refundAmount = net < 0 ? -net : 0.0;
+      final double paidAmount = net > 0 ? net : 0.0;
 
-      // call DBHelper to modify original sale
-      await DBHelper.instance.applyReturnExchangeToSale(
-        saleId: widget.originalSaleId,
-        returnsMap: returnsMap,
-        additionsMap: additionsMap,
-        paidDelta: paidDelta,
-        note: _isExchange ? 'Exchange (auto)' : 'Refund (auto)',
-      );
+      // اختر طريقة الدفع: لو العميل يدفع نرسل 'cash' (أو 'card' إن لزم)
+      // لو الكاشير يعيد نقود نستخدم 'refund' لتمييز العملية
+      final String paymentMethod = paidAmount > 0 ? 'cash' : (refundAmount > 0 ? 'refund' : 'cash');
+
+      final uri = Uri.parse(apiBase);
+
+      final body = {
+        'action': 'process_return',
+        'original_invoice_id': widget.originalSaleId,
+        'return_items': returnItems,       // عناصر مرتجعة (qty موجب هنا — السيرفر سيخزنها كـ -qty في child)
+        'exchange_items': exchangeItems,   // عناصر بدل
+        // refund_amount = مبلغ يُعاد للعميل (لو سالب صافي) — positive number or 0
+        'refund_amount': refundAmount,
+        // paid = مبلغ دفعه العميل كفرق (لو موجب) — positive number or 0
+        'paid': paidAmount,
+        'paymentMethod': paymentMethod,
+        'cashierUsername': widget.cashierUsername,
+        'return_note': _isExchange ? 'Exchange (via app)' : 'Refund (via app)',
+        'debug': false,
+        // لو تريد إنشاء سجل child invoice ضع true وإلا false لعمل تعديل داخل الفاتورة الأصلية
+        'create_child': true,
+      };
+
+
+      final resp = await http.post(uri, headers: {'Content-Type': 'application/json'}, body: jsonEncode(body)).timeout(const Duration(seconds: 20));
+      if (resp.statusCode != 200) {
+        throw Exception('خطأ من الخادم ${resp.statusCode}: ${resp.body}');
+      }
+      final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
+      if (decoded['success'] != true) {
+        throw Exception(decoded['error'] ?? decoded['message'] ?? 'خطأ غير معروف من الخادم');
+      }
 
       widget.onDone();
 
-      // return saleId so caller (CashierScreen) can clear cart and show message
-      if (mounted) Navigator.pop(context, widget.originalSaleId);
+      String idShown = '';
+      if (decoded.containsKey('child_record_id') && decoded['child_record_id'] != null) idShown = decoded['child_record_id'].toString();
+      else if (decoded.containsKey('return_invoice_id') && decoded['return_invoice_id'] != null) idShown = decoded['return_invoice_id'].toString();
+      else if (decoded.containsKey('updated_invoice_id') && decoded['updated_invoice_id'] != null) idShown = decoded['updated_invoice_id'].toString();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت العملية بنجاح${idShown.isNotEmpty ? ' — رقم: $idShown' : ''}')));
+        Navigator.pop(context, widget.originalSaleId);
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التطبيق: $e')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التطبيق: $e')));
     } finally {
-      setState(() => _processing = false);
+      if (mounted) setState(() => _processing = false);
     }
   }
 
@@ -350,8 +378,50 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
       resultMessage = 'لا يوجد فرق صافي (لا يوجد نقل نقدي)';
     }
 
-    return AlertDialog(
+    // prominent status widget to clearly show cashier what to do
+    Widget paymentStatusWidget;
+    if (netVal > 0.00001) {
+      paymentStatusWidget = Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.green.withOpacity(0.12),
+          border: Border.all(color: Colors.green, width: 1.2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.attach_money, color: Colors.green),
+            const SizedBox(width: 8),
+            Text('المشتري يدفع: $amountStr', style: TextStyle(color: Colors.green[700], fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      );
+    } else if (netVal < -0.00001) {
+      paymentStatusWidget = Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.red.withOpacity(0.12),
+          border: Border.all(color: Colors.red, width: 1.2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.reply, color: Colors.red),
+            const SizedBox(width: 8),
+            Text('الكاشير يرجع للعميل: $amountStr', style: TextStyle(color: Colors.red[700], fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      );
+    } else {
+      paymentStatusWidget = Container(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+        child: Text(resultMessage, style: TextStyle(color: Colors.white)),
+      );
+    }
 
+    return AlertDialog(
       backgroundColor: AppColorsDark.bgColor,
       title: Center(
         child: const Text(
@@ -366,7 +436,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
         padding: const EdgeInsets.symmetric(vertical: 10.0),
         child: SizedBox(
           width: double.maxFinite,
-          height: 660,
+          height: 720,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             mainAxisAlignment: MainAxisAlignment.center,
@@ -384,8 +454,13 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                     ),
                     selected: !_isExchange,
                     onSelected: (v) {
-                      if (!v) return; // لو هو بالفعل مختار، متعملش أي حاجة
-                      setState(() => _isExchange = false);
+                      if (!v) return;
+                      setState(() {
+                        _isExchange = false;
+                        // clear any replacement items when switching back to simple return
+                        _replacementProducts.clear();
+                        _replacementQty.clear();
+                      });
                     },
                     backgroundColor: AppColorsDark.bgCardColor,
                     selectedColor: AppColorsDark.bgCardColor,
@@ -409,7 +484,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                     ),
                     selected: _isExchange,
                     onSelected: (v) {
-                      if (!v) return; // لو هو بالفعل مختار، متعملش أي حاجة
+                      if (!v) return;
                       setState(() => _isExchange = true);
                     },
                     backgroundColor: AppColorsDark.bgCardColor,
@@ -453,7 +528,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                     final it = widget.items[i];
                     final pid = (it['product_id'] as num).toInt();
                     final name = (it['product_name'] ?? 'منتج') as String;
-                    final origQty = (it['quantity'] as num?)?.toInt() ?? 0;
+                    final origQty = _originalQty(pid);
                     final price = (it['price'] as num?)?.toDouble() ?? 0.0;
                     final selected = _selected[pid] ?? false;
                     final selQty = _selectedQty[pid] ?? 1;
@@ -564,6 +639,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                   children: [
                     Expanded(
                       child: CustomFormField(
+                        controller: _replacementBarcodeController,
                         hint: 'امسح باركود البديل واضغط إضافة',
                         onFieldSubmitted: (v) => _addReplacementByBarcode(v),
                       ),
@@ -587,52 +663,12 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                 else
                   SizedBox(height: 120, child: ListView(children: _replacementProducts.keys.map((pid) => _buildReplacementTile(pid)).toList())),
               ],
-              SizedBox(height: 10),
+              const SizedBox(height: 12),
               Align(
                 alignment: Alignment.center,
-                child: Text(
-                  'قيمة المرتجع: ${refundedVal.toStringAsFixed(2)}',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 17
-                  ),
-                ),
+                child: paymentStatusWidget,
               ),
-              SizedBox(height: 10),
-              Align(
-                  alignment: Alignment.center,
-                  child: Text(
-                    'تكلفة البدائل: ${addedVal.toStringAsFixed(2)}',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16
-                    ),
-                  )
-              ),
-              SizedBox(height: 10),
-              Align(
-                  alignment: Alignment.center,
-                  child: Text(
-                    'الفرق (بدل - مرتجع): ${netVal.toStringAsFixed(2)}',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 15
-                    ),
-                  )
-              ),
-              SizedBox(height: 10),
-              Align(
-                alignment: Alignment.center,
-                child: Text(
-                  resultMessage,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                  ),
-                ),
-              ),
-              SizedBox(height: 20),
+              const SizedBox(height: 12),
               Align(
                 alignment: Alignment.center,
                 child: const Text(
@@ -664,13 +700,15 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
             style: TextButton.styleFrom(
               backgroundColor: AppColorsDark.bgCardColor,
             ),
-            onPressed: _processing ? null : _process, child: _processing ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) :
-        const Text(
-          'تطبيق',
-          style: TextStyle(
-              color: Colors.white
-          ),
-        )
+            onPressed: _processing ? null : _process,
+            child: _processing
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Text(
+              'تطبيق',
+              style: TextStyle(
+                  color: Colors.white
+              ),
+            )
         ),
       ],
     );

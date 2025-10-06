@@ -1,23 +1,31 @@
 // lib/screens/cashier/cashier_screen.dart
 import 'dart:async';
-import 'dart:math' as math;
+import 'dart:convert';
 import 'package:cashgo/models/login.dart';
+import 'package:cashgo/services/cashier/close_shieft.dart';
+import 'package:cashgo/services/cashier/profit_api.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart' hide TextDirection ;
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../models/cart.dart';
+import '../../models/cashier/profit.dart';
 import '../../models/product.dart';
+import '../../services/Api/Admin/Products.dart';
+import '../../services/Api/Admin/financle.dart';
+import '../../services/cashier/deposit.dart';
 import '../../services/cashier/print.dart';
 import '../../services/db/db_helper.dart';
 import '../../widgets/Cashier/cartlist.dart';
 import '../../widgets/Cashier/close_shieft.dart';
 import '../../widgets/Cashier/payment_controller.dart';
 import '../../widgets/Cashier/receipt_widget.dart';
+import '../../widgets/Loading/cashier/cart.dart';
 import '../shared/login_screen.dart';
 import 'ReceiveFromSupplier.dart';
 import 'histroy.dart';
@@ -53,6 +61,20 @@ class _CashierScreenState extends State<CashierScreen> {
   double _cardReceived = 0.0;       // untransferred card payments from sales
   double _cardTotalAvailable = 0.0; // wallet + untransferred
   double Drawer = 0.0; // wallet + untransferred
+  ////////////////////////////
+  double _startingAmount = 0.0;
+  double _cashInWallet = 0.0;
+  double? _totalCash;
+  double? _totalWallet;
+  double? _cash_with_credit;
+  double? _purchases_paid;
+  double? _purchases_credit;
+  double? _wallet_received;
+  double? _cash_received;
+  bool _isExchange = false;
+  bool _loading = false;
+  String? _error;
+  ////////////////
   bool _dialogOpening = false;
   final nameFocus = FocusNode();
 
@@ -60,7 +82,7 @@ class _CashierScreenState extends State<CashierScreen> {
 
   // --------- Discount state ----------
   // design: percent-only discount (as requested), from 0% to 50% step 5
-  String _discountType = 'percent';
+  String _discountType = 'percent'; // 'percent' أو 'amount'
   double _discountValue = 0.0; // e.g. 5.0 means 5%
   List<Map<String, dynamic>> _inlineSearchResults = [];
   bool _inlineLoading = false;
@@ -79,84 +101,6 @@ class _CashierScreenState extends State<CashierScreen> {
     final itemHeight = 72.0; // تقريب ارتفاع ListTile؛ عدِّل لو كان مختلف
     final offset = (index * itemHeight).clamp(0.0, _inlineScrollController.position.maxScrollExtent);
     await _inlineScrollController.animateTo(offset, duration: const Duration(milliseconds: 200), curve: Curves.easeInOut);
-  }
-
-  /// حمّل بداية الدرج المسجّلة بواسطة المستخدم الحالي + صافي مبيعاته النقدية لليوم
-  /// حمّل البداية العامة + صافي (المتبقي) من مبيعات الكاشير النقدية لليوم
-  Future<void> _loadUserStartingAndNetSales() async {
-    try {
-      final username = _currentUsername ?? widget.cashierUsername;
-      final db = await DBHelper.instance.database;
-
-      // 1) global starting
-      final start = await DBHelper.instance.getLatestDrawerStartingAmount();
-
-      // 2) today's date
-      final now = DateTime.now();
-      final dateOnly = now.toIso8601String().split('T').first;
-
-      // 3) تفقّد وجود أعمدة drawer_withdrawn_amount / drawer_withdrawn
-      final cols = await db.rawQuery("PRAGMA table_info(sales);");
-      final hasWithdrawnAmount = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn_amount');
-      final hasWithdrawnFlag = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
-
-      double netUnwithdrawn = 0.0;
-
-      if (hasWithdrawnAmount) {
-        // المعادلة: (paid - change) - drawer_withdrawn_amount لكل فاتورة
-        final rows = await db.rawQuery('''
-          SELECT SUM(
-            (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)
-          ) as net_unwithdrawn
-          FROM sales
-          WHERE payment_method = 'cash'
-            AND cashier_username = ?
-            AND date(date) = ?
-        ''', [username, dateOnly]);
-
-        netUnwithdrawn = (rows.isNotEmpty && rows.first['net_unwithdrawn'] != null)
-            ? (rows.first['net_unwithdrawn'] as num).toDouble()
-            : 0.0;
-      } else if (hasWithdrawnFlag) {
-        // قديم: الفواتير الموسومة drawer_withdrawn = 1 تعتبر مُسحوبة كليًا، فنجمع فقط الفواتير غير المسحوبة
-        final rows = await db.rawQuery('''
-          SELECT SUM((COALESCE(paid_amount,0) - COALESCE(change_amount,0))) as net_unwithdrawn
-          FROM sales
-          WHERE payment_method = 'cash'
-            AND cashier_username = ?
-            AND COALESCE(drawer_withdrawn,0) = 0
-            AND date(date) = ?
-        ''', [username, dateOnly]);
-
-        netUnwithdrawn = (rows.isNotEmpty && rows.first['net_unwithdrawn'] != null)
-            ? (rows.first['net_unwithdrawn'] as num).toDouble()
-            : 0.0;
-      } else {
-        // لا عمود تتبع موجود — نجمع كل النقدي من فواتير الكاشير لليوم
-        final rows = await db.rawQuery('''
-          SELECT SUM((COALESCE(paid_amount,0) - COALESCE(change_amount,0))) as net_unwithdrawn
-          FROM sales
-          WHERE payment_method = 'cash'
-            AND cashier_username = ?
-            AND date(date) = ?
-        ''', [username, dateOnly]);
-
-        netUnwithdrawn = (rows.isNotEmpty && rows.first['net_unwithdrawn'] != null)
-            ? (rows.first['net_unwithdrawn'] as num).toDouble()
-            : 0.0;
-      }
-
-      // لا نسمح بالقيمة السالبة
-      if (netUnwithdrawn < 0) netUnwithdrawn = 0.0;
-
-      if (!mounted) return;
-      setState(() {
-        _userStarting = start;            // global starting (كما طلبت)
-        _userNetSales = netUnwithdrawn;  // المتبقي فعلاً من مبيعات الكاشير
-      });
-    } catch (e, st) {
-      debugPrint('Failed to load user starting+net: $e\n$st');
-    }
   }
 
 
@@ -178,12 +122,12 @@ class _CashierScreenState extends State<CashierScreen> {
       _inlineLoading = true;
     });
     try {
-      final rows = await DBHelper.instance.searchProductsByName(q, limit: 50);
+      final rows = await _searchProductsByNameApi(q, limit: 50);
       setState(() {
         _inlineSearchResults = rows;
       });
     } catch (e) {
-      debugPrint('inline search error: $e');
+      debugPrint('inline search (API) error: $e');
       setState(() {
         _inlineSearchResults = [];
       });
@@ -192,47 +136,6 @@ class _CashierScreenState extends State<CashierScreen> {
     }
   }
 
-  /// Add a product (map) to cart easily (default qty = 1). Shows snackbars on errors.
-  void _addProductMapToCart(Map<String, dynamic> productMap, {int qty = 1}) {
-    final pid = (productMap['id'] as num?)?.toInt();
-    if (pid == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير صالح')));
-      return;
-    }
-
-    // Ensure total_units computed like in your detail dialog
-    if (!productMap.containsKey('total_units')) {
-      final cartons = (productMap['quantity'] as num?)?.toInt() ?? 0;
-      final unitsInCarton = (productMap['units_in_carton'] as num?)?.toInt() ?? 0;
-      final remainder = (productMap['units_remainder'] as num?)?.toInt() ?? 0;
-      productMap['units_remainder'] = remainder;
-      productMap['total_units'] = cartons * unitsInCarton + remainder;
-    }
-
-    final available = (productMap['total_units'] as num?)?.toInt() ?? 0;
-    final already = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
-
-    if (already + qty > available) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد كمية كافية')));
-      return;
-    }
-
-    setState(() {
-      if (_cart.containsKey(pid)) {
-        _cart[pid]!.quantity += qty;
-      } else {
-        final prodModel = Product.fromMap(productMap);
-        _cart[pid] = CartItem(product: prodModel, quantity: qty);
-      }
-
-      // after adding we may want to clear suggestions and the input:
-      _inlineSearchResults = [];
-      _barcodeController.clear();
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت إضافة $qty من ${productMap['name']}')));
-    FocusScope.of(context).requestFocus(_barcodeFocus);
-  }
 
 
   @override
@@ -242,10 +145,14 @@ class _CashierScreenState extends State<CashierScreen> {
       FocusScope.of(context).requestFocus(_barcodeFocus);
     });
     _loadCurrentUser();
-    _loadCardTotals();
     WakelockPlus.enable();
+    //////
 
+    _loadFinancials();
+    _loadTotalProfit();
+    Session.updateDateTime();
   }
+
 
   Future<void> _loadCurrentUser() async {
     try {
@@ -257,23 +164,54 @@ class _CashierScreenState extends State<CashierScreen> {
         Session.currentUsername = _currentUsername;
         Session.currentRole = (cur['role'] ?? Session.currentRole) as String?;
         // تحميل بداية الدرج وصافي المبيعات الخاص بالمستخدم الآن بعد معرفة اسمه
-        await _loadUserStartingAndNetSales();
       } else {
         // fallback to widget prop if DB has no current user
         setState(() {
           _currentUsername = widget.cashierUsername;
         });
         // and still try to load
-        await _loadUserStartingAndNetSales();
       }
     } catch (e) {
       debugPrint('Failed to load current user: $e');
       setState(() {
         _currentUsername = widget.cashierUsername;
       });
-      await _loadUserStartingAndNetSales();
     }
   }
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _loadTotalProfit();
+    final args = ModalRoute.of(context)?.settings.arguments;
+
+    String usernameFromArgs = '';
+    String roleFromArgs = '';
+
+    if (args is Map) {
+      usernameFromArgs = (args['username'] ?? '').toString();
+      roleFromArgs = (args['role'] ?? '').toString();
+    }
+
+    // أفضلية: args > Session > widget prop > ''
+    final resolvedUsername = usernameFromArgs.isNotEmpty
+        ? usernameFromArgs
+        : (Session.currentUsername!.isNotEmpty? Session.currentUsername : (widget.cashierUsername ?? ''));
+
+    final resolvedRole = roleFromArgs.isNotEmpty
+        ? roleFromArgs
+        : (Session.currentRole!.isNotEmpty ? Session.currentRole : '');
+
+    setState(() {
+      _currentUsername = resolvedUsername;
+    });
+
+    // ضع Session صراحةً لو احتجت
+    Session.currentUsername = resolvedUsername;
+    if (resolvedRole!.isNotEmpty) Session.currentRole = resolvedRole;
+
+    // متابعة تحميل البيانات
+  }
+
 
   @override
   void dispose() {
@@ -284,71 +222,72 @@ class _CashierScreenState extends State<CashierScreen> {
     _inlineScrollController.dispose();
     _inlineKeyboardNode.dispose();
     WakelockPlus.disable();
+
+    ///////////
+    _service.dispose();
     super.dispose();
   }
 
+  bool _isLoading = false;
 
-  // ------------------ داخل _CashierScreenState ------------------
 
   Future<void> _onBarcodeSubmitted(String code) async {
     final barcode = code.trim();
     if (barcode.isEmpty) return;
+    if (_isLoading) return; // منع أي طلب متكرر أثناء التحميل
 
-    // حاول تجيب كل المنتجات بنفس الباركود
-    final productsList = await DBHelper.instance.getProductsByBarcodeList(barcode);
+    setState(() => _isLoading = true);
 
-    if (productsList.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('المنتج بالباركود $barcode غير موجود')),
-      );
-      _barcodeController.clear();
-      FocusScope.of(context).requestFocus(_barcodeFocus);
-      return;
-    }
+    try {
+      // جلب المنتج من الـ API (يرجع null لو مش موجود)
+      final apiProduct = await ProductApi.getProductByBarcode(barcode);
 
-    Map<String, dynamic>? chosenMap;
-    if (productsList.length == 1) {
-      chosenMap = productsList.first;
-    } else {
-      // اعرض حوار اختيار للمستخدم لو في أكثر من نتيجة
-      chosenMap = await showProductChoiceDialog(context, productsList);
-      if (chosenMap == null) {
-        // المستخدم ألغى الاختيار
-        _barcodeController.clear();
-        FocusScope.of(context).requestFocus(_barcodeFocus);
+      if (apiProduct == null) {
+        // لم يتم العثور على المنتج عبر الـ API
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('المنتج بالباركود $barcode غير موجود')),
+        );
         return;
       }
-    }
 
-    // تحويل إلى نموذج المنتج والتعامل كالسابق
-    final product = Product.fromMap(chosenMap);
-    final available = product.totalUnits;
-    final pid = product.id!;
-    final alreadyInCart = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
+      // تحويل إلى نموذج المنتج والتعامل كالسابق
+      final product = Product.fromMap(apiProduct);
+      final available = product.totalUnits;
+      final pid = product.id!;
+      final alreadyInCart = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
 
-    if (available <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('الكمية نفدت')));
-      _barcodeController.clear();
-      FocusScope.of(context).requestFocus(_barcodeFocus);
-      return;
-    }
-    if (alreadyInCart + 1 > available) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يمكن إضافة أكثر من المتاح')));
-      _barcodeController.clear();
-      FocusScope.of(context).requestFocus(_barcodeFocus);
-      return;
-    }
-
-    setState(() {
-      if (_cart.containsKey(pid)) {
-        _cart[pid]!.quantity += 1;
-      } else {
-        _cart[pid] = CartItem(product: product, quantity: 1);
+      if (available <= 0) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('الكمية نفدت')));
+        return;
       }
-    });
+      if (alreadyInCart + 1 > available) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يمكن إضافة أكثر من المتاح')));
+        return;
+      }
 
-    _barcodeController.clear();
-    FocusScope.of(context).requestFocus(_barcodeFocus);
+      // تحديث الكارت
+      setState(() {
+        if (_cart.containsKey(pid)) {
+          _cart[pid]!.quantity += 1;
+        } else {
+          _cart[pid] = CartItem(product: product, quantity: 1);
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ أثناء التحميل')));
+    } finally {
+      // مهم: تأكد أن الـ widget ما اتلف قبل التحديث
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+
+      // تنظيف الحقل وإعادة الفوكس
+      _barcodeController.clear();
+      FocusScope.of(context).requestFocus(_barcodeFocus);
+    }
   }
 
   /// Dialog يعرِض أسماء المنتجات فقط، ويُرجع خريطة المنتج المختار أو null عند الإلغاء.
@@ -403,12 +342,17 @@ class _CashierScreenState extends State<CashierScreen> {
   // effective total after applying invoice-level discount
   double get _effectiveTotal {
     final subtotal = _total;
+
     if (_discountType == 'percent' && _discountValue > 0) {
       final disc = subtotal * (_discountValue / 100.0);
       return (subtotal - disc).clamp(0.0, double.infinity);
+    } else if (_discountType == 'amount' && _discountValue > 0) {
+      return (subtotal - _discountValue).clamp(0.0, double.infinity);
     }
+
     return subtotal;
   }
+
 
   void _addQuickPaid(double amount) {
     final current = _paid;
@@ -422,9 +366,54 @@ class _CashierScreenState extends State<CashierScreen> {
     setState(() {});
   }
 
+  /// ===== API-based product helpers =====
+
+  /// جلب كل المنتجات من الـ API ثم فلترة حسب الباركود (لأن قد يكون عندك أكثر من منتج بنفس الباركود)
+  Future<List<Map<String, dynamic>>> _getProductsByBarcodeListFromApi(String barcode) async {
+    try {
+      final all = await ProductApi.getAllProducts();
+      final code = barcode.trim();
+      if (code.isEmpty) return [];
+      final matches = all.where((p) => (p['barcode']?.toString() ?? '').trim() == code).toList();
+      return matches;
+    } catch (e) {
+      debugPrint('API barcode list error: $e');
+      return [];
+    }
+  }
+
+  /// جلب منتج واحد من الـ API بالباركود (ترجع null لو مفيش)
+  Future<Map<String, dynamic>?> _getProductByBarcodeFromApi(String barcode) async {
+    try {
+      return await ProductApi.getProductByBarcode(barcode.trim());
+    } catch (e) {
+      debugPrint('API get product by barcode error: $e');
+      return null;
+    }
+  }
+
+  /// بحث بالاسم عبر الـ API:
+  /// ملاحظة: لو الـ API يدعم بحث سيرفر-side من الأفضل استدعاؤه مباشرة — هنا نعمل جلب لكل المنتجات ثم نفلتر محلياً.
+  Future<List<Map<String, dynamic>>> _searchProductsByNameApi(String q, {int limit = 50}) async {
+    try {
+      final all = await ProductApi.getAllProducts();
+      final needle = q.trim().toLowerCase();
+      if (needle.isEmpty) return [];
+      final results = all.where((p) {
+        final name = (p['name'] ?? '').toString().toLowerCase();
+        return name.contains(needle);
+      }).take(limit).toList();
+      return results;
+    } catch (e) {
+      debugPrint('API search by name error: $e');
+      return [];
+    }
+  }
+
+
   void _changeQuantity(int productId, int newQty) async {
     if (!_cart.containsKey(productId)) return;
-    final productMap = await DBHelper.instance.getProductByBarcode((_cart[productId]!.product.barcode));
+    final productMap = await ProductApi.getProductByBarcode((_cart[productId]!.product.barcode));
     if (productMap == null) return;
     final product = Product.fromMap(productMap);
     final available = product.totalUnits;
@@ -495,47 +484,6 @@ class _CashierScreenState extends State<CashierScreen> {
 
   /// Safely compute the true untransferred card amount.
   /// Works across DB versions (supports card_transferred_amount or card_transferred flag if present).
-  Future<double> _getUntransferredCardAmountSafe() async {
-    final db = await DBHelper.instance.database;
-
-    // check which columns exist
-    final cols = await db.rawQuery("PRAGMA table_info(sales);");
-    final hasTransferredAmount = cols.any((c) => (c['name'] as String) == 'card_transferred_amount');
-    final hasCardTransferredFlag = cols.any((c) => (c['name'] as String) == 'card_transferred');
-
-    String sql;
-    List<Object?> args = ['card'];
-
-    if (hasTransferredAmount) {
-      sql = '''
-        SELECT SUM(
-          (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(card_transferred_amount,0)
-        ) AS card_untransferred
-        FROM sales
-        WHERE payment_method = ?
-          AND ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(card_transferred_amount,0)) > 0
-      ''';
-    } else if (hasCardTransferredFlag) {
-      sql = '''
-        SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS card_untransferred
-        FROM sales
-        WHERE payment_method = ?
-          AND COALESCE(card_transferred,0) = 0
-      ''';
-    } else {
-      sql = '''
-        SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS card_untransferred
-        FROM sales
-        WHERE payment_method = ?
-      ''';
-    }
-
-    final rows = await db.rawQuery(sql, args);
-    final value = (rows.isNotEmpty && rows.first['card_untransferred'] != null)
-        ? (rows.first['card_untransferred'] as num).toDouble()
-        : 0.0;
-    return value < 0 ? 0.0 : value;
-  }
   final NumberFormat _moneyFmt = NumberFormat.currency(locale: 'ar', symbol: '', decimalDigits: 0);
   final NumberFormat _moneyFmtNoDecimal = NumberFormat.currency(locale: 'ar', symbol: '', decimalDigits: 0);
   String _formatMoney(double value) {
@@ -552,339 +500,6 @@ class _CashierScreenState extends State<CashierScreen> {
   }
 
 
-  Future<void> _loadCardTotals() async {
-    try {
-      final dbHelper = DBHelper.instance;
-      final db = await dbHelper.database;
-      await dbHelper.ensureCardWalletTable();
-      final walletLatest = await dbHelper.getLatestCardWalletAmount();
-      final untransferred = await _getUntransferredCardAmountSafe();
-      final starting = await dbHelper.getLatestDrawerStartingAmount();
-      double salesNetCash = 0.0;
-      try {
-        final totals = await dbHelper.getDrawerTotals(fromDate: null, toDate: null);
-        salesNetCash = (totals['sales_net_cash'] as num?)?.toDouble()
-            ?? (totals['sales_net'] as num?)?.toDouble()
-            ?? 0.0;
-      } catch (e) {
-        debugPrint('Could not get totals for drawer during closeShift: $e');
-        salesNetCash = 0.0;
-      }
-      double purchasePaidCash = 0.0;
-      try {
-        // محاولة استعلام SUM مباشرة
-        final rows = await db.rawQuery(
-            "SELECT SUM(COALESCE(paid_amount,0)) AS total FROM purchase_receipts WHERE payment_type = 'cash'"
-        );
-        purchasePaidCash = (rows.isNotEmpty && rows.first['total'] != null)
-            ? (rows.first['total'] as num).toDouble()
-            : 0.0;
-      } catch (e) {
-        debugPrint('Failed to compute purchasePaidCash in closeShift: $e');
-        // fallback: جمع من getPaidPurchaseReceipts
-        try {
-          final paidReceipts = await dbHelper.getPaidPurchaseReceipts();
-          double sum = 0.0;
-          for (final r in paidReceipts) {
-            final type = r['payment_type'] as String? ?? 'cash';
-            if (type == 'cash') sum += (r['paid_amount'] as num?)?.toDouble() ?? 0.0;
-          }
-          purchasePaidCash = sum;
-        } catch (e2) {
-          debugPrint('Fallback also failed: $e2');
-          purchasePaidCash = 0.0;
-        }
-      }
-      final double computedFromParts = starting + salesNetCash;
-      final double adjustedCurrent = computedFromParts;
-
-      // ===== استخدم adjustedCurrent في التقرير بدل computeCurrentDrawerAmount =====
-
-      if (!mounted) return;
-      setState(() {
-        _walletAmount = walletLatest;
-        _cardReceived = untransferred;
-        _cardTotalAvailable = (_walletAmount) + (_cardReceived);
-        Drawer = adjustedCurrent;
-      });
-      await _loadUserStartingAndNetSales();
-
-    } catch (e, st) {
-      debugPrint('Failed to load card totals: $e\n$st');
-    }
-  }
-
-
-// 1) تعديل الدالة لتُعيد نتيجة مفصّلة
-  Future<Map<String, dynamic>> _transferBetweenDrawerAndWallet(double amount, {required bool fromDrawerToWallet}) async {
-    const double eps = 0.0001;
-    if (amount <= 0) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صالحًا أكبر من صفر')));
-      return {'transferred': 0.0, 'capped': false, 'reason': 'invalid', 'available': 0.0};
-    }
-
-    setState(() => _saving = true);
-    final dbHelper = DBHelper.instance;
-    try {
-      await dbHelper.ensureCardWalletTable();
-      await dbHelper.ensureCashDrawerTable();
-      await dbHelper.ensureDrawerWithdrawnColumnExists();
-
-      // تأكد من وجود عمود drawer_withdrawn_amount (migration-safe)
-      final dbForMigration = await dbHelper.database;
-      try {
-        final cols = await dbForMigration.rawQuery("PRAGMA table_info('sales');");
-        final hasWithdrawnAmount = cols.any((c) => (c['name'] as String?) == 'drawer_withdrawn_amount');
-        if (!hasWithdrawnAmount) {
-          await dbForMigration.execute('ALTER TABLE sales ADD COLUMN drawer_withdrawn_amount REAL DEFAULT 0;');
-          debugPrint('Migration: added drawer_withdrawn_amount column to sales');
-        }
-      } catch (e, st) {
-        debugPrint('Warning: ensure drawer_withdrawn_amount column check failed: $e\n$st');
-      }
-
-      // تحديث القيم الخاصة بالمستخدم (userNetSales + userStarting)
-      await _loadUserStartingAndNetSales();
-
-      final currentUser = await dbHelper.getCurrentUser();
-      final username = (currentUser != null && currentUser['username'] != null)
-          ? currentUser['username'] as String
-          : widget.cashierUsername;
-
-      // إعادة تحميل القيم الأساسية
-      final latestWallet = await dbHelper.getLatestCardWalletAmount();
-      final latestDrawerStarting = await dbHelper.getLatestDrawerStartingAmount(); // global starting
-      final db = await dbHelper.database;
-
-      double requestedAmount = amount;
-      bool wasCapped = false;
-
-      if (fromDrawerToWallet) {
-        // نحسب المتاح من مبيعات الكاشير (cash, فقط لهذا الكاشير)
-        final totalRowBefore = await db.rawQuery(
-          '''
-      SELECT SUM(
-        CASE
-          WHEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0
-          THEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0))
-          ELSE 0
-        END
-      ) as total_available
-      FROM sales
-      WHERE payment_method = ?
-        AND cashier_username = ?
-      ''',
-          ['cash', username],
-        );
-
-        final availableFromSalesBefore = (totalRowBefore.isNotEmpty && totalRowBefore.first['total_available'] != null)
-            ? (totalRowBefore.first['total_available'] as num).toDouble()
-            : 0.0;
-
-        // ======= جديد: لا نسمح بأن يقل الدرج عن latestDrawerStarting =======
-        // نأخذ آخر سجل موجب في cash_drawer ليعرف currentStartAmount
-        final startRowsCheck = await db.rawQuery(
-            "SELECT rowid, amount FROM cash_drawer WHERE amount > 0 ORDER BY created_at DESC LIMIT 1;"
-        );
-        final double currentStartAmount = (startRowsCheck.isNotEmpty && startRowsCheck.first['amount'] != null)
-            ? (startRowsCheck.first['amount'] as num).toDouble()
-            : latestDrawerStarting;
-
-        // availableFromStarting = فقط الجزء الذي يتجاوز الـ starting المسجل (لا نلمس قيمة الـ starting نفسها)
-        final double availableFromStarting = (currentStartAmount - latestDrawerStarting).clamp(0.0, double.infinity);
-
-        // إجمالي المتاح للسحب من الدرج/المبيعات (لا نسمح بأخذ من الـ starting نفسها)
-        final double totalAvailableForThisCashier = (availableFromSalesBefore + availableFromStarting).clamp(0.0, double.infinity);
-
-        // رفض فوري لو المطلوب أكبر من المتاح
-        if (requestedAmount > totalAvailableForThisCashier + eps) {
-          if (mounted) setState(() => _saving = false);
-          return {
-            'transferred': 0.0,
-            'capped': false,
-            'reason': 'requested_exceeds_available',
-            'available': totalAvailableForThisCashier
-          };
-        }
-
-        // نغلف السيرورة كلها في transaction لatomicity:
-        bool success = false;
-        try {
-          await db.transaction((txn) async {
-            double remaining = requestedAmount;
-
-            // 1) أخذ المبلغ أولًا من فواتير الكاشير (المبالغ المتاحة في كل فاتورة)، بالترتيب الزمني (أقدم أولاً)
-            final rows = await txn.rawQuery(
-              '''
-          SELECT id,
-                 (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS net,
-                 COALESCE(drawer_withdrawn_amount,0) as withdrawn
-          FROM sales
-          WHERE payment_method = ?
-            AND cashier_username = ?
-          ORDER BY date ASC
-          ''',
-              ['cash', username],
-            );
-
-            for (final r in rows) {
-              if (remaining <= eps) break;
-              final int id = (r['id'] as num).toInt();
-              final double net = (r['net'] as num).toDouble();
-              final double alreadyWithdrawn = (r['withdrawn'] as num).toDouble();
-              final double availableFromThisSale = (net - alreadyWithdrawn).clamp(0.0, double.infinity);
-              if (availableFromThisSale <= eps) continue;
-
-              if (availableFromThisSale <= remaining + eps) {
-                final double newWithdrawn = (alreadyWithdrawn + availableFromThisSale).clamp(0.0, net);
-                await txn.rawUpdate(
-                  'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
-                  [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
-                );
-                remaining -= availableFromThisSale;
-              } else {
-                final double take = remaining;
-                final double newWithdrawn = (alreadyWithdrawn + take).clamp(0.0, net);
-                await txn.rawUpdate(
-                  'UPDATE sales SET drawer_withdrawn_amount = ?, drawer_withdrawn = ? WHERE id = ?',
-                  [newWithdrawn, (newWithdrawn + eps >= net) ? 1 : 0, id],
-                );
-                remaining = 0.0;
-                break;
-              }
-            }
-
-            // 2) إذا بقي مبلغ، نقتطع الباقي من الـ starting (global latestDrawerStarting)
-            if (remaining > eps) {
-              // اقرأ آخر سجل بدء داخل الترانزاكشن لضمان القيم المحدثة
-              final startRows = await txn.rawQuery(
-                  "SELECT rowid, amount FROM cash_drawer WHERE amount > 0 ORDER BY created_at DESC LIMIT 1;"
-              );
-
-              if (startRows.isNotEmpty && startRows.first['rowid'] != null) {
-                final int rowid = (startRows.first['rowid'] as num).toInt();
-                final double currentStartAmountTx = (startRows.first['amount'] as num).toDouble();
-
-                // لا نأخذ أكثر مما هو متاح في الجزء الذي يتجاوز الـ starting المسجل
-                final double maxTakeFromStarting = (currentStartAmountTx - latestDrawerStarting).clamp(0.0, double.infinity);
-                final double toTake = remaining.clamp(0.0, maxTakeFromStarting);
-
-                // if nothing can be taken from starting, leave remaining as-is (but this shouldn't happen due to earlier check)
-                if (toTake > eps) {
-                  final double newStarting = (currentStartAmountTx - toTake).clamp(latestDrawerStarting, double.infinity);
-
-                  final nowIso = DateTime.now().toIso8601String();
-                  final rowsAffected = await txn.rawUpdate(
-                    'UPDATE cash_drawer SET amount = ?, updated_by = ?, note = ?, created_at = ? WHERE rowid = ?',
-                    [newStarting, username, 'سحب إلى المحفظة (-${requestedAmount.toStringAsFixed(2)})', nowIso, rowid],
-                  );
-
-                  debugPrint('Updated existing starting rowid=$rowid: old=$currentStartAmountTx new=$newStarting rowsAffected=$rowsAffected');
-
-                  remaining -= toTake;
-                }
-              } else {
-                // fallback: لو مافيش سجل starting سابق — لا نسمح بإقحام قيمة أقل من latestDrawerStarting
-                // لذلك نأخذ الحد الأدنى الممكن (لا شيء إذا latestDrawerStarting == 0)
-                final double computedNewStarting = (latestDrawerStarting).clamp(0.0, double.infinity);
-                final nowIso = DateTime.now().toIso8601String();
-                final inserted = await txn.insert('cash_drawer', {
-                  'amount': computedNewStarting,
-                  'updated_by': username,
-                  'note': 'سحب إلى المحفظة (-${requestedAmount.toStringAsFixed(2)}) [fallback insert]',
-                  'created_at': nowIso,
-                });
-                debugPrint('Fallback: inserted new starting rowid=$inserted amount=$computedNewStarting');
-                // after fallback we consider we took nothing from starting (remaining should be 0 if earlier totalAvailableForThisCashier check passed)
-                // remaining unchanged here
-              }
-            }
-
-            // 3) سجل الإيداع في محفظة الكارت (تحويل من الدرج للمحفظة)
-            final now = DateTime.now().toIso8601String();
-            await txn.insert('card_wallet', {
-              'amount': requestedAmount,
-              'updated_by': username,
-              'note': 'تحويل من الدرج إلى المحفظة',
-              'created_at': now,
-            });
-
-            // كل شيء تم داخل الtransaction بنجاح
-            success = true;
-          }); // end transaction
-        } catch (e, st) {
-          debugPrint('transfer from drawer->wallet transaction failed: $e\n$st');
-          success = false;
-        }
-
-        // بعد الtransaction — نعيد تحميل المجاميع المعروضة
-        if (success) {
-          await _loadCardTotals();
-          await _loadUserStartingAndNetSales(); // تحديث القيم المعروضة بعد التعديل
-          if (mounted) setState(() => _saving = false);
-          return {'transferred': requestedAmount, 'capped': wasCapped, 'reason': null, 'available': totalAvailableForThisCashier};
-        } else {
-          if (mounted) setState(() => _saving = false);
-          return {'transferred': 0.0, 'capped': false, 'reason': 'exception', 'available': totalAvailableForThisCashier};
-        }
-      } else {
-        // من المحفظة -> الدرج (إيداع)
-        if (amount > latestWallet + eps) {
-          if (mounted) setState(() => _saving = false);
-          return {'transferred': 0.0, 'capped': false, 'reason': 'insufficient_wallet', 'available': latestWallet};
-        }
-
-        // نغلق العملية في transaction واحدة لضمان الاتساق:
-        // - نُخصم من card_wallet
-        // - نُنشئ سجل في sales (فاتورة نقدية) يمثل هذا الإيداع لصافي المبيعات للكاشير
-        // ملاحظة مهمة: **لا نضيف سجل في cash_drawer** هنا لأن إضافة سجل cash_drawer + إضافة سجل sales سيؤديان لحساب المبلغ مرتين.
-        try {
-          await db.transaction((txn) async {
-            final now = DateTime.now().toIso8601String();
-
-            // 1) خصم من المحفظة (محفوظ كقيد سالب)
-            await txn.insert('card_wallet', {
-              'amount': -amount,
-              'updated_by': username,
-              'note': 'تحويل إلى الدرج (-${amount.toStringAsFixed(2)})',
-              'created_at': now,
-            });
-
-            // 2) سجل فاتورة نقدية بسيطة في جدول sales — هذا يجعل هذا المبلغ يظهر كصافي مبيعات لذلك الكاشير فقط.
-            await txn.insert('sales', {
-              'total': amount,
-              'paid_amount': amount,
-              'change_amount': 0.0,
-              'cashier_username': username,
-              'payment_method': 'cash',
-              'date': DateTime.now().toIso8601String(),
-            });
-          });
-        } catch (e, st) {
-          debugPrint('Failed to perform deposit transaction (wallet->drawer): $e\n$st');
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تنفيذ العملية: $e')));
-          if (mounted) setState(() => _saving = false);
-          return {'transferred': 0.0, 'capped': false, 'reason': 'exception', 'available': latestWallet};
-        }
-
-        // بعد النجاح، أعد تحميل المجاميع المعروضة
-        await _loadCardTotals();
-        await _loadUserStartingAndNetSales();
-        if (mounted) setState(() => _saving = false);
-
-        return {'transferred': amount, 'capped': false, 'reason': null, 'available': latestWallet};
-      }
-    } catch (e, st) {
-      debugPrint('transferBetweenDrawerAndWallet failed: $e\n$st');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التحويل: $e')));
-      if (mounted) setState(() => _saving = false);
-      return {'transferred': 0.0, 'capped': false, 'reason': 'exception: $e', 'available': 0.0};
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  // opens dialog to deposit/withdraw from wallet (keeps previous behavior)
   Future<void> _openCardWalletDialog() async {
     final username = _currentUsername ?? widget.cashierUsername;
     bool isDeposit = true;
@@ -896,32 +511,48 @@ class _CashierScreenState extends State<CashierScreen> {
       builder: (ctx) {
         double dialogWallet = _walletAmount;
         bool isProcessing = false;
+        String? errorMessage; // 🔴 هنا الرسالة
 
         return StatefulBuilder(builder: (ctx2, setState2) {
           return Directionality(
             textDirection: TextDirection.rtl,
             child: AlertDialog(
               backgroundColor: AppColorsDark.bgCardColor,
-              title: Center(child: const Text('محفظة الكارت', style: TextStyle(color: Colors.white))),
+              title: const Center(
+                child: Text('المحفظة الالكترونيه', style: TextStyle(color: Colors.white)),
+              ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('الرصيد الحالي: ${_cardTotalAvailable.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontSize: 18)),
+                  Text(
+                    isDeposit
+                        ? 'الرصيد الحالي للمحفظة: ${((_totalWallet ?? 0) + (_cashInWallet ?? 0)).toStringAsFixed(0)}'
+                        : 'الرصيد الحالي للدرج: ${((_totalCash ?? 0) + (_startingAmount ?? 0)).toStringAsFixed(0)}',
+                    style: const TextStyle(color: Colors.white, fontSize: 18),
+                  ),
                   const SizedBox(height: 12),
                   Row(
                     children: [
                       Expanded(
                         child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(backgroundColor: isDeposit ? Colors.green : AppColorsDark.bgColor),
-                          onPressed: isProcessing ? null : () => setState2(() => isDeposit = true),
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: isDeposit ? Colors.green : AppColorsDark.bgColor),
+                          onPressed: isProcessing ? null : () => setState2(() {
+                            isDeposit = true;
+                            errorMessage = null;
+                          }),
                           child: const Text('إيداع', style: TextStyle(color: Colors.white)),
                         ),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(backgroundColor: !isDeposit ? Colors.red : AppColorsDark.bgColor),
-                          onPressed: isProcessing ? null : () => setState2(() => isDeposit = false),
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: !isDeposit ? Colors.red : AppColorsDark.bgColor),
+                          onPressed: isProcessing ? null : () => setState2(() {
+                            isDeposit = false;
+                            errorMessage = null;
+                          }),
                           child: const Text('سحب', style: TextStyle(color: Colors.white)),
                         ),
                       ),
@@ -933,6 +564,14 @@ class _CashierScreenState extends State<CashierScreen> {
                     hint: 'ادخل المبلغ',
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   ),
+                  if (errorMessage != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      errorMessage!,
+                      style: const TextStyle(color: Colors.red, fontSize: 17),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                 ],
               ),
               actions: [
@@ -949,53 +588,43 @@ class _CashierScreenState extends State<CashierScreen> {
                       : () async {
                     final raw = controller.text.trim();
                     final value = double.tryParse(raw.replaceAll(',', '')) ?? 0.0;
+
                     if (value <= 0) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صحيحًا')));
+                      setState2(() => errorMessage = 'أدخل مبلغًا صحيحًا');
                       return;
                     }
 
-                    setState2(() => isProcessing = true);
+                    // ✅ التحقق من الرصيد
+                    final availableWallet = (_totalWallet ?? 0) + (_cashInWallet ?? 0);
+                    final availableCash = (_totalCash ?? 0) + (_startingAmount ?? 0);
+
+                    if (isDeposit && value > availableWallet) {
+                      setState2(() => errorMessage = 'المبلغ أكبر من الرصيد الحالي بالمحفظة');
+                      return;
+                    }
+                    if (!isDeposit && value > availableCash) {
+                      setState2(() => errorMessage = 'المبلغ أكبر من الرصيد الحالي بالدرج');
+                      return;
+                    }
+
+                    // مفيش خطأ = نكمل العملية
+                    setState2(() {
+                      isProcessing = true;
+                      errorMessage = null;
+                    });
 
                     try {
-                      // استدعاء الدالة التي تعيد نتيجة مفصّلة
-                      final result = await _transferBetweenDrawerAndWallet(value, fromDrawerToWallet: !isDeposit);
-                      final transferred = (result['transferred'] as double?) ?? 0.0;
-                      final reason = result['reason'] as String?;
-                      final available = (result['available'] as double?) ?? 0.0;
-                      final bool capped = (result['capped'] as bool?) ?? false;
-
-                      // إعادة تحميل القيم canonical
-                      await _loadCardTotals();
+                      final api = ProfitApi();
+                      final resp = await api.send(
+                        cashierName: username,
+                        depositFromCashToWallet: isDeposit ? 0.0 : value,
+                        depositFromWalletToCash: isDeposit ? value : 0.0,
+                      );
 
                       Navigator.of(ctx).pop();
-
-                      if (transferred > 0.0001) {
-                        // عرض نجاح فقط لو تم تحويل فعلي
-                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-                            isDeposit
-                                ? 'تم الإيداع — تم نقل EGP ${transferred.toStringAsFixed(2)} من المحفظة إلى الدرج'
-                                : 'تم السحب — تم نقل EGP ${transferred.toStringAsFixed(2)} من الدرج إلى المحفظة'
-                        )));
-                        // في حال أردت إبلاغ أنّ المستخدم طلب أكثر من المتاح (لو الدالة تدعم الكَبّ) — نعرض أيضاً
-                        if (capped) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('المبلغ الأصلي كان أكبر من المتاح — تم تحويل ${transferred.toStringAsFixed(2)} فقط. المتاح: EGP ${available.toStringAsFixed(2)}')));
-                        }
-                      } else {
-                        // لم يحدث تحويل فعلي — نعرض سبب واضح ولا نعرض "تم التحويل"
-                        if (reason == 'insufficient_wallet') {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('الرصيد في المحفظة غير كافٍ. المتاح: EGP ${available.toStringAsFixed(2)}')));
-                        } else if (reason == 'insufficient_drawer' || reason == 'requested_exceeds_available') {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('المبلغ المطلوب أكبر من الموجود في الدرج. المتاح: EGP ${available.toStringAsFixed(2)} — لم يتم تنفيذ تحويل')));
-                        } else if (reason != null && reason.startsWith('exception')) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تنفيذ العملية: $reason')));
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم يتم تنفيذ أي تحويل')));
-                        }
-                      }
+                      // تقدر تعرض SnackBar هنا لو عايز نجاح العملية
                     } catch (e) {
-                      debugPrint('Withdraw/Deposit failed: $e');
-                      await _loadCardTotals();
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تنفيذ العملية: $e')));
+                      setState2(() => errorMessage = 'فشل تنفيذ العملية');
                     } finally {
                       setState2(() => isProcessing = false);
                     }
@@ -1009,12 +638,15 @@ class _CashierScreenState extends State<CashierScreen> {
     );
   }
 
+
   // ------------- Discount dialog -------------
   Future<void> _showDiscountDialog() async {
     final options = List.generate(11, (i) => i * 5); // 0,5,10,...,50
     int selected = _discountValue.toInt();
+    String discountMode = _discountType; // "percent" or "amount"
+    TextEditingController valueController = TextEditingController();
 
-    final res = await showDialog<int?>(
+    final res = await showDialog<Map<String, dynamic>?>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
@@ -1023,37 +655,111 @@ class _CashierScreenState extends State<CashierScreen> {
           child: StatefulBuilder(builder: (ctx2, setState2) {
             return AlertDialog(
               backgroundColor: AppColorsDark.bgCardColor,
-              title: Center(child: const Text('اختر نسبة الخصم', style: TextStyle(color: Colors.white))),
-              content: SizedBox(
-                width: double.maxFinite,
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: options.map((v) {
-                    final isSelected = v == selected;
-                    return ChoiceChip(
-                      label: Text('$v%'),
-                      selected: isSelected,
-                      backgroundColor: AppColorsDark.bgColor,
-                      selectedColor: Colors.green,
-                      labelStyle: const TextStyle(color: Colors.white),
-                      onSelected: (_) {
-                        setState2(() => selected = v);
-                      },
-                    );
-                  }).toList(),
-                ),
+              title: const Center(
+                child: Text('اختر نوع الخصم', style: TextStyle(color: Colors.white)),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // اختيار نوع الخصم
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ChoiceChip(
+
+                        label:Text(
+                            "نسبة %",
+                          style: TextStyle(
+                            fontSize: 17,
+                            color: Colors.white,
+                          ),
+                        ),
+                        selected: discountMode == 'percent',
+                        onSelected: (_) {
+                          setState2(() => discountMode = 'percent');
+                        },
+                        backgroundColor: AppColorsDark.bgCardColor,
+                        selectedColor: AppColorsDark.bgCardColor,
+                        checkmarkColor: AppColorsDark.mainColor,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(
+                            color:AppColorsDark.bgColor,
+                            width: 2,
+                          ),
+                      )
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        label:Text(
+                            "مبلغ ثابت",
+                          style: TextStyle(
+                            fontSize: 17,
+                            color: Colors.white,
+                          ),
+                        ),
+                        selected: discountMode == 'amount',
+                        onSelected: (_) {
+                          setState2(() => discountMode = 'amount');
+                        },
+                          backgroundColor: AppColorsDark.bgCardColor,
+                          selectedColor: AppColorsDark.bgCardColor,
+                          checkmarkColor: AppColorsDark.mainColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            side: BorderSide(
+                              color: AppColorsDark.bgColor ,
+                              width: 2,
+                            ),
+                          )
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  if (discountMode == 'percent')
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: options.map((v) {
+                        final isSelected = v == selected;
+                        return ChoiceChip(
+                          label: Text('$v%'),
+                          selected: isSelected,
+                          backgroundColor: AppColorsDark.bgColor,
+                          selectedColor: Colors.green,
+                          labelStyle: const TextStyle(color: Colors.white),
+                          onSelected: (_) {
+                            setState2(() => selected = v);
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  if (discountMode == 'amount')
+                    CustomFormField(
+                        controller: valueController,
+                        hint: "ادخل قيمة الخصم",
+
+                    )
+                ],
               ),
               actions: [
+                CustomButton(
+                  infinity: false,
+                  text: 'تطبيق',
+                  onPressed: () {
+                    if (discountMode == 'amount') {
+                      final val = double.tryParse(valueController.text) ?? 0.0;
+                      Navigator.of(ctx2).pop({"type": "amount", "value": val});
+                    } else {
+                      Navigator.of(ctx2).pop({"type": "percent", "value": selected.toDouble()});
+                    }
+                  },
+                ),
+                SizedBox(width: 10,),
                 TextButton(
                   style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
                   onPressed: () => Navigator.of(ctx2).pop(null),
                   child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
-                ),
-                CustomButton(
-                  infinity: false,
-                  text: 'تطبيق',
-                  onPressed: () => Navigator.of(ctx2).pop(selected),
                 ),
               ],
             );
@@ -1064,12 +770,21 @@ class _CashierScreenState extends State<CashierScreen> {
 
     if (res != null) {
       setState(() {
-        _discountValue = res.toDouble();
-        _discountType = 'percent';
+        _discountType = res["type"] as String;
+        _discountValue = (res["value"] as num).toDouble();
+        // لو عندك متغيرات لحسابات الضريبة أو خصومات إضافية - حدثها هنا أيضاً
       });
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('تم تطبيق خصم ${_discountValue.toStringAsFixed(0)}% — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}')),
+        SnackBar(
+          content: Text(
+            _discountType == "percent"
+                ? 'تم تطبيق خصم ${_discountValue.toStringAsFixed(0)}% — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}'
+                : 'تم تطبيق خصم بقيمة ${_discountValue.toStringAsFixed(2)} — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}',
+          ),
+        ),
       );
+
     }
   }
 
@@ -1077,14 +792,29 @@ class _CashierScreenState extends State<CashierScreen> {
   Future<void> _saveSale({required bool requireFullPayment, String paymentMethod = 'cash'}) async {
     if (_cart.isEmpty) return;
 
-    // subtotal before discount (for messages or storing if needed)
+    // إجمالي قبل الخصم
     final subtotal = _total;
-    final total = _effectiveTotal; // بعد تطبيق الخصم
+
+    // طَبّع نوع الخصم ليطابق ReceiptWidget ('percent' أو 'fixed')
+    final normalizedDiscountType = (_discountType == 'amount') ? 'fixed' : _discountType;
+
+    // حساب قيمة الخصم والتسمية
+    double discountAmount = 0.0;
+    String discountLabel = '';
+    if (normalizedDiscountType == 'percent' && _discountValue > 0) {
+      final pct = _discountValue.clamp(0.0, 100.0);
+      discountAmount = subtotal * (pct / 100.0);
+      discountLabel = '${pct.toStringAsFixed(0)}%';
+    } else if (normalizedDiscountType == 'fixed' && _discountValue > 0) {
+      discountAmount = _discountValue > subtotal ? subtotal : _discountValue;
+      discountLabel = discountAmount.toStringAsFixed(2);
+    }
+
+    // الإجمالي بعد الخصم
+    final total = (subtotal - discountAmount).clamp(0.0, double.infinity);
 
     String? customerName;
-    if (paymentMethod == 'credit' && paymentMethod != 'wallet') {
-      // legacy behaviour: if someone still uses 'credit' as deferred invoice,
-      // ask for customer name
+    if (paymentMethod == 'credit') {
       customerName = await _askForCustomerName();
       if (customerName == null || customerName.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1094,8 +824,6 @@ class _CashierScreenState extends State<CashierScreen> {
       }
     }
 
-    // If paymentMethod == 'wallet' we treat it as payment via the electronic wallet (card_wallet).
-    // For card/wallet payments we force paid == total (full payment).
     final paid = (paymentMethod == 'card' || paymentMethod == 'wallet') ? total : _paid;
 
     if (requireFullPayment && paid < total) {
@@ -1106,77 +834,71 @@ class _CashierScreenState extends State<CashierScreen> {
     }
 
     setState(() => _saving = true);
-    try {
-      // validate stock before writing
-      for (final entry in _cart.entries) {
-        final cartItem = entry.value;
-        final productMap = await DBHelper.instance.getProductByBarcode(cartItem.product.barcode);
-        if (productMap == null) throw 'المنتج غير موجود';
-        final productFresh = Product.fromMap(productMap);
-        if (cartItem.quantity > productFresh.totalUnits) {
-          throw 'لا توجد كمية كافية لـ ${productFresh.name}';
-        }
-      }
 
-      final isCredit = (paymentMethod == 'credit' && paymentMethod != 'wallet');
+    try {
+      final cashierNameToUse = Session.currentUsername ?? widget.cashierUsername;
       final changeAmount = (paid >= total) ? (paid - total) : 0.0;
 
-      final cashierNameToUse = _currentUsername ?? widget.cashierUsername;
+      final List<Map<String, dynamic>> cartPayload = [];
+      _cart.forEach((productId, cartItem) {
+        cartPayload.add({
+          'product_id': productId,
+          'barcode': cartItem.product.barcode,
+          'name': cartItem.product.name,
+          'price': cartItem.product.sellingPrice,
+          'qty': cartItem.quantity,
+        });
+      });
 
-      // SPECIAL: if using wallet payment, first record the incoming card-wallet amount
-      if (paymentMethod == 'wallet') {
-        // Deposit the sale amount into the card_wallet. This represents money received via the
-        // electronic card channel and stored in the app wallet.
-        try {
-          await DBHelper.instance.changeCardWalletBy(total, cashierNameToUse, note: 'دفع بواسطه المحفظة للفاتورة');
-          await _loadCardTotals(); // update wallet + combined total
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم إضافة ${total.toStringAsFixed(2)} إلى المحفظة — الرصيد الآن: ${_walletAmount.toStringAsFixed(2)}')));
-        } catch (e) {
-          debugPrint('Failed to deposit to card wallet: $e');
-          throw 'فشل تسجيل الدفع في المحفظة';
-        }
-      }
+      final apiUrl = Uri.parse('https://nabawisolution.com/invoice_reciept.php');
 
-      // create sale (note: pass paymentMethod explicitly and discount fields)
-      final saleId = await DBHelper.instance.createSale(
-        total: total,
-        cashierUsername: cashierNameToUse,
-        paidAmount: paid,
-        changeAmount: changeAmount,
-        isCredit: isCredit,
-        isReturn: false,
-        returnOfSaleId: null,
-        returnNote: null,
-        customerName: customerName,
-        paymentMethod: paymentMethod, // <-- تغير هنا: خزّن الطريقة كما هي (لا نحول wallet -> card)
-        discountType: _discountType,
-        discountValue: _discountValue,
+      final payload = {
+        'cart': cartPayload,
+        'subtotal': subtotal, // إجمالي قبل الخصم (حافظ على المفتاح الأصلي)
+        'total': total,       // الإجمالي النهائي بعد الخصم
+        'paid': paid,
+        'requireFullPayment': requireFullPayment,
+        'paymentMethod': paymentMethod,
+        'cashierUsername': cashierNameToUse,
+        'discountType': normalizedDiscountType,
+        'discountValue': _discountValue,
+        // حقول واضحة ومساعدة للسيرفر / لوج
+        'subtotal_before_discount': subtotal,
+        'discount_amount': discountAmount,
+        'discount_label': discountLabel,
+        'total_after_discount': total,
+        'customerName': customerName,
+      };
+
+      final resp = await http.post(
+        apiUrl,
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+        body: jsonEncode(payload),
       );
 
-      // insert sale items and update stock
-      for (final entry in _cart.entries) {
-        final pid = entry.key;
-        final cartItem = entry.value;
-        await DBHelper.instance.insertSaleItem(
-          saleId: saleId,
-          productId: pid,
-          quantity: cartItem.quantity,
-          price: cartItem.product.sellingPrice,
-        );
-        await DBHelper.instance.reduceProductStockByUnits(pid, cartItem.quantity);
+      if (resp.statusCode != 200) {
+        String message = 'فشل حفظ الفاتورة (خطاء من السيرفر).';
+        try {
+          final parsed = jsonDecode(resp.body);
+          if (parsed is Map && parsed['error'] != null) message = parsed['error'].toString();
+        } catch (_) {}
+        throw Exception(message);
       }
 
-      // Ensure the sale row is marked as paid and has correct payment_method
-      // <-- مرّرنا paymentMethod كما هو بدل إجبار 'card' عند وجود 'wallet'
-      if (paymentMethod == 'card' || paymentMethod == 'wallet') {
-        await DBHelper.instance.markSaleAsPaid(saleId, paymentMethod: paymentMethod, paidAmount: total);
-      } else
-      if (paymentMethod == 'cash') {
-        await DBHelper.instance.markSaleAsPaid(saleId, paymentMethod: 'cash', paidAmount: paid);
+      final body = jsonDecode(resp.body);
+      if (body == null || body is! Map || body['success'] != true) {
+        final serverMsg = (body != null && body['error'] != null) ? body['error'] : 'إستجابة غير متوقعة من السيرفر';
+        throw Exception(serverMsg);
       }
 
-      // user messages
-      if (paymentMethod == 'credit' && paymentMethod != 'wallet') {
+      final serverMessage = (body['message'] ?? 'تم الحفظ بنجاح').toString();
+      final saleId = body['sale_id'];
+
+      // إعلام المستخدم مع توضيح قبل/بعد الخصم
+      final beforeStr = subtotal.toStringAsFixed(2);
+      final afterStr = total.toStringAsFixed(2);
+
+      if (paymentMethod == 'credit') {
         final remaining = total - paid;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${remaining.toStringAsFixed(2)}')),
@@ -1186,35 +908,32 @@ class _CashierScreenState extends State<CashierScreen> {
           const SnackBar(content: Text('تم الحفظ — تم الدفع بالكارت بالكامل')),
         );
       } else if (paymentMethod == 'wallet') {
-        // wallet-specific snackbar already shown after deposit
-      } else { // cash
-        final change = paid - total;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم الحفظ — الباقي: ${change.toStringAsFixed(2)}')),
+          SnackBar(content: Text(serverMessage)),
+        );
+      } else {
+        final change = (paid - total).toStringAsFixed(2);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم الحفظ — الإجمالي قبل الخصم: $beforeStr  — بعد الخصم: $afterStr  — الباقي: $change')),
         );
       }
 
-      // printing (overlay-based, more reliable)
+      // طباعة الإيصال مع تمرير النوع المطبع
       bool printSuccess = false;
       try {
-        await Future.delayed(const Duration(milliseconds: 250)); // للقليل من الاستقرار قبل الطباعة
-
-        // Clone the cart data for printing so later clears don't affect the printed receipt.
+        await Future.delayed(const Duration(milliseconds: 250));
         final printedCart = Map<int, CartItem>.from(_cart);
 
-        // Create a ReceiptWidget instance copied from current data.
         final receiptWidget = ReceiptWidget(
           cart: printedCart,
           paid: paid,
           cashierUsername: cashierNameToUse,
           width: 220,
           useCairo: true,
-          discountType: _discountType,
+          discountType: normalizedDiscountType, // مهم: 'percent' أو 'fixed'
           discountValue: _discountValue,
         );
 
-
-        // Use the overlay capture + print method (no short timeout).
         await PrintService.printWidgetUsingOverlay(context, receiptWidget, width: 220, pixelRatio: 2.0);
         printSuccess = true;
         debugPrint('Print succeeded (overlay method).');
@@ -1228,24 +947,23 @@ class _CashierScreenState extends State<CashierScreen> {
         );
       }
 
-      // clear cart & paid field & reset discount
       setState(() {
         _cart.clear();
         _paidController.clear();
-        _discountValue = 0.0; // reset discount after successful save
+        _discountValue = 0.0;
+        _discountType = 'percent'; // إعادة الحالة إلى الافتراضي إن رغبت
         debugPrint("Cart cleared, items = ${_cart.length}");
       });
 
-      // IMPORTANT: after saving, reload card totals to reflect any new wallet additions or sales state
-      await _loadCardTotals();
-    }catch (e, st) {
-      debugPrint('Failed to save sale — error: $e\nstack:\n$st');
-      // optional: show full error in a dialog for debugging (you can remove later)
+      await _loadTotalProfit();
+    } catch (e, st) {
+      debugPrint('Failed to save sale (client) — error: $e\nstack:\n$st');
+
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('خطأ أثناء حفظ الفاتورة'),
-          content: SingleChildScrollView(child: Text('$e\n\n$st')),
+          content: Text(e.toString()),
           actions: [TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('حسناً'))],
         ),
       );
@@ -1258,162 +976,38 @@ class _CashierScreenState extends State<CashierScreen> {
       FocusScope.of(context).requestFocus(_barcodeFocus);
     }
   }
-
   bool _closingShift = false;
+  final ApiServiceClose_shieft _apiService = ApiServiceClose_shieft(baseUrl: 'https://nabawisolution.com');
 
   // 3) دالة إغلاق الشفت (تجميع + طباعة)
   Future<void> _closeShift() async {
-    final username = _currentUsername ?? widget.cashierUsername;
     setState(() => _closingShift = true);
-
     try {
       final now = DateTime.now();
-
-      // استخدم بداية اليوم فقط -> هذا يضمن التقفيل سيكون خاص باليوم الحالي
       final startOfDay = DateTime(now.year, now.month, now.day);
       final fromDateStr = startOfDay.toIso8601String().split('T').first;
-      final toDateStr = fromDateStr; // يوم واحد (اليوم)
 
-      // جلب مبيعات الكاشير لليوم (جميعها من DB)
-      final allSales = await DBHelper.instance.getSalesByCashierBetweenDates(
-        cashierUsername: username,
-        fromDate: fromDateStr,
-        toDate: toDateStr,
-      );
-
-      // فلترة: نعمل فقط على الفواتير التي لم تُصفّر بعد (drawer_withdrawn == 0 أو null)
-      final sales = allSales.where((s) {
-        final dw = s['drawer_withdrawn'];
-        // قد يكون null أو 0 أو 1 — نأخذ فقط اللي مش مُصفّرة
-        return (dw == null) || ((dw as num).toInt() == 0);
-      }).toList();
-
-      // جلب عناصر كل فاتورة
-      final Map<int, List<Map<String, dynamic>>> saleItemsMap = {};
-      for (final s in sales) {
-        final sid = (s['id'] as num).toInt();
-        final items = await DBHelper.instance.getSaleItemsBySaleId(sid);
-        saleItemsMap[sid] = items;
-      }
-
-      // جلب سندات الشراء المسجلة بواسطة الكاشير لليوم
-      final purchases = await DBHelper.instance.getPurchaseReceiptsByUserBetweenDates(
-        username: username,
-        fromDate: fromDateStr,
-        toDate: toDateStr,
-      );
-
-      // حسابات تجميعية بسيطة على الفواتير المفلترة فقط
-      double salesTotal = 0.0;
-      double salesPaidCash = 0.0;
-      double salesPaidCard = 0.0;
-      for (final s in sales) {
-        final total = (s['total'] as num?)?.toDouble() ?? 0.0;
-        final paid = (s['paid_amount'] as num?)?.toDouble() ?? 0.0;
-        final change = (s['change_amount'] as num?)?.toDouble() ?? 0.0;
-        final method = (s['payment_method'] ?? 'cash').toString();
-        salesTotal += total;
-        final net = (paid - change);
-        if (method == 'cash') salesPaidCash += net;
-        else if (method == 'wallet') salesPaidCard += net;
-      }
-
-      double purchasesPaid = 0.0;
-      for (final p in purchases) {
-        purchasesPaid += (p['paid_amount'] as num?)?.toDouble() ?? 0.0;
-      }
-
-      // ===== هنا نحسب بعض القيم المساعدة per-user =====
-      final dbHelper = DBHelper.instance;
-
-      // 1) user-specific starting
-      final userStarting = await dbHelper.getLatestDrawerStartingAmountByUser(username);
-
-      // 2) sales net cash for this cashier (within the day)
-      // -> استخدمنا القيمة المحسوبة من الفواتير المفلترة لضمان الاتساق (لا نستخدم استدعاء خارجي قد يتضمن فواتير مُصفّرة)
-      final salesNetCashForCashier = salesPaidCash;
-
-      // 3) returns for this cashier
-      final returnsDeltaForCashier = await dbHelper.getReturnsDeltaByCashierBetweenDates(
-        cashierUsername: username,
-        fromDate: fromDateStr,
-        toDate: toDateStr,
-      );
-
-      // 4) purchases paid by this user
-      final purchasesPaidByUser = await dbHelper.getPurchasePaidCashByUserBetweenDates(
-        username: username,
-        fromDate: fromDateStr,
-        toDate: toDateStr,
-      );
-
-      // ===== هنا نحتسب مبلغ الإيداعات من المحفظة إلى الدرج بواسطة هذا الكاشير في نفس اليوم =====
-      final db = await dbHelper.database;
-      double depositFromWalletForUser = 0.0;
-      try {
-        final rows = await db.rawQuery(
-          "SELECT SUM(COALESCE(amount,0)) as sum_amount FROM card_wallet WHERE updated_by = ? AND date(created_at) = ? AND note LIKE ?",
-          [username, fromDateStr, '%تحويل إلى الدرج%'],
-        );
-        final sum = (rows.isNotEmpty && rows.first['sum_amount'] != null)
-            ? (rows.first['sum_amount'] as num).toDouble()
-            : 0.0;
-        depositFromWalletForUser = (-sum).clamp(0.0, double.infinity);
-      } catch (e) {
-        debugPrint('Failed to compute depositFromWalletForUser: $e');
-        depositFromWalletForUser = 0.0;
-      }
-
-      // ===== تصحيح الازدواج: لا نجمع depositFromWalletForUser مرتين =====
-      final drawerForCashier = salesNetCashForCashier;
-
-      final walletAmount = await dbHelper.getLatestCardWalletAmount();
-      final untransferredCard = await _getUntransferredCardAmountSafe();
-      final cardTotalAvailable = untransferredCard + walletAmount;
-      final cardForCashier = await DBHelper.instance.getCardAmountByCashierBetweenDates(
-        cashierUsername: username,
-        fromDate: fromDateStr,
-        toDate: toDateStr,
-      );
-
-      final creditOutstandingForCashier = await DBHelper.instance.getCreditOutstandingByCashierBetweenDates(
-        cashierUsername: username,
-        fromDate: fromDateStr,
-        toDate: toDateStr,
-      );
-
-      final purchaseReceiptsOutstandingForUser = await DBHelper.instance.getPurchaseReceiptsOutstandingByUserBetweenDates(
-        username: username,
-        fromDate: fromDateStr,
-        toDate: toDateStr,
-      );
-
-      // build report widget (ShiftReportWidget is assumed to accept these fields)
       final reportWidget = ShiftReportWidget(
-        cashierUsername: username,
+        cashierUsername: Session.currentUsername!,
         fromDate: fromDateStr,
-        toDate: toDateStr,
-        sales: sales,
-        saleItemsMap: saleItemsMap,
-        purchases: purchases,
+        toDate: Session.currentDateTime!,
         totals: {
-          'sales_total': salesTotal,
-          'sales_paid_cash': salesPaidCash,
-          'sales_paid_card': salesPaidCard,
-          'purchases_paid': purchasesPaid,
-          'user_starting': userStarting,
-          'user_net_sales': salesNetCashForCashier,
-          'drawer_for_cashier': drawerForCashier,
-          'deposit_from_wallet': depositFromWalletForUser,
+          'sales_total': _totalCash!,
+          'sales_paid_cash': _wallet_received!,
+          'sales_paid_card': _cash_received!,
+          'purchases_paid': _purchases_paid!,
+          'user_starting': _startingAmount,
+          'user_net_sales': _totalCash!,
+          'drawer_for_cashier': _totalWallet!,
         },
         width: 280,
-        drawerCurrent: drawerForCashier,
-        cardForCashier: cardTotalAvailable,
-        creditOutstandingForCashier: creditOutstandingForCashier,
-        purchaseReceiptsOutstandingForUser: purchaseReceiptsOutstandingForUser,
+        drawerCurrent: _totalCash!,
+        cardForCashier: _cashInWallet + _totalWallet!,
+        creditOutstandingForCashier: _cash_with_credit!,
+        purchaseReceiptsOutstandingForUser: _purchases_credit!,
       );
 
-      // طباعة التقرير
+      // 1) محاولة طباعة التقرير
       try {
         await PrintService.printWidgetUsingOverlay(context, reportWidget, width: 280, pixelRatio: 2.0);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم طباعة تقرير الشفت لليوم')));
@@ -1422,64 +1016,34 @@ class _CashierScreenState extends State<CashierScreen> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل طباعة تقرير الشفت')));
       }
 
-      // === صفر صافي المبيعات للكاشير الذي غلق الشفت (فقط للفواتير التي عرضناها في هذا التقرير) ===
+      // 2) إرسال start_time إلى السيرفر باستخدام Session.currentDateTime! مباشرة
       try {
-        final db = await dbHelper.database;
+        final dynamic startTimeValue = Session.currentDateTime!; // قد يكون String أو DateTime أو epoch
+        debugPrint('Sending start_time to server: $startTimeValue');
 
-        // بنجمع الـ ids من المتغير sales الذي جلبناه وفّلترناه فوق
-        final List<int> saleIds = sales
-            .map<int?>((s) => (s['id'] as num?)?.toInt())
-            .where((id) => id != null)
-            .cast<int>()
-            .toList();
+        final apiResp = await _apiService.closeShift(
+          cashierName: Session.currentUsername!,
+          startTimeParam: startTimeValue,
+        );
 
-        if (saleIds.isNotEmpty) {
-          await db.transaction((txn) async {
-            // نصنع placeholders مثل "?, ?, ?" حسب طول القائمة
-            final placeholders = List.filled(saleIds.length, '?').join(',');
-            // نعدّ الـ args: أولًا الـ ids، ثم اسم الكاشير، ثم طريقة الدفع، ثم التاريخ
-            final List<Object?> args = <Object?>[];
-            args.addAll(saleIds);
-            args.add(username);
-            args.add('cash');
-            args.add(fromDateStr);
+        // طباعة النتيجة للتشخيص أثناء التطوير
+        debugPrint('closeShift API response: success=${apiResp.success}, message=${apiResp.message}, id=${apiResp.insertId}, start=${apiResp.startTime}, end=${apiResp.endTime}');
 
-            // نضيف شرط إضافي حتى لا نُعيد تصفير فواتير سبق تصفيرها
-            final sql = '''
-            UPDATE sales
-            SET drawer_withdrawn_amount = (COALESCE(paid_amount,0) - COALESCE(change_amount,0)),
-                drawer_withdrawn = 1
-            WHERE id IN ($placeholders)
-              AND cashier_username = ?
-              AND payment_method = ?
-              AND date(date) = ?
-              AND (drawer_withdrawn IS NULL OR drawer_withdrawn = 0)
-          ''';
-
-            await txn.rawUpdate(sql, args);
-          });
-
-          // إعادة تحميل القيم المعروضة للكاشير الآن (ستجعل _userNetSales = 0 لو كانت هذه الفواتير هي السبب)
-          await _loadUserStartingAndNetSales();
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('تم تصفير صافي المبيعات لهذا الكاشير لليوم')),
-            );
-          }
+        if (apiResp.success) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('تم حفظ قفل الشيفت على السيرفر (id: ${apiResp.insertId ?? '-'})'),
+            backgroundColor: Colors.green[700],
+          ));
         } else {
-          // لا توجد فواتير غير مصفّرة لهذا الكاشير اليوم — لا نفعل شيئًا
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('لا توجد فواتير لتصفيرها لهذا الكاشير اليوم')),
-            );
-          }
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('فشل حفظ الشفت على السيرفر: ${apiResp.message}'),
+            backgroundColor: Colors.red[700],
+          ));
         }
       } catch (e, st) {
-        debugPrint('Failed to zero cashier net sales on closeShift: $e\n$st');
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذّر تصفير صافي المبيعات: $e')));
+        debugPrint('API closeShift failed: $e\n$st');
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء حفظ الشفت: $e')));
       }
-
     } catch (e, st) {
       debugPrint('Error while closing shift: $e\n$st');
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تقفيل الشفت: $e')));
@@ -1994,6 +1558,86 @@ class _CashierScreenState extends State<CashierScreen> {
     // If you prefer, you can schedule a dispose later:
     // Future.delayed(Duration(seconds: 5), () { qtyController.dispose(); });
   }
+///////////////////////////////////////////////////////////////////////////////
+  final InsertFinancialAccountService _service = InsertFinancialAccountService();
+
+  Future<void> _loadFinancials() async {
+    if (!mounted) return;
+    try {
+      final list = await _service.getLatest(limit: 1);
+      if (list.isNotEmpty) {
+        final rec = list.first;
+        if (!mounted) return;
+        setState(() {
+          _startingAmount = rec.startingAmount ?? 0.0;
+          _cashInWallet = rec.cashInWallet ?? 0.0;
+        });
+      } else {
+        if (!mounted) return;
+        setState(() {
+          _startingAmount = 0.0;
+          _cashInWallet = 0.0;
+        });
+      }
+    } catch (e, st) {
+      debugPrint('Failed to load financials: $e\n$st');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل تحميل بيانات الدرج/المحفظة')));
+      }
+    }
+  }
+
+
+  Future<void> _loadTotalProfit() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final profits = await ApiServiceProfit.instance
+          .fetchProfitsByCashier(Session.currentUsername?? widget.cashierUsername);
+
+      double sumCash = 0;
+      double sumWallet = 0;
+      double sumCredit = 0;
+      double sumPurchases_paid = 0;
+      double sumPurchases_credit = 0;
+      double sumWallet_received = 0;
+      double sumCash_received = 0;
+
+      for (final p in profits) {
+        sumCash += p.total_in_drawer;
+        sumWallet += p.total_in_wallet;
+        sumCredit += p.cash_with_credit;
+        sumPurchases_paid += p.purchases_paid;
+        sumPurchases_credit += p.purchases_credit;
+        sumWallet_received += p.wallet_received;
+        sumCash_received += p.cash_received;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _totalCash = sumCash;
+        _totalWallet = sumWallet;
+        _cash_with_credit = sumCredit ;
+        _purchases_paid = sumPurchases_paid ;
+        _purchases_credit = sumPurchases_credit ;
+        _wallet_received = sumWallet_received ;
+        _cash_received = sumCash_received ;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+      });
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+      });
+    }
+  }
 
 
   @override
@@ -2025,11 +1669,11 @@ class _CashierScreenState extends State<CashierScreen> {
                   SizedBox(height: 5,),
                   IconButton(
                     tooltip: 'المحفظه الالكترونيه',
-                    icon: const Icon(Icons.account_balance_wallet),
-                    onPressed: _openCardWalletDialog,
+                    icon: const Icon(Icons.account_balance_wallet,color: Colors.white70,),
+                    onPressed: Session.wallet_tx == true ? _openCardWalletDialog:null,
                   ),
                   Text(
-                    NumberFormat("#,###").format(_cardTotalAvailable),
+                    NumberFormat("#,###").format(_cashInWallet+_totalWallet!),
                     style: const TextStyle(color: Colors.white70, fontSize: 14),
                   ),
                 ],
@@ -2053,7 +1697,7 @@ class _CashierScreenState extends State<CashierScreen> {
                 ),
                 SizedBox(height: 10,),
                 Text(
-                  _formatWithSign(_userStartingPlusNet),
+                  _formatWithSign(_startingAmount+_totalCash!),
                   style: const TextStyle(color: Colors.white70, fontSize: 14),
                 ),
               ],
@@ -2067,29 +1711,35 @@ class _CashierScreenState extends State<CashierScreen> {
         ),
 
         actions: [
-          IconButton(
-            tooltip: 'الفواتير السابقة',
-            icon: const Icon(Icons.history),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => PreviousSalesScreen(
-                    cashierUsername: _currentUsername ?? widget.cashierUsername,
+          Visibility(
+            visible: Session.invoice_log,
+            child: IconButton(
+              tooltip: 'الفواتير السابقة',
+              icon: const Icon(Icons.history),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => PreviousSalesScreen(
+                      cashierUsername: _currentUsername ?? widget.cashierUsername,
+                    ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
-          IconButton(
-            tooltip: 'استلام بضاعه',
-            icon: const Icon(Icons.category),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const ReceiveFromSupplierScreen()),
-              );
-            },
+          Visibility(
+            visible: Session.receive_from_suppliers,
+            child: IconButton(
+              tooltip: 'استلام بضاعه',
+              icon: const Icon(Icons.category),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const ReceiveFromSupplierScreen()),
+                );
+              },
+            ),
           ),
           IconButton(
             tooltip: 'تقفيل الشفت',
@@ -2289,7 +1939,11 @@ class _CashierScreenState extends State<CashierScreen> {
 
             const SizedBox(height: 20),
             Expanded(
-              child: CartList(
+              child: _isLoading
+                  ? CartListShimmer(
+                itemCount: 4, // عدد البطاقات اللي تحب تظهر كـ skeleton
+              )
+                  : CartList(
                 cart: _cart,
                 onChangeQty: _changeQuantity,
                 onRemove: (pid) => setState(() => _cart.remove(pid)),
@@ -2300,59 +1954,65 @@ class _CashierScreenState extends State<CashierScreen> {
             // Payment controls + discount button row
             Row(
               children: [
-                Expanded(
-                  child: PaymentControls(
-                    paidController: _paidController,
-                    addQuickPaid: _addQuickPaid,
-                    setQuickPaid: _setQuickPaid,
-                    total: _effectiveTotal, // مهم: عرض الإجمالي بعد الخصم
-                    saving: _saving,
-                    onPayAndSave: () {
-                      setState(() {});
-                      _saveSale(requireFullPayment: true, paymentMethod: 'cash');
-                      Future.microtask(() {
-                        _barcodeController.clear();
-                        FocusScope.of(context).requestFocus(_barcodeFocus);
-                      });
-                    },
-                    onSaveAsLater: (){
-                      _saveSale(requireFullPayment: false, paymentMethod: 'credit');
-                      Future.microtask(() {
-                        _barcodeController.clear();
-                        FocusScope.of(context).requestFocus(_barcodeFocus);
-                      });
-                    },
-                    onSaveAsCard: () {
-                      _saveSale(requireFullPayment: true, paymentMethod: 'wallet');
-                      Future.microtask(() {
-                        _barcodeController.clear();
-                        FocusScope.of(context).requestFocus(_barcodeFocus);
-                      });
-                    },
-                    // If you want a BUTTON specifically to pay via the app wallet, you can hook it to:
-                    // onSaveAsWallet: () => _saveSale(requireFullPayment: true, paymentMethod: 'wallet'),
+                // زر الخصم
+                Visibility(
+                  visible: Session.discount,
+                  child: SizedBox(
+                    height: 65,
+                    child: ElevatedButton(
+                      onPressed: _showDiscountDialog,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _discountValue > 0 ? Colors.orange : AppColorsDark.bgColor,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.local_offer, color: Colors.white,size: 27,),
+                          const SizedBox(height: 5),
+                          Text(
+                            _discountValue > 0 ? '${_discountValue.toStringAsFixed(0)}%' : 'خصم',
+                            style: const TextStyle(color: Colors.white, fontSize: 15),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                // زر الخصم
-                SizedBox(
-                  height: 56,
-                  child: ElevatedButton(
-                    onPressed: _showDiscountDialog,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _discountValue > 0 ? Colors.orange : AppColorsDark.bgColor,
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.local_offer, color: Colors.white),
-                        const SizedBox(height: 2),
-                        Text(
-                          _discountValue > 0 ? '${_discountValue.toStringAsFixed(0)}%' : 'خصم',
-                          style: const TextStyle(color: Colors.white, fontSize: 12),
-                        ),
-                      ],
+                Expanded(
+                  child: Directionality(
+                    textDirection: TextDirection.rtl,
+                    child: PaymentControls(
+                      paidController: _paidController,
+                      addQuickPaid: _addQuickPaid,
+                      setQuickPaid: _setQuickPaid,
+                      total: _effectiveTotal, // مهم: عرض الإجمالي بعد الخصم
+                      saving: _saving,
+                      onPayAndSave: () {
+                        setState(() {});
+                        _saveSale(requireFullPayment: true, paymentMethod: 'cash');
+                        Future.microtask(() {
+                          _barcodeController.clear();
+                          FocusScope.of(context).requestFocus(_barcodeFocus);
+                        });
+                      },
+                      onSaveAsLater: (){
+                        _saveSale(requireFullPayment: false, paymentMethod: 'credit');
+                        Future.microtask(() {
+                          _barcodeController.clear();
+                          FocusScope.of(context).requestFocus(_barcodeFocus);
+                        });
+                      },
+                      onSaveAsCard: () {
+                        _saveSale(requireFullPayment: true, paymentMethod: 'wallet');
+                        Future.microtask(() {
+                          _barcodeController.clear();
+                          FocusScope.of(context).requestFocus(_barcodeFocus);
+                        });
+                      },
+                      // If you want a BUTTON specifically to pay via the app wallet, you can hook it to:
+                      // onSaveAsWallet: () => _saveSale(requireFullPayment: true, paymentMethod: 'wallet'),
                     ),
                   ),
                 ),

@@ -1,12 +1,14 @@
 // lib/screens/cashier/ReceiveFromSupplier.dart
+import 'dart:convert';
+
 import 'package:cashgo/screens/cashier/cashier_screen.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../../models/login.dart';
-import '../../services/db/db_helper.dart';
 
 class ReceiveFromSupplierScreen extends StatefulWidget {
   const ReceiveFromSupplierScreen({Key? key}) : super(key: key);
@@ -17,19 +19,19 @@ class ReceiveFromSupplierScreen extends StatefulWidget {
 
 class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _barcodeCtrl = TextEditingController();
+
+  final _barcodeCtrl = TextEditingController(); // اختياري
   final _nameCtrl = TextEditingController();
-  final _cartonsCtrl = TextEditingController();
-  final _unitsCtrl = TextEditingController();
-  final _unitsInCartonCtrl = TextEditingController();
+  final _cartonsCtrl = TextEditingController(text: '0');
+  final _unitsCtrl = TextEditingController(text: '0');
+  final _unitsInCartonCtrl = TextEditingController(text: '1');
   final _purchasePricePerCartonCtrl = TextEditingController();
   final _purchasePricePerUnitCtrl = TextEditingController();
   final _sellingPriceIfNewCtrl = TextEditingController();
   final _paidAmountCtrl = TextEditingController();
-  // for showing/editing existing single units
   final _existingUnitsCtrl = TextEditingController(text: '0');
 
-  // Focus nodes for moving to next field on submit
+  // Focus nodes
   final FocusNode _barcodeFocusNode = FocusNode();
   final FocusNode _nameFocusNode = FocusNode();
   final FocusNode _cartonsFocusNode = FocusNode();
@@ -40,49 +42,16 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   final FocusNode _sellingFocusNode = FocusNode();
   final FocusNode _paidFocusNode = FocusNode();
 
-  // merged نقدي و آجل into a single option: we'll infer "credit" vs "cash" from paid vs total
-  String _paymentType = 'cash_or_credit';
+  String _paymentType = 'cash_or_credit'; // 'cash_or_credit' or 'wallet'
   bool _loading = false;
-
-  // NEW: track whether user manually edited the paid field
   bool _paidTouched = false;
-
-  // products cache for picker
-  List<Map<String, dynamic>> _products = [];
-  bool _loadingProducts = false;
-
-  // human-readable current stock summary
-  String _currentStockText = '';
-  int? _selectedProductId;
 
   @override
   void initState() {
     super.initState();
-    // تأكد من أن قيمة الحقل المدفوع مناسبة لحالة الدفع الابتدائية
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _updateComputedPaid();
-      _loadProducts();
     });
-
-    // when barcode field loses focus, try to lookup the product and autofill
-    _barcodeFocusNode.addListener(() {
-      if (!_barcodeFocusNode.hasFocus) {
-        _lookupBarcode();
-      }
-    });
-  }
-
-  Future<void> _loadProducts() async {
-    setState(() => _loadingProducts = true);
-    try {
-      final rows = await DBHelper.instance.getAllProducts();
-      setState(() {
-        _products = rows;
-      });
-    } catch (e) {
-      debugPrint('Error loading products: $e');
-    }
-    setState(() => _loadingProducts = false);
   }
 
   @override
@@ -111,41 +80,16 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     super.dispose();
   }
 
-  double _parseDouble(String? s) {
-    if (s == null) return 0.0;
-    return double.tryParse(s.replaceAll(',', '')) ?? 0.0;
-  }
-
   int _parseInt(String? s) {
     if (s == null) return 0;
     return int.tryParse(s) ?? 0;
   }
 
-  /// Helper: try to extract a numeric field from product map using several common keys
-  double _extractDoubleFromProduct(Map<String, dynamic> p, List<String> keys) {
-    for (final k in keys) {
-      if (p.containsKey(k) && p[k] != null) {
-        final v = p[k];
-        if (v is num) return v.toDouble();
-        if (v is String) return double.tryParse(v) ?? 0.0;
-      }
-    }
-    return 0.0;
+  double _parseDouble(String? s) {
+    if (s == null) return 0.0;
+    return double.tryParse(s.replaceAll(',', '')) ?? 0.0;
   }
 
-  String? _extractStringFromProduct(Map<String, dynamic> p, List<String> keys) {
-    for (final k in keys) {
-      if (p.containsKey(k) && p[k] != null) {
-        return p[k].toString();
-      }
-    }
-    return null;
-  }
-
-  /// Compute total cost using the same logic DBHelper.receiveFromSupplier uses:
-  /// - carton price if provided
-  /// - fallback to perUnit * unitsInCarton when carton price missing
-  /// - per-unit price is preferred when provided otherwise derived from carton price
   double _computeTotalCost() {
     final cartons = _parseInt(_cartonsCtrl.text);
     final units = _parseInt(_unitsCtrl.text);
@@ -158,18 +102,14 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         ? null
         : double.tryParse(rawCartonText.replaceAll(',', ''));
 
-    // treat an explicit 0 in per-unit as "not provided" when carton price exists,
-    // because most users type 0 by mistake — but allow 0 if there is no carton price.
     double? purchasePerUnit = rawUnitText.isEmpty
         ? null
         : double.tryParse(rawUnitText.replaceAll(',', ''));
 
     if (purchasePerUnit != null && purchasePerUnit == 0.0 && purchasePerCarton != null) {
-      // ignore the explicit 0 and derive from carton price instead
       purchasePerUnit = null;
     }
 
-    // determine carton unit price and unit price
     double cartonPrice = 0.0;
     double unitPrice = 0.0;
 
@@ -179,12 +119,10 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
           ? purchasePerUnit
           : (unitsInCarton > 0 ? purchasePerCarton / unitsInCarton : 0.0);
     } else {
-      // no carton price
       if (purchasePerUnit != null) {
         unitPrice = purchasePerUnit;
         cartonPrice = purchasePerUnit * unitsInCarton;
       } else {
-        // nothing provided -> 0
         cartonPrice = 0.0;
         unitPrice = 0.0;
       }
@@ -194,232 +132,93 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     return total;
   }
 
-
-  /// Update paid field depending on selected payment type and computed total.
-  /// Behavior (after merging cash & credit into one option):
-  /// - For the merged cash/credit option we default paid to full total unless user edited it.
-  ///   If user later leaves a paid < total, that will be treated as credit on submit.
-  /// - For wallet (محفظة إلكترونية) we keep the previous behavior (default to full unless user edited).
   void _updateComputedPaid() {
     final total = _computeTotalCost();
-    // For both combined cash/credit and wallet, default to full payment unless user edited.
     if (!_paidTouched) {
       _paidAmountCtrl.text = total.toStringAsFixed(2);
     }
-    setState(() {}); // refresh UI if needed
+    setState(() {});
   }
 
-  /// Try to lookup product by barcode and autofill fields when found.
+  /// Lookup product from server by barcode and autofill form fields
   Future<void> _lookupBarcode() async {
     final barcode = _barcodeCtrl.text.trim();
-    if (barcode.isEmpty) return;
-
-    setState(() => _loading = true);
-    try {
-      final db = DBHelper.instance;
-
-      final product = await db.getProductByBarcode(barcode);
-
-      // debug print of DB row to help if keys differ
-      debugPrint('LOOKUP product row: $product');
-
-      if (product == null) {
-        // nothing found: do not clear all fields but inform user
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم يتم العثور على منتج بهذا الباركود.')));
-      } else {
-        _fillFieldsFromProduct(Map<String, dynamic>.from(product));
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم ملء بيانات المنتج تلقائياً.')));
-      }
-    } catch (e) {
-      debugPrint('Barcode lookup error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء جلب بيانات المنتج: $e')));
-    }
-    setState(() => _loading = false);
-  }
-
-  void _fillFieldsFromProduct(Map<String, dynamic> p) {
-    // remember selected product id
-    try {
-      _selectedProductId = (p['id'] != null) ? (p['id'] as num).toInt() : null;
-    } catch (e) {
-      _selectedProductId = null;
-    }
-
-    final name = _extractStringFromProduct(p, ['name', 'product_name', 'title', 'title_ar']);
-
-    // units in carton
-    int unitsInCarton = 0;
-    try {
-      if (p.containsKey('units_in_carton') && p['units_in_carton'] != null) unitsInCarton = (p['units_in_carton'] as num).toInt();
-      else if (p.containsKey('unitsInCarton') && p['unitsInCarton'] != null) unitsInCarton = (p['unitsInCarton'] as num).toInt();
-      else if (p.containsKey('unit_in_carton') && p['unit_in_carton'] != null) unitsInCarton = (p['unit_in_carton'] as num).toInt();
-    } catch (e) {
-      unitsInCarton = 0;
-    }
-
-    // try to determine total units using a few heuristics / possible keys
-    int totalUnits = 0;
-    try {
-      if (p.containsKey('total_units') && p['total_units'] != null) {
-        totalUnits = (p['total_units'] as num).toInt();
-      } else if (p.containsKey('units') && p['units'] != null) {
-        totalUnits = (p['units'] as num).toInt();
-      } else if (p.containsKey('units_remainder') && p['units_remainder'] != null) {
-        final cartons = (p['quantity'] ?? 0) as num;
-        final remainder = (p['units_remainder'] as num).toInt();
-        totalUnits = cartons.toInt() * (unitsInCarton > 0 ? unitsInCarton : 0) + remainder;
-      } else if (p.containsKey('units_outside') && p['units_outside'] != null) {
-        final cartons = (p['quantity'] ?? 0) as num;
-        final remainder = (p['units_outside'] as num).toInt();
-        totalUnits = cartons.toInt() * (unitsInCarton > 0 ? unitsInCarton : 0) + remainder;
-      } else if (p.containsKey('quantity') && p['quantity'] != null) {
-        final q = (p['quantity'] as num).toInt();
-        if (unitsInCarton > 0) {
-          if (q > unitsInCarton * 5) {
-            totalUnits = q; // treat as total units
-          } else {
-            totalUnits = q * unitsInCarton;
-            if (p.containsKey('units_remainder') && p['units_remainder'] != null) {
-              totalUnits += (p['units_remainder'] as num).toInt();
-            }
-          }
-        } else {
-          totalUnits = q;
-        }
-      }
-    } catch (e) {
-      totalUnits = 0;
-    }
-
-    totalUnits = totalUnits < 0 ? 0 : totalUnits;
-
-    // derive cartons and remainder from totalUnits when possible
-    int cartons = 0;
-    int remainder = 0;
-    if (unitsInCarton > 0 && totalUnits > 0) {
-      cartons = totalUnits ~/ unitsInCarton;
-      remainder = totalUnits % unitsInCarton;
-    } else {
-      try {
-        cartons = (p['quantity'] ?? 0) as int;
-      } catch (e) {
-        cartons = ((p['quantity'] ?? 0) as num).toInt();
-      }
-      try {
-        remainder = (p['units_remainder'] ?? p['units_outside'] ?? 0) as int;
-      } catch (e) {
-        remainder = ((p['units_remainder'] ?? p['units_outside'] ?? 0) as num).toInt();
-      }
-      if (unitsInCarton > 0) {
-        totalUnits = cartons * unitsInCarton + remainder;
-      } else {
-        totalUnits = cartons + remainder;
-      }
-    }
-
-    // prices
-    final purchaseCarton = _extractDoubleFromProduct(p, ['purchase_price', 'purchase_price_per_carton', 'purchase_per_carton', 'price_carton']);
-    final purchaseUnit = _extractDoubleFromProduct(p, ['purchase_price_per_unit', 'purchase_per_unit', 'price_unit']);
-    final sellingUnit = _extractDoubleFromProduct(p, ['selling_price', 'selling_price_per_unit', 'price']);
-
-    // fill form fields
-    if (name != null) _nameCtrl.text = name;
-    _unitsInCartonCtrl.text = (unitsInCarton > 0) ? unitsInCarton.toString() : '1';
-    // show current stock as TOTAL UNITS in the editable "existing units" field
-    // (this was changed to reflect the full count inside cartons)
-    _existingUnitsCtrl.text = totalUnits.toString();
-
-    if (purchaseCarton > 0) {
-      _purchasePricePerCartonCtrl.text = purchaseCarton.toStringAsFixed(2);
-      if (purchaseUnit <= 0 && unitsInCarton > 0) {
-        _purchasePricePerUnitCtrl.text = 0.0.toString();
-      } else if (purchaseUnit > 0) {
-        _purchasePricePerUnitCtrl.text = 0.0.toString();
-      }
-    } else if (purchaseUnit > 0) {
-      _purchasePricePerUnitCtrl.text = 0.0.toString();
-    }
-
-    if (sellingUnit > 0) {
-      _purchasePricePerUnitCtrl.text = 0.0.toString();
-    }
-
-    // set a human readable stock summary so the user clearly sees the full count
-    setState(() {
-      _currentStockText = '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
-    });
-
-    // ensure receive quantity inputs are present
-    if (_cartonsCtrl.text.isEmpty) _cartonsCtrl.text = '0';
-    if (_unitsCtrl.text.isEmpty) _unitsCtrl.text = '0';
-
-    // reset paid touched so paid defaults to total cost
-    _paidTouched = false;
-    _updateComputedPaid();
-  }
-
-  /// Apply edits to the currently selected product's stock (cartons/units)
-  Future<void> _applyStockEdit() async {
-    if (_selectedProductId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يوجد منتج محدد للتعديل.')));
+    if (barcode.isEmpty) {
+      // nothing to lookup
       return;
     }
 
-    // احصل القيمة الجديدة لعدد الوحدات داخل الكرتونة (user edited this)
-    int newUnitsInCarton = int.tryParse(_unitsInCartonCtrl.text.trim()) ?? 0;
-    if (newUnitsInCarton <= 0) newUnitsInCarton = 1; // لا نسمح بصفر أو سالب
-
-    // اجمالي الوحدات الحالي (نأخذ قيمة الحقل القابلة للتعديل _existingUnitsCtrl كمصدر للحقيقة)
-    int totalUnits = int.tryParse(_existingUnitsCtrl.text.trim()) ?? 0;
-    if (totalUnits < 0) totalUnits = 0;
-
-    // احسب كراتين وباقي بناءً على newUnitsInCarton بحيث يبقى totalUnits ثابتًا
-    int cartons = 0;
-    int remainder = 0;
-    if (newUnitsInCarton > 0) {
-      cartons = totalUnits ~/ newUnitsInCarton;
-      remainder = totalUnits % newUnitsInCarton;
-    } else {
-      // تقيّد احترازي (لكن أعلاه ضمنا newUnitsInCarton >= 1)
-      cartons = totalUnits;
-      remainder = 0;
-    }
-
-    // جهّز خريطة التحديث (نحافظ على الحقول الأخرى من الفورم إن وُجدت)
-    final prodUpdate = {
-      'id': _selectedProductId,
-      'barcode': _barcodeCtrl.text.trim(),
-      'name': _nameCtrl.text.trim(),
-      'units_in_carton': newUnitsInCarton,
-      'quantity': cartons,
-      'units_remainder': remainder,
-      'purchase_price': double.tryParse(_purchasePricePerCartonCtrl.text.trim()) ?? 0.0,
-      'selling_price': double.tryParse(_sellingPriceIfNewCtrl.text.trim()) ?? 0.0,
-      'production_date': null,
-      'expiry_date': null,
-    };
-
+    setState(() => _loading = true);
     try {
-      await DBHelper.instance.updateProduct(prodUpdate);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تحديث المخزون بنجاح')));
+      final uri = Uri.parse('https://nabawisolution.com/products.php')
+          .replace(queryParameters: {'action': 'get_by_barcode', 'barcode': barcode});
 
-      // reload products list (optional) and reflect UI changes
-      await _loadProducts();
+      final res = await http.get(uri, headers: {'Accept': 'application/json'});
 
-      // نعرض القيم الجديدة في الحقول
-      final newTotalUnits = cartons * newUnitsInCarton + remainder;
-      _existingUnitsCtrl.text = newTotalUnits.toString();
-      _cartonsCtrl.text = cartons.toString();
-      _unitsCtrl.text = remainder.toString();
-      _unitsInCartonCtrl.text = newUnitsInCarton.toString();
+      debugPrint('LOOKUP HTTP status: ${res.statusCode}');
+      debugPrint('LOOKUP HTTP body: ${res.body}');
 
-      setState(() {
-        _currentStockText = '$cartons كرتونة + $remainder قطعة = $newTotalUnits قطعة';
-      });
+      if (res.statusCode != 200) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('خطأ من السيرفر: ${res.statusCode}'))));
+        setState(() => _loading = false);
+        return;
+      }
+
+      final Map<String, dynamic> json = jsonDecode(res.body);
+
+      if (json['success'] == true && json['data'] != null) {
+        final Map<String, dynamic> p = Map<String, dynamic>.from(json['data']);
+
+        final name = (p['name'] ?? '').toString();
+        final unitsInCarton = (p['units_in_carton'] != null) ? (int.tryParse(p['units_in_carton'].toString()) ?? 1) : 1;
+        final totalUnits = (p['total_units'] != null) ? (int.tryParse(p['total_units'].toString()) ?? 0) : 0;
+
+        final purchasePrice = (p['purchase_price'] != null) ? double.tryParse(p['purchase_price'].toString()) ?? 0.0 : 0.0;
+        final sellingPrice = (p['selling_price'] != null) ? double.tryParse(p['selling_price'].toString()) ?? 0.0 : 0.0;
+
+        if (name.isNotEmpty) _nameCtrl.text = name;
+
+        _unitsInCartonCtrl.text = unitsInCarton > 0 ? unitsInCarton.toString() : '1';
+        _existingUnitsCtrl.text = totalUnits.toString();
+
+        if (purchasePrice > 0) {
+          _purchasePricePerCartonCtrl.text = purchasePrice.toStringAsFixed(2);
+          if (unitsInCarton > 0) {
+            final unitPrice = purchasePrice / unitsInCarton;
+            _purchasePricePerUnitCtrl.text = unitPrice.toStringAsFixed(2);
+          } else {
+            _purchasePricePerUnitCtrl.text = '0.00';
+          }
+        } else {
+          _purchasePricePerCartonCtrl.clear();
+          _purchasePricePerUnitCtrl.clear();
+        }
+
+        if (sellingPrice > 0) {
+          _sellingPriceIfNewCtrl.text = sellingPrice.toStringAsFixed(2);
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Directionality(
+                textDirection: TextDirection.rtl,
+                child: Text('تم ملء بيانات المنتج تلقائياً.'))));
+        _paidTouched = false;
+        _updateComputedPaid();
+      } else {
+        final msg = json['message'] ?? 'المنتج غير موجود';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text(msg))));
+      }
     } catch (e) {
-      debugPrint('Error updating product: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء تحديث المنتج: $e')));
+      debugPrint('Barcode lookup error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('خطأ أثناء البحث عن المنتج: $e'))));
     }
+    setState(() => _loading = false);
   }
 
   Future<bool> _submit() async {
@@ -489,100 +288,52 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
       if (paid < 0) paid = 0.0;
       if (paid > totalCost) paid = totalCost;
 
-      final dbHelper = DBHelper.instance;
+      // compute credit (what remains to be paid)
+      final double creditAmount = (totalCost - paid) < 0 ? 0.0 : (totalCost - paid);
 
-      // --- (Optional) sync units_in_carton before receive when product existed ---
-      if (_selectedProductId != null) {
-        try {
-          final products = await DBHelper.instance.getAllProducts();
-          final prod = products.firstWhere(
-                (p) => (p['id'] as num).toInt() == _selectedProductId,
-            orElse: () => {},
-          );
+      // prepare payload for server (server expects these keys)
+      final payload = {
+        'product_name': name,
+        'barcode': barcode,
+        'cartons': cartonsInput.toString(),
+        'units': unitsInput.toString(),
+        'units_in_carton': unitsInCartonInput.toString(),
+        'carton_price': purchasePerCarton?.toString() ?? '',
+        'unit_price': purchasePerUnit?.toString() ?? '',
+        'selling_price_if_new': sellingIfNew?.toString() ?? '',
+        'paid_amount': paid.toStringAsFixed(2),
+        'credit_amount': creditAmount.toStringAsFixed(2), // <-- new field
+        'payment_type': _paymentType, // 'cash_or_credit' or 'wallet'
+        'receipt_date': DateTime.now().toIso8601String().split('T')[0],
+        'cashier_name': Session.currentUsername ?? 'unknown',
+      };
 
-          if (prod.isNotEmpty) {
-            int totalUnits = 0;
-            try {
-              if (prod.containsKey('total_units') && prod['total_units'] != null) {
-                totalUnits = (prod['total_units'] as num).toInt();
-              } else {
-                final q = (prod['quantity'] as num?)?.toInt() ?? 0;
-                final ui = (prod['units_in_carton'] as num?)?.toInt() ?? 1;
-                final rem = (prod['units_remainder'] as num?)?.toInt() ?? 0;
-                totalUnits = q * (ui > 0 ? ui : 1) + rem;
-              }
-            } catch (_) {
-              totalUnits = 0;
-            }
+      // POST to your server
+      final uri = Uri.parse('https://nabawisolution.com/receive_from_supplier.php');
+      final res = await http.post(uri,
+          headers: {'Content-Type': 'application/json'}, body: jsonEncode(payload));
 
-            int newUnitsInCarton = unitsInCartonInput <= 0 ? 1 : unitsInCartonInput;
-            int newCartons = 0;
-            int newRemainder = 0;
-            if (newUnitsInCarton > 0) {
-              newCartons = totalUnits ~/ newUnitsInCarton;
-              newRemainder = totalUnits % newUnitsInCarton;
-            } else {
-              newCartons = totalUnits;
-              newRemainder = 0;
-            }
+      // debug prints for diagnosis
+      debugPrint('RECEIVE HTTP status: ${res.statusCode}');
+      debugPrint('RECEIVE HTTP body: ${res.body}');
 
-            final prodUpdate = {
-              'id': _selectedProductId,
-              'barcode': prod['barcode'] ?? _barcodeCtrl.text.trim(),
-              'name': prod['name'] ?? _nameCtrl.text.trim(),
-              'units_in_carton': newUnitsInCarton,
-              'quantity': newCartons,
-              'units_remainder': newRemainder,
-              'purchase_price': (prod['purchase_price'] as num?)?.toDouble() ?? (purchasePerCarton ?? 0.0),
-              'selling_price': (prod['selling_price'] as num?)?.toDouble() ?? (sellingIfNew ?? 0.0),
-              'production_date': prod['production_date'] ?? '',
-              'expiry_date': prod['expiry_date'] ?? '',
-            };
-
-            await DBHelper.instance.updateProduct(prodUpdate);
-
-            _unitsInCartonCtrl.text = newUnitsInCarton.toString();
-            _cartonsCtrl.text = newCartons.toString();
-            _unitsCtrl.text = newRemainder.toString();
-            _existingUnitsCtrl.text = totalUnits.toString();
-            setState(() {
-              _currentStockText = '$newCartons كرتونة + $newRemainder قطعة = $totalUnits قطعة';
-            });
-          }
-        } catch (e) {
-          debugPrint('Warning: failed to sync units_in_carton before receive: $e');
-        }
-      }
-
-      // ---- Call receiveFromSupplier as before ----
-      final res = await dbHelper.receiveFromSupplier(
-        barcode: barcode.isEmpty ? null : barcode,
-        name: name.isEmpty ? null : name,
-        cartons: cartonsInput,
-        units: unitsInput,
-        purchasePricePerCarton: purchasePerCarton,
-        purchasePricePerUnit: purchasePerUnit,
-        sellingPricePerUnitIfNew: sellingIfNew,
-        unitsInCartonIfNew: unitsInCartonInput,
-        receivedBy: Session.currentUsername!,
-        paymentType: _paymentType,
-        paidAmount: paid,
-      );
-
-      if (res['status'] == 'need_selling_price') {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير موجود. الرجاء إدخال سعر البيع وإنشاء المنتج.')));
+      if (res.statusCode != 200) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('خطأ من السيرفر: ${res.statusCode}'))));
         setState(() => _loading = false);
         return false;
-      } else if (res['status'] == 'ok') {
-        final totalCostRes = (res['total_cost'] ?? totalCost) as double;
-        final due = (res['due_amount'] ?? (totalCostRes - paid)) as double;
-        final added = res['added_units'] ?? 0;
+      }
 
-        // ======= IMPORTANT CHANGE HERE ========
-        // We DO NOT modify drawer/wallet balances here.
-        // Earlier code changed the drawer or wallet; now we only record the receive
-        // in the DB (handled by receiveFromSupplier) and show success to the user.
-        // ======================================
+      final Map<String, dynamic> data = jsonDecode(res.body);
+
+      if (data['status'] == 'ok') {
+        final totalCostRes = double.tryParse((data['total_cost'] ?? totalCost).toString()) ?? totalCost;
+        final paidRes = double.tryParse((data['paid'] ?? paid).toString()) ?? paid;
+        final dueRes = double.tryParse((data['due'] ?? (totalCostRes - paidRes)).toString()) ?? (totalCostRes - paidRes);
+
+        // try to read server returned credit, fallback to computed dueRes
+        final creditRes = double.tryParse((data['credit_amount_stored'] ?? data['credit_amount'] ?? dueRes).toString()) ?? dueRes;
 
         showDialog(
           context: context,
@@ -590,7 +341,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
             backgroundColor: AppColorsDark.bgCardColor,
             title: Center(child: const Text('تم الاستلام', style: TextStyle(color: Colors.white))),
             content: Text(
-              'تم إضافة $added وحدة. الإجمالي: ${totalCostRes.toStringAsFixed(2)}. المدفوع: ${paid.toStringAsFixed(2)}. المتبقي: ${due.toStringAsFixed(2)}.',
+              'تم تسجيل الاستلام.\nالإجمالي: ${totalCostRes.toStringAsFixed(2)}\nالمدفوع: ${paidRes.toStringAsFixed(2)}\nالمتبقي/آجل: ${creditRes.toStringAsFixed(2)}.',
               style: const TextStyle(color: Colors.white),
             ),
             actions: [
@@ -603,7 +354,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
           ),
         );
 
-        // Reset form fields
+        // reset form
         _formKey.currentState!.reset();
         _cartonsCtrl.text = '0';
         _unitsCtrl.text = '0';
@@ -611,106 +362,32 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         _purchasePricePerCartonCtrl.clear();
         _purchasePricePerUnitCtrl.clear();
         _sellingPriceIfNewCtrl.clear();
-
         _existingUnitsCtrl.text = '0';
+        // set paid to total after reset to be consistent with computed default
         _paidAmountCtrl.text = totalCostRes.toStringAsFixed(2);
         _paidTouched = false;
 
-        await _loadAfterSubmit();
-
         setState(() => _loading = false);
         return true;
+      } else {
+        final message = data['message'] ?? 'حدث خطأ غير متوقع';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text(message))));
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ: $e')));
+      debugPrint('Submit error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('حدث خطأ أثناء الإرسال: $e'))));
     }
 
     setState(() => _loading = false);
     return false;
   }
 
-  /// helper to reload any totals after successful submit (optional)
-  Future<void> _loadAfterSubmit() async {
-    try {
-      // If you have functions to reload a parent page or totals, call them here.
-      // For example: reloading wallet/drawer totals if this screen shows them.
-      // Currently we keep it simple: just do nothing or you can integrate with a provider.
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  /// Open a picker dialog to choose an existing product and autofill fields
-  Future<void> _openProductPicker() async {
-    await _loadProducts();
-    String query = '';
-
-    await showDialog(
-      context: context,
-      builder: (ctx) {
-        return StatefulBuilder(builder: (ctx2, setStateDialog) {
-          final filtered = query.trim().isEmpty
-              ? _products
-              : _products.where((p) {
-            final name = (p['name'] ?? '').toString().toLowerCase();
-            final barcode = (p['barcode'] ?? '').toString().toLowerCase();
-            final q = query.toLowerCase();
-            return name.contains(q) || barcode.contains(q);
-          }).toList();
-
-          return AlertDialog(
-            backgroundColor: AppColorsDark.bgCardColor,
-            title: const Text('اختر منتج', style: TextStyle(color: Colors.white)),
-            content: SizedBox(
-              width: 520,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    decoration: const InputDecoration(hintText: 'بحث بالاسم او الباركود'),
-                    onChanged: (v) => setStateDialog(() => query = v),
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                  const SizedBox(height: 12),
-                  _loadingProducts
-                      ? const Center(child: CircularProgressIndicator())
-                      : SizedBox(
-                    height: 300,
-                    child: filtered.isEmpty
-                        ? const Center(child: Text('لا يوجد منتجات', style: TextStyle(color: Colors.white)))
-                        : ListView.separated(
-                      itemCount: filtered.length,
-                      separatorBuilder: (_, __) => const Divider(color: Colors.white24),
-                      itemBuilder: (_, i) {
-                        final prod = filtered[i];
-                        return ListTile(
-                          title: Text(prod['name'] ?? '-', style: const TextStyle(color: Colors.white)),
-                          subtitle: Text('Barcode: ${prod['barcode'] ?? '-'}', style: const TextStyle(color: Colors.white70)),
-                          trailing: Text('Price: ${prod['selling_price'] ?? '-'}', style: const TextStyle(color: Colors.white)),
-                          onTap: () {
-                            Navigator.of(ctx).pop();
-                            _barcodeCtrl.text = (prod['barcode'] ?? '').toString();
-                            _fillFieldsFromProduct(prod);
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('اغلاق')),
-            ],
-          );
-        });
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    // compute total to show live (optional)
     final computedTotal = _computeTotalCost();
 
     return Scaffold(
@@ -730,239 +407,231 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
           ),
         ),
       ),
+      // ADD: keyboard-aware padding and disable bounce
       body: Padding(
         padding: const EdgeInsets.all(12.0),
         child: SingleChildScrollView(
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: CustomFormField(
-                        controller: _barcodeCtrl,
-                        autoFocus: true,
-                        label: true,
-                        hint: 'باركود (اجباري)',
-                        focusNode: _barcodeFocusNode,
-                        textInputAction: TextInputAction.next,
-                        onFieldSubmitted: (v) async {
-                          await _lookupBarcode();
-                          FocusScope.of(context).requestFocus(_nameFocusNode);
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      tooltip: 'اختر منتج من القائمة',
-                      onPressed: _openProductPicker,
-                      icon: const Icon(Icons.list, color: Colors.white),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                CustomFormField(
-                  controller: _nameCtrl,
-                  label: true,
-
-                  hint: 'اسم المنتج',
-                  focusNode: _nameFocusNode,
-                  textInputAction: TextInputAction.next,
-                  onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_cartonsFocusNode),
-                ),
-                // const SizedBox(height: 8),
-                // Row(
-                //   children: [
-                //     Expanded(
-                //       child: CustomFormField(
-                //         controller: _existingUnitsCtrl,
-                //         hint: 'الوحدات الفردية الحالية (قابلة للتعديل)',
-                //         keyboardType: TextInputType.number,
-                //       ),
-                //     ),
-                //     const SizedBox(width: 8),
-                //     IconButton(
-                //       tooltip: 'حفظ التعديل على المخزون الحالي',
-                //       icon: const Icon(Icons.save, color: Colors.white),
-                //       onPressed: _applyStockEdit,
-                //     ),
-                //   ],
-                // ),
-
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: CustomFormField(
-                        controller: _cartonsCtrl,
-                        label: true,
-
-                        hint: 'عدد الكراتين',
-                        focusNode: _cartonsFocusNode,
-                        textInputAction: TextInputAction.next,
-                        onChanged: (_) => _updateComputedPaid(),
-                        onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_unitsFocusNode),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: CustomFormField(
-                        controller: _unitsCtrl,
-                        label: true,
-
-                        keyboardType: TextInputType.number,
-                        hint: 'عدد وحدات فردية',
-                        focusNode: _unitsFocusNode,
-                        textInputAction: TextInputAction.next,
-                        onChanged: (_) => _updateComputedPaid(),
-                        onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_unitsInCartonFocusNode),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: CustomFormField(
-                        controller: _unitsInCartonCtrl,
-                        label: true,
-                        keyboardType: TextInputType.number,
-                        hint: 'وحدات في الكرتونة',
-                        focusNode: _unitsInCartonFocusNode,
-                        textInputAction: TextInputAction.next,
-                        onChanged: (_) => _updateComputedPaid(),
-                        onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_purchaseCartonFocusNode),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: CustomFormField(
-                        controller: _purchasePricePerCartonCtrl,
-                        label: true,
-                        keyboardType: TextInputType.numberWithOptions(decimal: true),
-                        hint: 'سعر شراء للكرتونة',
-                        focusNode: _purchaseCartonFocusNode,
-                        textInputAction: TextInputAction.next,
-                        onChanged: (_) => _updateComputedPaid(),
-                        onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_purchaseUnitFocusNode),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                CustomFormField(
-                  controller: _purchasePricePerUnitCtrl,
-                  label: true,
-                  keyboardType: TextInputType.numberWithOptions(decimal: true),
-                  hint: 'سعر شراء للوحدة (اختياري)',
-                  focusNode: _purchaseUnitFocusNode,
-                  textInputAction: TextInputAction.next,
-                  onChanged: (_) => _updateComputedPaid(),
-                  onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_sellingFocusNode),
-                ),
-                const SizedBox(height: 10),
-                CustomFormField(
-                  controller: _sellingPriceIfNewCtrl,
-                  keyboardType: TextInputType.numberWithOptions(decimal: true),
-                  hint: 'سعر بيع للوحدة (إجباري إذا المنتج جديد)',
-                  focusNode: _sellingFocusNode,
-                  textInputAction: TextInputAction.next,
-                  onChanged: (_) => _updateComputedPaid(),
-                  onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_paidFocusNode),
-                ),
-                const SizedBox(height: 10),
-
-                // نوع الدفع - مدمج (نقدي/آجل) و محفظة إلكترونية
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      'نوع الدفع',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w600,
-                      ),
-
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: AppColorsDark.bgCardColor,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppColorsDark.strokColor),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 6,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: DropdownButtonFormField<String>(
-                        value: _paymentType,
-                        items: const [
-                          DropdownMenuItem(value: 'cash_or_credit', child: Text('نقدي / آجل', style: TextStyle(color: Colors.white))),
-                          DropdownMenuItem(value: 'wallet', child: Text('محفظة إلكترونية', style: TextStyle(color: Colors.white))),
-                        ],
-                        onChanged: (v) {
-                          setState(() => _paymentType = v ?? 'cash_or_credit');
-                          _updateComputedPaid();
-                        },
-                        dropdownColor: AppColorsDark.bgCardColor,
-                        style: const TextStyle(color: Colors.white, fontSize: 15),
-                        iconEnabledColor: Colors.white70,
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(horizontal: 0, vertical: 6),
+          physics: const ClampingScrollPhysics(),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          child: Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom + 12.0),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Barcode + lookup button
+                  Row(
+                    children: [
+                      Expanded(
+                        child: CustomFormField(
+                          controller: _barcodeCtrl,
+                          autoFocus: true,
+                          label: true,
+                          hint: 'باركود (اختياري)',
+                          focusNode: _barcodeFocusNode,
+                          textInputAction: TextInputAction.next,
+                          onFieldSubmitted: (_) {
+                            _lookupBarcode();
+                            FocusScope.of(context).requestFocus(_nameFocusNode);
+                          },
                         ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  ),
 
-                const SizedBox(height: 30),
-                // show computed total for clarity (white text)
-                Text(
-                  'إجمالي التكلفة: ${computedTotal.toStringAsFixed(2)}',
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white,fontSize: 20),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 10),
-                CustomFormField(
-                  controller: _paidAmountCtrl,
-                  keyboardType: TextInputType.numberWithOptions(decimal: true),
-                  hint: 'المبلغ المدفوع الآن',
-                  focusNode: _paidFocusNode,
-                  textInputAction: TextInputAction.done,
-                  onChanged: (v) {
-                    _paidTouched = true;
-                  },
-                  onFieldSubmitted: (_) async {
-                    // when user presses done on the last field, submit the form
-                    await _submit();
-                  },
-                ),
-                const SizedBox(height: 20),
-                CustomButton(
-                  text: 'تسجيل الاستلام',
-                  onPressed: () async {
-                    final ok = await _submit();
-                    if (ok) {
-                      Navigator.pushNamedAndRemoveUntil(
-                        context,
-                        CashierScreen.routName,
-                            (Route<dynamic> route) => false,
-                      );
-                    }
-                  },
-                  isLoading: _loading,
-                )
-              ],
+                  const SizedBox(height: 10),
+                  CustomFormField(
+                    controller: _nameCtrl,
+                    label: true,
+                    hint: 'اسم المنتج',
+                    focusNode: _nameFocusNode,
+                    textInputAction: TextInputAction.next,
+                    validator: (v) {
+                      if (v == null || v.trim().isEmpty) return 'اسم المنتج مطلوب';
+                      return null;
+                    },
+                    onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_cartonsFocusNode),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: CustomFormField(
+                          controller: _cartonsCtrl,
+                          label: true,
+                          hint: 'عدد الكراتين',
+                          focusNode: _cartonsFocusNode,
+                          textInputAction: TextInputAction.next,
+                          keyboardType: TextInputType.number,
+                          onChanged: (_) => _updateComputedPaid(),
+                          onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_unitsFocusNode),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: CustomFormField(
+                          controller: _unitsCtrl,
+                          label: true,
+                          keyboardType: TextInputType.number,
+                          hint: 'عدد وحدات فردية',
+                          focusNode: _unitsFocusNode,
+                          textInputAction: TextInputAction.next,
+                          onChanged: (_) => _updateComputedPaid(),
+                          onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_unitsInCartonFocusNode),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: CustomFormField(
+                          controller: _unitsInCartonCtrl,
+                          label: true,
+                          keyboardType: TextInputType.number,
+                          hint: 'وحدات في الكرتونة',
+                          focusNode: _unitsInCartonFocusNode,
+                          textInputAction: TextInputAction.next,
+                          onChanged: (_) => _updateComputedPaid(),
+                          onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_purchaseCartonFocusNode),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: CustomFormField(
+                          controller: _purchasePricePerCartonCtrl,
+                          label: true,
+                          keyboardType: TextInputType.numberWithOptions(decimal: true),
+                          hint: 'سعر شراء للكرتونة',
+                          focusNode: _purchaseCartonFocusNode,
+                          textInputAction: TextInputAction.next,
+                          onChanged: (_) => _updateComputedPaid(),
+                          onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_purchaseUnitFocusNode),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  CustomFormField(
+                    controller: _purchasePricePerUnitCtrl,
+                    label: true,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
+                    hint: 'سعر شراء للوحدة (اختياري)',
+                    focusNode: _purchaseUnitFocusNode,
+                    textInputAction: TextInputAction.next,
+                    onChanged: (_) => _updateComputedPaid(),
+                    onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_sellingFocusNode),
+                  ),
+                  const SizedBox(height: 10),
+                  CustomFormField(
+                    controller: _sellingPriceIfNewCtrl,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
+                    hint: 'سعر بيع للوحدة (إجباري إذا المنتج جديد)',
+                    focusNode: _sellingFocusNode,
+                    textInputAction: TextInputAction.next,
+                    onChanged: (_) => _updateComputedPaid(),
+                    onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_paidFocusNode),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // existing units (informational)
+                  CustomFormField(
+                    controller: _existingUnitsCtrl,
+                    hint: 'الوحدات الحالية (معلومة من المنتج)',
+                    keyboardType: TextInputType.number,
+                  ),
+
+                  const SizedBox(height: 10),
+
+                  // نوع الدفع
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        'نوع الدفع',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: AppColorsDark.bgCardColor,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppColorsDark.strokColor),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.1),
+                              blurRadius: 6,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: DropdownButtonFormField<String>(
+                          value: _paymentType,
+                          items: const [
+                            DropdownMenuItem(value: 'cash_or_credit', child: Text('نقدي / آجل', style: TextStyle(color: Colors.white))),
+                            DropdownMenuItem(value: 'wallet', child: Text('محفظة إلكترونية', style: TextStyle(color: Colors.white))),
+                          ],
+                          onChanged: (v) {
+                            setState(() => _paymentType = v ?? 'cash_or_credit');
+                            _updateComputedPaid();
+                          },
+                          dropdownColor: AppColorsDark.bgCardColor,
+                          style: const TextStyle(color: Colors.white, fontSize: 15),
+                          iconEnabledColor: Colors.white70,
+                          decoration: const InputDecoration(
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.symmetric(horizontal: 0, vertical: 6),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 30),
+                  Text(
+                    'إجمالي التكلفة: ${computedTotal.toStringAsFixed(2)}',
+                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 20),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 10),
+                  CustomFormField(
+                    controller: _paidAmountCtrl,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
+                    hint: 'المبلغ المدفوع الآن',
+                    focusNode: _paidFocusNode,
+                    textInputAction: TextInputAction.done,
+                    onChanged: (v) {
+                      _paidTouched = true;
+                    },
+                    onFieldSubmitted: (_) async {
+                      await _submit();
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                  CustomButton(
+                    text: 'تسجيل الاستلام',
+                    onPressed: () async {
+                      final ok = await _submit();
+                      if (ok) {
+                        Navigator.pushNamedAndRemoveUntil(
+                          context,
+                          CashierScreen.routName,
+                              (Route<dynamic> route) => false,
+                        );
+                      }
+                    },
+                    isLoading: _loading,
+                  ),
+                  const SizedBox(height: 20),
+                ],
+              ),
             ),
           ),
         ),

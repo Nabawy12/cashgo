@@ -1,20 +1,16 @@
-
-
 import 'package:cashgo/screens/admin/product_management_screen.dart' show ProductManagementScreen;
 import 'package:cashgo/screens/admin/profit_screen.dart';
 import 'package:cashgo/screens/admin/receipts.dart';
 import 'package:cashgo/screens/admin/stock_screen.dart';
 import 'package:cashgo/screens/admin/waletScreen.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/svg.dart';
-
 import '../../services/db/db_helper.dart';
 import '../../utils/colors.dart';
 import '../../widgets/Admin/DashBoard/dash_widget.dart';
 import '../Notification/notification.dart';
 import 'AdminCreditPurchases.dart';
 import 'AdminPaidPurchases.dart';
-import 'FinancialAccounts.dart' hide receiptsScreen;
+import 'FinancialAccounts.dart';
 import 'Settings.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
@@ -50,12 +46,17 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _loadUnseen();
   }
 
+
+
+
+
+
   @override
   Widget build(BuildContext context) {
 
     return Scaffold(
       backgroundColor: AppColorsDark.bgColor,
-        extendBodyBehindAppBar: false, // مهم جدا
+        extendBodyBehindAppBar: false,
         appBar: AppBar(
           scrolledUnderElevation: 0,
           iconTheme: const IconThemeData(color: Colors.white),
