@@ -122,9 +122,10 @@ class _receiptsScreenState extends State<receiptsScreen> {
 
         // 2) check payment_type / paymentMethod text for credit keywords
         final String pt = (inv['payment_type'] ?? '').toString().toLowerCase();
-        if (pt.contains('credit') || pt.contains('card') || pt.contains('كريدت') || pt.contains('كرديت') || pt.contains('آجل') || pt.contains('اجل') || pt.contains('wallet') || pt.contains('debt')) {
-          return false; // exclude
+        if (pt.contains('credit') || pt.contains('card') || pt.contains('كريدت') || pt.contains('كرديت') || pt.contains('آجل') || pt.contains('اجل') || pt.contains('debt')) {
+          return false; // exclude credit-like only
         }
+
 
         // otherwise keep
         return true;

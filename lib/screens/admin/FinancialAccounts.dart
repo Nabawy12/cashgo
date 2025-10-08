@@ -34,6 +34,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   double _startingAmount = 0.0;
   double _maxLimit = 0.0;
   double _cashInWallet = 0.0;
+  double _startingInWallet = 0.0;
   double _totalInDrawer = 0.0;
   double _salesNet = 0.0;
   double _purchasePaidCash = 0.0;
@@ -88,6 +89,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           _startingAmount = rec.startingAmount;
           _maxLimit = rec.maxLimit;
           _cashInWallet = rec.cashInWallet;
+          _startingInWallet = rec.cashInWallet;
           // قد تكون القيمة من السيرفر null => نتعامل معها ونعرض 0.0 في الحالة دي
           _totalInDrawer = rec.totalInDrawer ?? 0.0;
 
@@ -603,7 +605,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         _purchasePaidOnCredit = totalPurchasesPaidOnCredit;
 
         // تحديث النص في حقول التحرير إن رغبت
-        _walletController.text = _cashInWallet.toStringAsFixed(2);
+        _walletController.text = _startingInWallet.toString();
       });
     }
 
@@ -1020,7 +1022,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                       const SizedBox(height: 10),
                       _buildSummaryRow('صافي مبيعات نقدي', _salesNet),
                       const SizedBox(height: 10),
-                      _buildSummaryRow('صافي مبيعات المحفظة الإلكترونية', 0.0),
+                      _buildSummaryRow('صافي مبيعات المحفظة الإلكترونية', _cashInWallet),
                       const SizedBox(height: 10),
                       _buildSummaryRow('مدفوعات مشتريات (نقدي)', _purchasePaidCash),
                       const SizedBox(height: 8),

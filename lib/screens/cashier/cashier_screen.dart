@@ -509,7 +509,6 @@ class _CashierScreenState extends State<CashierScreen> {
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
-        double dialogWallet = _walletAmount;
         bool isProcessing = false;
         String? errorMessage; // 🔴 هنا الرسالة
 
@@ -640,451 +639,6 @@ class _CashierScreenState extends State<CashierScreen> {
 
 
   // ------------- Discount dialog -------------
-  Future<void> _showDiscountDialog() async {
-    final options = List.generate(11, (i) => i * 5); // 0,5,10,...,50
-    int selected = _discountValue.toInt();
-    String discountMode = _discountType; // "percent" or "amount"
-    TextEditingController valueController = TextEditingController();
-
-    final res = await showDialog<Map<String, dynamic>?>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return Directionality(
-          textDirection: TextDirection.rtl,
-          child: StatefulBuilder(builder: (ctx2, setState2) {
-            return AlertDialog(
-              backgroundColor: AppColorsDark.bgCardColor,
-              title: const Center(
-                child: Text('اختر نوع الخصم', style: TextStyle(color: Colors.white)),
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // اختيار نوع الخصم
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      ChoiceChip(
-
-                        label:Text(
-                            "نسبة %",
-                          style: TextStyle(
-                            fontSize: 17,
-                            color: Colors.white,
-                          ),
-                        ),
-                        selected: discountMode == 'percent',
-                        onSelected: (_) {
-                          setState2(() => discountMode = 'percent');
-                        },
-                        backgroundColor: AppColorsDark.bgCardColor,
-                        selectedColor: AppColorsDark.bgCardColor,
-                        checkmarkColor: AppColorsDark.mainColor,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          side: BorderSide(
-                            color:AppColorsDark.bgColor,
-                            width: 2,
-                          ),
-                      )
-                      ),
-                      const SizedBox(width: 8),
-                      ChoiceChip(
-                        label:Text(
-                            "مبلغ ثابت",
-                          style: TextStyle(
-                            fontSize: 17,
-                            color: Colors.white,
-                          ),
-                        ),
-                        selected: discountMode == 'amount',
-                        onSelected: (_) {
-                          setState2(() => discountMode = 'amount');
-                        },
-                          backgroundColor: AppColorsDark.bgCardColor,
-                          selectedColor: AppColorsDark.bgCardColor,
-                          checkmarkColor: AppColorsDark.mainColor,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            side: BorderSide(
-                              color: AppColorsDark.bgColor ,
-                              width: 2,
-                            ),
-                          )
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  if (discountMode == 'percent')
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: options.map((v) {
-                        final isSelected = v == selected;
-                        return ChoiceChip(
-                          label: Text('$v%'),
-                          selected: isSelected,
-                          backgroundColor: AppColorsDark.bgColor,
-                          selectedColor: Colors.green,
-                          labelStyle: const TextStyle(color: Colors.white),
-                          onSelected: (_) {
-                            setState2(() => selected = v);
-                          },
-                        );
-                      }).toList(),
-                    ),
-                  if (discountMode == 'amount')
-                    CustomFormField(
-                        controller: valueController,
-                        hint: "ادخل قيمة الخصم",
-
-                    )
-                ],
-              ),
-              actions: [
-                CustomButton(
-                  infinity: false,
-                  text: 'تطبيق',
-                  onPressed: () {
-                    if (discountMode == 'amount') {
-                      final val = double.tryParse(valueController.text) ?? 0.0;
-                      Navigator.of(ctx2).pop({"type": "amount", "value": val});
-                    } else {
-                      Navigator.of(ctx2).pop({"type": "percent", "value": selected.toDouble()});
-                    }
-                  },
-                ),
-                SizedBox(width: 10,),
-                TextButton(
-                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
-                  onPressed: () => Navigator.of(ctx2).pop(null),
-                  child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
-                ),
-              ],
-            );
-          }),
-        );
-      },
-    );
-
-    if (res != null) {
-      setState(() {
-        _discountType = res["type"] as String;
-        _discountValue = (res["value"] as num).toDouble();
-        // لو عندك متغيرات لحسابات الضريبة أو خصومات إضافية - حدثها هنا أيضاً
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            _discountType == "percent"
-                ? 'تم تطبيق خصم ${_discountValue.toStringAsFixed(0)}% — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}'
-                : 'تم تطبيق خصم بقيمة ${_discountValue.toStringAsFixed(2)} — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}',
-          ),
-        ),
-      );
-
-    }
-  }
-
-  // تم إضافة باراميتر paymentMethod فقط (قيمة افتراضية 'cash')
-  Future<void> _saveSale({required bool requireFullPayment, String paymentMethod = 'cash'}) async {
-    if (_cart.isEmpty) return;
-
-    // إجمالي قبل الخصم
-    final subtotal = _total;
-
-    // طَبّع نوع الخصم ليطابق ReceiptWidget ('percent' أو 'fixed')
-    final normalizedDiscountType = (_discountType == 'amount') ? 'fixed' : _discountType;
-
-    // حساب قيمة الخصم والتسمية
-    double discountAmount = 0.0;
-    String discountLabel = '';
-    if (normalizedDiscountType == 'percent' && _discountValue > 0) {
-      final pct = _discountValue.clamp(0.0, 100.0);
-      discountAmount = subtotal * (pct / 100.0);
-      discountLabel = '${pct.toStringAsFixed(0)}%';
-    } else if (normalizedDiscountType == 'fixed' && _discountValue > 0) {
-      discountAmount = _discountValue > subtotal ? subtotal : _discountValue;
-      discountLabel = discountAmount.toStringAsFixed(2);
-    }
-
-    // الإجمالي بعد الخصم
-    final total = (subtotal - discountAmount).clamp(0.0, double.infinity);
-
-    String? customerName;
-    if (paymentMethod == 'credit') {
-      customerName = await _askForCustomerName();
-      if (customerName == null || customerName.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة')),
-        );
-        return;
-      }
-    }
-
-    final paid = (paymentMethod == 'card' || paymentMethod == 'wallet') ? total : _paid;
-
-    if (requireFullPayment && paid < total) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('العميل لم يدفع كامل المبلغ')),
-      );
-      return;
-    }
-
-    setState(() => _saving = true);
-
-    try {
-      final cashierNameToUse = Session.currentUsername ?? widget.cashierUsername;
-      final changeAmount = (paid >= total) ? (paid - total) : 0.0;
-
-      final List<Map<String, dynamic>> cartPayload = [];
-      _cart.forEach((productId, cartItem) {
-        cartPayload.add({
-          'product_id': productId,
-          'barcode': cartItem.product.barcode,
-          'name': cartItem.product.name,
-          'price': cartItem.product.sellingPrice,
-          'qty': cartItem.quantity,
-        });
-      });
-
-      final apiUrl = Uri.parse('https://nabawisolution.com/invoice_reciept.php');
-
-      final payload = {
-        'cart': cartPayload,
-        'subtotal': subtotal, // إجمالي قبل الخصم (حافظ على المفتاح الأصلي)
-        'total': total,       // الإجمالي النهائي بعد الخصم
-        'paid': paid,
-        'requireFullPayment': requireFullPayment,
-        'paymentMethod': paymentMethod,
-        'cashierUsername': cashierNameToUse,
-        'discountType': normalizedDiscountType,
-        'discountValue': _discountValue,
-        // حقول واضحة ومساعدة للسيرفر / لوج
-        'subtotal_before_discount': subtotal,
-        'discount_amount': discountAmount,
-        'discount_label': discountLabel,
-        'total_after_discount': total,
-        'customerName': customerName,
-      };
-
-      final resp = await http.post(
-        apiUrl,
-        headers: {'Content-Type': 'application/json; charset=utf-8'},
-        body: jsonEncode(payload),
-      );
-
-      if (resp.statusCode != 200) {
-        String message = 'فشل حفظ الفاتورة (خطاء من السيرفر).';
-        try {
-          final parsed = jsonDecode(resp.body);
-          if (parsed is Map && parsed['error'] != null) message = parsed['error'].toString();
-        } catch (_) {}
-        throw Exception(message);
-      }
-
-      final body = jsonDecode(resp.body);
-      if (body == null || body is! Map || body['success'] != true) {
-        final serverMsg = (body != null && body['error'] != null) ? body['error'] : 'إستجابة غير متوقعة من السيرفر';
-        throw Exception(serverMsg);
-      }
-
-      final serverMessage = (body['message'] ?? 'تم الحفظ بنجاح').toString();
-      final saleId = body['sale_id'];
-
-      // إعلام المستخدم مع توضيح قبل/بعد الخصم
-      final beforeStr = subtotal.toStringAsFixed(2);
-      final afterStr = total.toStringAsFixed(2);
-
-      if (paymentMethod == 'credit') {
-        final remaining = total - paid;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${remaining.toStringAsFixed(2)}')),
-        );
-      } else if (paymentMethod == 'card') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم الحفظ — تم الدفع بالكارت بالكامل')),
-        );
-      } else if (paymentMethod == 'wallet') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(serverMessage)),
-        );
-      } else {
-        final change = (paid - total).toStringAsFixed(2);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم الحفظ — الإجمالي قبل الخصم: $beforeStr  — بعد الخصم: $afterStr  — الباقي: $change')),
-        );
-      }
-
-      // طباعة الإيصال مع تمرير النوع المطبع
-      bool printSuccess = false;
-      try {
-        await Future.delayed(const Duration(milliseconds: 250));
-        final printedCart = Map<int, CartItem>.from(_cart);
-
-        final receiptWidget = ReceiptWidget(
-          cart: printedCart,
-          paid: paid,
-          cashierUsername: cashierNameToUse,
-          width: 220,
-          useCairo: true,
-          discountType: normalizedDiscountType, // مهم: 'percent' أو 'fixed'
-          discountValue: _discountValue,
-        );
-
-        await PrintService.printWidgetUsingOverlay(context, receiptWidget, width: 220, pixelRatio: 2.0);
-        printSuccess = true;
-        debugPrint('Print succeeded (overlay method).');
-      } catch (e, st) {
-        debugPrint('Print failed (overlay method): $e\n$st');
-      }
-
-      if (!printSuccess) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('فشل الطباعة. يمكنك المحاولة لاحقًا من صفحة الطباعة.')),
-        );
-      }
-
-      setState(() {
-        _cart.clear();
-        _paidController.clear();
-        _discountValue = 0.0;
-        _discountType = 'percent'; // إعادة الحالة إلى الافتراضي إن رغبت
-        debugPrint("Cart cleared, items = ${_cart.length}");
-      });
-
-      await _loadTotalProfit();
-    } catch (e, st) {
-      debugPrint('Failed to save sale (client) — error: $e\nstack:\n$st');
-
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('خطأ أثناء حفظ الفاتورة'),
-          content: Text(e.toString()),
-          actions: [TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('حسناً'))],
-        ),
-      );
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('فشل حفظ الفاتورة: $e')),
-      );
-    } finally {
-      setState(() => _saving = false);
-      FocusScope.of(context).requestFocus(_barcodeFocus);
-    }
-  }
-  bool _closingShift = false;
-  final ApiServiceClose_shieft _apiService = ApiServiceClose_shieft(baseUrl: 'https://nabawisolution.com');
-
-  // 3) دالة إغلاق الشفت (تجميع + طباعة)
-  Future<void> _closeShift() async {
-    setState(() => _closingShift = true);
-    try {
-      final now = DateTime.now();
-      final startOfDay = DateTime(now.year, now.month, now.day);
-      final fromDateStr = startOfDay.toIso8601String().split('T').first;
-
-      final reportWidget = ShiftReportWidget(
-        cashierUsername: Session.currentUsername!,
-        fromDate: fromDateStr,
-        toDate: Session.currentDateTime!,
-        totals: {
-          'sales_total': _totalCash!,
-          'sales_paid_cash': _wallet_received!,
-          'sales_paid_card': _cash_received!,
-          'purchases_paid': _purchases_paid!,
-          'user_starting': _startingAmount,
-          'user_net_sales': _totalCash!,
-          'drawer_for_cashier': _totalWallet!,
-        },
-        width: 280,
-        drawerCurrent: _totalCash!,
-        cardForCashier: _cashInWallet + _totalWallet!,
-        creditOutstandingForCashier: _cash_with_credit!,
-        purchaseReceiptsOutstandingForUser: _purchases_credit!,
-      );
-
-      // 1) محاولة طباعة التقرير
-      try {
-        await PrintService.printWidgetUsingOverlay(context, reportWidget, width: 280, pixelRatio: 2.0);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم طباعة تقرير الشفت لليوم')));
-      } catch (e, st) {
-        debugPrint('Shift print failed: $e\n$st');
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل طباعة تقرير الشفت')));
-      }
-
-      // 2) إرسال start_time إلى السيرفر باستخدام Session.currentDateTime! مباشرة
-      try {
-        final dynamic startTimeValue = Session.currentDateTime!; // قد يكون String أو DateTime أو epoch
-        debugPrint('Sending start_time to server: $startTimeValue');
-
-        final apiResp = await _apiService.closeShift(
-          cashierName: Session.currentUsername!,
-          startTimeParam: startTimeValue,
-        );
-
-        // طباعة النتيجة للتشخيص أثناء التطوير
-        debugPrint('closeShift API response: success=${apiResp.success}, message=${apiResp.message}, id=${apiResp.insertId}, start=${apiResp.startTime}, end=${apiResp.endTime}');
-
-        if (apiResp.success) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('تم حفظ قفل الشيفت على السيرفر (id: ${apiResp.insertId ?? '-'})'),
-            backgroundColor: Colors.green[700],
-          ));
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('فشل حفظ الشفت على السيرفر: ${apiResp.message}'),
-            backgroundColor: Colors.red[700],
-          ));
-        }
-      } catch (e, st) {
-        debugPrint('API closeShift failed: $e\n$st');
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء حفظ الشفت: $e')));
-      }
-    } catch (e, st) {
-      debugPrint('Error while closing shift: $e\n$st');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تقفيل الشفت: $e')));
-    } finally {
-      setState(() => _closingShift = false);
-    }
-  }
-  Future<void> _confirmExit() async {
-    final shouldExit = await showDialog<bool>(
-      context: context,
-      builder: (context) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          backgroundColor: AppColorsDark.bgCardColor,
-          title: const Text('تأكيد الخروج',style: TextStyle(color: Colors.white),),
-          content: const Text('هل أنت متأكد من الخروج؟',style: TextStyle(color: Colors.white70),),
-          actions: [
-            TextButton(
-
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('تأكيد',style: TextStyle(color: Colors.white),),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('إلغاء',style: TextStyle(color: Colors.white70),),
-            ),
-
-          ],
-        ),
-      ),
-    );
-
-    if (shouldExit == true && mounted) {
-      // تذهب إلى LoginScreen وتزيل باقي الشاشة من الستاك
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const LoginScreen()),
-            (route) => false,
-      );
-    }
-  }
 
 
   Future<void> _openNameSearchDialog({String initialQuery = ''}) async {
@@ -1560,7 +1114,195 @@ class _CashierScreenState extends State<CashierScreen> {
   }
 ///////////////////////////////////////////////////////////////////////////////
   final InsertFinancialAccountService _service = InsertFinancialAccountService();
+  Future<void> _saveSale({required bool requireFullPayment, String paymentMethod = 'cash'}) async {
+    if (_cart.isEmpty) return;
 
+    // إجمالي قبل الخصم
+    final subtotal = _total;
+
+    // طَبّع نوع الخصم ليطابق ReceiptWidget ('percent' أو 'fixed')
+    final normalizedDiscountType = (_discountType == 'amount') ? 'fixed' : _discountType;
+
+    // حساب قيمة الخصم والتسمية
+    double discountAmount = 0.0;
+    String discountLabel = '';
+    if (normalizedDiscountType == 'percent' && _discountValue > 0) {
+      final pct = _discountValue.clamp(0.0, 100.0);
+      discountAmount = subtotal * (pct / 100.0);
+      discountLabel = '${pct.toStringAsFixed(0)}%';
+    } else if (normalizedDiscountType == 'fixed' && _discountValue > 0) {
+      discountAmount = _discountValue > subtotal ? subtotal : _discountValue;
+      discountLabel = discountAmount.toStringAsFixed(2);
+    }
+
+    // الإجمالي بعد الخصم
+    final total = (subtotal - discountAmount).clamp(0.0, double.infinity);
+
+    String? customerName;
+    if (paymentMethod == 'credit') {
+      customerName = await _askForCustomerName();
+      if (customerName == null || customerName.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة')),
+        );
+        return;
+      }
+    }
+
+    final paid = (paymentMethod == 'card' || paymentMethod == 'wallet') ? total : _paid;
+
+    if (requireFullPayment && paid < total) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('العميل لم يدفع كامل المبلغ')),
+      );
+      return;
+    }
+
+    setState(() => _saving = true);
+
+    try {
+      final cashierNameToUse = Session.currentUsername ?? widget.cashierUsername;
+      final changeAmount = (paid >= total) ? (paid - total) : 0.0;
+
+      final List<Map<String, dynamic>> cartPayload = [];
+      _cart.forEach((productId, cartItem) {
+        cartPayload.add({
+          'product_id': productId,
+          'barcode': cartItem.product.barcode,
+          'name': cartItem.product.name,
+          'price': cartItem.product.sellingPrice,
+          'qty': cartItem.quantity,
+        });
+      });
+
+      final apiUrl = Uri.parse('https://nabawisolution.com/invoice_reciept.php');
+
+      final payload = {
+        'cart': cartPayload,
+        'subtotal': subtotal, // إجمالي قبل الخصم (حافظ على المفتاح الأصلي)
+        'total': total,       // الإجمالي النهائي بعد الخصم
+        'paid': paid,
+        'requireFullPayment': requireFullPayment,
+        'paymentMethod': paymentMethod,
+        'cashierUsername': cashierNameToUse,
+        'discountType': normalizedDiscountType,
+        'discountValue': _discountValue,
+        // حقول واضحة ومساعدة للسيرفر / لوج
+        'subtotal_before_discount': subtotal,
+        'discount_amount': discountAmount,
+        'discount_label': discountLabel,
+        'total_after_discount': total,
+        'customerName': customerName,
+      };
+
+      final resp = await http.post(
+        apiUrl,
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+        body: jsonEncode(payload),
+      );
+
+      if (resp.statusCode != 200) {
+        String message = 'فشل حفظ الفاتورة (خطاء من السيرفر).';
+        try {
+          final parsed = jsonDecode(resp.body);
+          if (parsed is Map && parsed['error'] != null) message = parsed['error'].toString();
+        } catch (_) {}
+        throw Exception(message);
+      }
+
+      final body = jsonDecode(resp.body);
+      if (body == null || body is! Map || body['success'] != true) {
+        final serverMsg = (body != null && body['error'] != null) ? body['error'] : 'إستجابة غير متوقعة من السيرفر';
+        throw Exception(serverMsg);
+      }
+
+      final serverMessage = (body['message'] ?? 'تم الحفظ بنجاح').toString();
+      final saleId = body['sale_id'];
+
+      // إعلام المستخدم مع توضيح قبل/بعد الخصم
+      final beforeStr = subtotal.toStringAsFixed(2);
+      final afterStr = total.toStringAsFixed(2);
+
+      if (paymentMethod == 'credit') {
+        final remaining = total - paid;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${remaining.toStringAsFixed(2)}')),
+        );
+      } else if (paymentMethod == 'card') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم الحفظ — تم الدفع بالكارت بالكامل')),
+        );
+      } else if (paymentMethod == 'wallet') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(serverMessage)),
+        );
+      } else {
+        final change = (paid - total).toStringAsFixed(2);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم الحفظ — الإجمالي قبل الخصم: $beforeStr  — بعد الخصم: $afterStr  — الباقي: $change')),
+        );
+      }
+
+      // طباعة الإيصال مع تمرير النوع المطبع
+      bool printSuccess = false;
+      try {
+        await Future.delayed(const Duration(milliseconds: 250));
+        final printedCart = Map<int, CartItem>.from(_cart);
+
+        final receiptWidget = ReceiptWidget(
+          cart: printedCart,
+          paid: paid,
+          cashierUsername: cashierNameToUse,
+          width: 220,
+          useCairo: true,
+          discountType: normalizedDiscountType, // مهم: 'percent' أو 'fixed'
+          discountValue: _discountValue,
+        );
+
+        await PrintService.printWidgetUsingOverlay(context, receiptWidget, width: 220, pixelRatio: 2.0);
+        printSuccess = true;
+        debugPrint('Print succeeded (overlay method).');
+      } catch (e, st) {
+        debugPrint('Print failed (overlay method): $e\n$st');
+      }
+
+      if (!printSuccess) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('فشل الطباعة. يمكنك المحاولة لاحقًا من صفحة الطباعة.')),
+        );
+      }
+
+      setState(() {
+        _cart.clear();
+        _paidController.clear();
+        _discountValue = 0.0;
+        _discountType = 'percent'; // إعادة الحالة إلى الافتراضي إن رغبت
+        debugPrint("Cart cleared, items = ${_cart.length}");
+      });
+
+      await _loadTotalProfit();
+    } catch (e, st) {
+      debugPrint('Failed to save sale (client) — error: $e\nstack:\n$st');
+
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('خطأ أثناء حفظ الفاتورة'),
+          content: Text(e.toString()),
+          actions: [TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('حسناً'))],
+        ),
+      );
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('فشل حفظ الفاتورة: $e')),
+      );
+    } finally {
+      setState(() => _saving = false);
+      FocusScope.of(context).requestFocus(_barcodeFocus);
+    }
+  }
+  bool _closingShift = false;
+  final ApiServiceClose_shieft _apiService = ApiServiceClose_shieft(baseUrl: 'https://nabawisolution.com');
   Future<void> _loadFinancials() async {
     if (!mounted) return;
     try {
@@ -1586,8 +1328,38 @@ class _CashierScreenState extends State<CashierScreen> {
       }
     }
   }
+  Future<void> _confirm_CloseShift() async {
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      builder: (context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: AppColorsDark.bgCardColor,
+          title: const Text('تأكيد عمليه تقفيله الشيفت', style: TextStyle(color: Colors.white)),
+          content: const Text('هل أنت متأكد من تاكيد هذه العمليه؟', style: TextStyle(color: Colors.white70)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true), // غلق الدايالوج وإرجاع true
+              child: const Text('تأكيد', style: TextStyle(color: Colors.white)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('إلغاء', style: TextStyle(color: Colors.white70)),
+            ),
+          ],
+        ),
+      ),
+    );
 
-
+    if (shouldExit == true && mounted) {
+      await _closeShift(); // الآن ننفّذ الإغلاق فعليًا بعد غلق الدايالوج
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+            (route) => false,
+      );
+    }
+  }
   Future<void> _loadTotalProfit() async {
     setState(() {
       _loading = true;
@@ -1638,7 +1410,254 @@ class _CashierScreenState extends State<CashierScreen> {
       });
     }
   }
+  Future<void> _confirmExit() async {
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      builder: (context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: AppColorsDark.bgCardColor,
+          title: const Text('تأكيد الخروج',style: TextStyle(color: Colors.white),),
+          content: const Text('هل أنت متأكد من الخروج؟',style: TextStyle(color: Colors.white70),),
+          actions: [
+            TextButton(
 
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('تأكيد',style: TextStyle(color: Colors.white),),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('إلغاء',style: TextStyle(color: Colors.white70),),
+            ),
+
+          ],
+        ),
+      ),
+    );
+
+    if (shouldExit == true && mounted) {
+      // تذهب إلى LoginScreen وتزيل باقي الشاشة من الستاك
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+            (route) => false,
+      );
+    }
+  }
+  Future<void> _closeShift() async {
+    setState(() => _closingShift = true);
+    try {
+      final now = DateTime.now();
+      final startOfDay = DateTime(now.year, now.month, now.day);
+      final fromDateStr = startOfDay.toIso8601String().split('T').first;
+
+      final reportWidget = ShiftReportWidget(
+        cashierUsername: Session.currentUsername!,
+        fromDate: fromDateStr,
+        toDate: Session.currentDateTime!,
+        totals: {
+          'sales_total': _totalCash!,
+          'sales_paid_cash': _wallet_received!,
+          'sales_paid_card': _cash_received!,
+          'purchases_paid': _purchases_paid!,
+          'user_starting': _startingAmount,
+          'user_net_sales': _totalCash!,
+          'drawer_for_cashier': _totalWallet!,
+        },
+        width: 280,
+        drawerCurrent: _totalCash!,
+        cardForCashier: _cashInWallet + _totalWallet!,
+        creditOutstandingForCashier: _cash_with_credit!,
+        purchaseReceiptsOutstandingForUser: _purchases_credit!,
+      );
+
+      // 1) محاولة طباعة التقرير
+      try {
+        await PrintService.printWidgetUsingOverlay(context, reportWidget, width: 280, pixelRatio: 2.0);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم طباعة تقرير الشفت لليوم')));
+      } catch (e, st) {
+        debugPrint('Shift print failed: $e\n$st');
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل طباعة تقرير الشفت')));
+      }
+
+      // 2) إرسال start_time إلى السيرفر باستخدام Session.currentDateTime! مباشرة
+      try {
+        final dynamic startTimeValue = Session.currentDateTime!; // قد يكون String أو DateTime أو epoch
+        debugPrint('Sending start_time to server: $startTimeValue');
+
+        final apiResp = await _apiService.closeShift(
+          cashierName: Session.currentUsername!,
+          startTimeParam: startTimeValue,
+        );
+
+        // طباعة النتيجة للتشخيص أثناء التطوير
+        debugPrint('closeShift API response: success=${apiResp.success}, message=${apiResp.message}, id=${apiResp.insertId}, start=${apiResp.startTime}, end=${apiResp.endTime}');
+
+        if (apiResp.success) {
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('فشل حفظ الشفت على السيرفر: ${apiResp.message}'),
+            backgroundColor: Colors.red[700],
+          ));
+        }
+      } catch (e, st) {
+        debugPrint('API closeShift failed: $e\n$st');
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء حفظ الشفت: $e')));
+      }
+    } catch (e, st) {
+      debugPrint('Error while closing shift: $e\n$st');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تقفيل الشفت: $e')));
+    } finally {
+      setState(() => _closingShift = false);
+    }
+  }
+  Future<void> _showDiscountDialog() async {
+    final options = List.generate(11, (i) => i * 5); // 0,5,10,...,50
+    int selected = _discountValue.toInt();
+    String discountMode = _discountType; // "percent" or "amount"
+    TextEditingController valueController = TextEditingController();
+
+    final res = await showDialog<Map<String, dynamic>?>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: StatefulBuilder(builder: (ctx2, setState2) {
+            return AlertDialog(
+              backgroundColor: AppColorsDark.bgCardColor,
+              title: const Center(
+                child: Text('اختر نوع الخصم', style: TextStyle(color: Colors.white)),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // اختيار نوع الخصم
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ChoiceChip(
+
+                          label:Text(
+                            "نسبة %",
+                            style: TextStyle(
+                              fontSize: 17,
+                              color: Colors.white,
+                            ),
+                          ),
+                          selected: discountMode == 'percent',
+                          onSelected: (_) {
+                            setState2(() => discountMode = 'percent');
+                          },
+                          backgroundColor: AppColorsDark.bgCardColor,
+                          selectedColor: AppColorsDark.bgCardColor,
+                          checkmarkColor: AppColorsDark.mainColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            side: BorderSide(
+                              color:AppColorsDark.bgColor,
+                              width: 2,
+                            ),
+                          )
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                          label:Text(
+                            "مبلغ ثابت",
+                            style: TextStyle(
+                              fontSize: 17,
+                              color: Colors.white,
+                            ),
+                          ),
+                          selected: discountMode == 'amount',
+                          onSelected: (_) {
+                            setState2(() => discountMode = 'amount');
+                          },
+                          backgroundColor: AppColorsDark.bgCardColor,
+                          selectedColor: AppColorsDark.bgCardColor,
+                          checkmarkColor: AppColorsDark.mainColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            side: BorderSide(
+                              color: AppColorsDark.bgColor ,
+                              width: 2,
+                            ),
+                          )
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  if (discountMode == 'percent')
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: options.map((v) {
+                        final isSelected = v == selected;
+                        return ChoiceChip(
+                          label: Text('$v%'),
+                          selected: isSelected,
+                          backgroundColor: AppColorsDark.bgColor,
+                          selectedColor: Colors.green,
+                          labelStyle: const TextStyle(color: Colors.white),
+                          onSelected: (_) {
+                            setState2(() => selected = v);
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  if (discountMode == 'amount')
+                    CustomFormField(
+                      controller: valueController,
+                      hint: "ادخل قيمة الخصم",
+
+                    )
+                ],
+              ),
+              actions: [
+                CustomButton(
+                  infinity: false,
+                  text: 'تطبيق',
+                  onPressed: () {
+                    if (discountMode == 'amount') {
+                      final val = double.tryParse(valueController.text) ?? 0.0;
+                      Navigator.of(ctx2).pop({"type": "amount", "value": val});
+                    } else {
+                      Navigator.of(ctx2).pop({"type": "percent", "value": selected.toDouble()});
+                    }
+                  },
+                ),
+                SizedBox(width: 10,),
+                TextButton(
+                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                  onPressed: () => Navigator.of(ctx2).pop(null),
+                  child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            );
+          }),
+        );
+      },
+    );
+
+    if (res != null) {
+      setState(() {
+        _discountType = res["type"] as String;
+        _discountValue = (res["value"] as num).toDouble();
+        // لو عندك متغيرات لحسابات الضريبة أو خصومات إضافية - حدثها هنا أيضاً
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _discountType == "percent"
+                ? 'تم تطبيق خصم ${_discountValue.toStringAsFixed(0)}% — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}'
+                : 'تم تطبيق خصم بقيمة ${_discountValue.toStringAsFixed(2)} — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}',
+          ),
+        ),
+      );
+
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1744,7 +1763,7 @@ class _CashierScreenState extends State<CashierScreen> {
           IconButton(
             tooltip: 'تقفيل الشفت',
             icon: const Icon(Icons.lock_clock),
-            onPressed: _closingShift ? null : _closeShift,
+            onPressed:()=> _closingShift ? null : _confirm_CloseShift(),
           ),
         ],
       ),
