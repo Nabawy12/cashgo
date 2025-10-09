@@ -661,7 +661,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       ['profit_value_cash', 'صافي مبيعات نقدي'],
       ['profit_value_wallet', 'صافي مبيعات محفظه'],
       ['cash_received', 'المستلم من خلال نقدًا'],
-      ['wallet_received', 'المستلم من خلال  محفظة'],
+      ['wallet_received', 'المستلم من خلال محفظة'],
       ['deposit_from_cash_to_wallet', 'ايداع الي المحفظة'],
       ['deposit_from_wallet_to_cash', 'سحب من المحفظة'],
       ['purchases_paid', 'مشتريات مدفوعه'],
@@ -676,12 +676,12 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     Widget buildRow(String label, String value, {bool isNumber = false}) {
       final labelStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
           color: label == "الاجمالي في الدرج" ? Colors.green : label == "الاجمالي في المحفظه" ? Colors.blueAccent : Colors.white70,
-          fontSize: 14.5
+          fontSize: 14
       );
       final valueStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
           color: label == "الاجمالي في الدرج" ? Colors.green : label == "الاجمالي في المحفظه" ? Colors.blueAccent : Colors.white70,
           fontWeight: label == "الاجمالي في الدرج" ? FontWeight.bold: label == "الاجمالي في المحفظه" ? FontWeight.bold :FontWeight.normal,
-          fontSize: label == "الاجمالي في الدرج" ? 16: label == "الاجمالي في المحفظه" ? 16 :13,
+          fontSize: label == "الاجمالي في الدرج" ? 15: label == "الاجمالي في المحفظه" ? 15 :13,
       );
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 2.0),
