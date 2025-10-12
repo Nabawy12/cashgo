@@ -859,7 +859,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
               ),
               const SizedBox(height: 8),
 
-              // عرض الحقول الأساسية (قائمة مرتبة)
               Column(
                 children: fields.map((pair) {
                   final key = pair[0];
@@ -990,9 +989,9 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     }
 
     // responsive: حد أقصى 3 في الصف، لكن لو المساحة ضيقة نخلي 1 أو 2
-    final int perRow = constraints.maxWidth < 900
+    final int perRow = constraints.maxWidth < 800
         ? 1
-        : (constraints.maxWidth < 1200 ? 2 : 3);
+        : (constraints.maxWidth < 1200 ? 3 : 2);
 
     final rows = _chunk(_shifts, perRow);
 
