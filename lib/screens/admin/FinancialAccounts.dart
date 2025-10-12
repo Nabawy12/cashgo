@@ -436,7 +436,93 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   }
   double _purchasePaidOnCredit = 0.0;       // المدفوع لمشتريات آجلة (دفعات على الائتمان)
 
+  DateTime? _extractRecordDateFromMap(Map m) {
+    if (m.isEmpty) return null;
 
+    final candidates = [
+      'date',
+      'shift_date',
+      'created_at',
+      'created',
+      'date_time',
+      'start_time',
+      'end_time',
+      'start_date',
+      'end_date',
+      'day',
+      'timestamp',
+      'time'
+    ];
+
+    for (final key in candidates) {
+      if (!m.containsKey(key) || m[key] == null) continue;
+      final val = m[key];
+      // إذا كان رقم: افترض epoch (ثواني أو ملّلي)
+      if (val is num) {
+        final n = val.toInt();
+        // تمييز ms vs s
+        if (n > 1000000000000) {
+          // ملّلي
+          try {
+            return DateTime.fromMillisecondsSinceEpoch(n);
+          } catch (_) {}
+        } else if (n > 1000000000) {
+          // ثواني
+          try {
+            return DateTime.fromMillisecondsSinceEpoch(n * 1000);
+          } catch (_) {}
+        }
+      }
+
+      // إذا كان نص
+      if (val is String) {
+        final s = val.trim();
+        if (s.isEmpty) continue;
+
+        // محاولات متدرجة لتحليل التاريخ/الوقت
+        // 1) ISO / RFC
+        try {
+          return DateTime.parse(s);
+        } catch (_) {}
+
+        // 2) yyyy-MM-dd
+        try {
+          return DateFormat('yyyy-MM-dd').parseLoose(s);
+        } catch (_) {}
+
+        // 3) dd/MM/yyyy أو dd-MM-yyyy
+        try {
+          return DateFormat('dd/MM/yyyy').parseLoose(s);
+        } catch (_) {}
+        try {
+          return DateFormat('dd-MM-yyyy').parseLoose(s);
+        } catch (_) {}
+
+        // 4) yyyy/MM/dd
+        try {
+          return DateFormat('yyyy/MM/dd').parseLoose(s);
+        } catch (_) {}
+
+        // 5) صيغ تحتوي تاريخ ووقت شائعة: 'yyyy-MM-dd HH:mm:ss' أو 'dd/MM/yyyy HH:mm'
+        final patterns = [
+          'yyyy-MM-dd HH:mm:ss',
+          'yyyy-MM-dd HH:mm',
+          'dd/MM/yyyy HH:mm:ss',
+          'dd/MM/yyyy HH:mm',
+          'MM/dd/yyyy HH:mm:ss',
+          'MM/dd/yyyy'
+        ];
+        for (final p in patterns) {
+          try {
+            return DateFormat(p).parseLoose(s);
+          } catch (_) {}
+        }
+      }
+    }
+
+    // لا شيء نجح
+    return null;
+  }
 
   Future<void> _processShiftsResponse(String body, DateTime d) async {
     List<dynamic> listData = [];

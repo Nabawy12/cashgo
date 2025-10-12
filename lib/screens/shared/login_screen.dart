@@ -500,7 +500,15 @@ class _LoginScreenState extends State<LoginScreen> {
                 else
                   const SizedBox(height: 18),
                 const SizedBox(height: 8),
-                CustomButton(text: "تسجيل دخول", onPressed: _login),
+                loading != true ?
+                CustomButton(
+                    text: "تسجيل دخول",
+                    onPressed: (){
+                      _login();
+                      loading = true ;
+                    },
+                    isLoading: loading,
+                ):Container(),
                 const SizedBox(height: 8),
               ],
             ),

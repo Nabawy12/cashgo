@@ -12,6 +12,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart' hide TextDirection ;
+import 'package:shimmer/shimmer.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../models/cart.dart';
 import '../../models/cashier/profit.dart';
@@ -95,6 +96,9 @@ class _CashierScreenState extends State<CashierScreen> {
 /////////////////////
   final ScrollController _inlineScrollController = ScrollController();
   final FocusNode _inlineKeyboardNode = FocusNode();
+
+
+
 
   Future<void> _scrollInlineToIndex(int index) async {
     if (!_inlineScrollController.hasClients) return;
@@ -1658,6 +1662,30 @@ class _CashierScreenState extends State<CashierScreen> {
 
     }
   }
+  Widget _shimmerMoney({double width = 56, double height = 16, BorderRadius? radius}) {
+    return Shimmer.fromColors(
+      baseColor: Colors.white10,
+      highlightColor: Colors.white24,
+      child: Container(
+        width: width,
+        height: height,
+        decoration: BoxDecoration(
+          color: Colors.white10,
+          borderRadius: radius ?? BorderRadius.circular(4),
+        ),
+      ),
+    );
+  }
+
+  Widget _moneyOrShimmer({double? value, bool withSign = false, bool asInt = true}) {
+    if (value == null) {
+      return _shimmerMoney(width: 64, height: 16);
+    }
+    final text = withSign
+        ? _formatWithSign(value)
+        : NumberFormat("#,###").format(asInt ? value.toInt() : value);
+    return Text(text, style: const TextStyle(color: Colors.white70, fontSize: 14));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1671,7 +1699,7 @@ class _CashierScreenState extends State<CashierScreen> {
         centerTitle: true,
         iconTheme: const IconThemeData(color: Colors.white70),
 
-        leadingWidth: 200,
+        leadingWidth: 250,
         toolbarHeight: 65,
         leading: Row(
           children: [
@@ -1691,10 +1719,8 @@ class _CashierScreenState extends State<CashierScreen> {
                     icon: const Icon(Icons.account_balance_wallet,color: Colors.white70,),
                     onPressed: Session.wallet_tx == true ? _openCardWalletDialog:null,
                   ),
-                  Text(
-                    NumberFormat("#,###").format(_cashInWallet+_totalWallet!),
-                    style: const TextStyle(color: Colors.white70, fontSize: 14),
-                  ),
+                  _moneyOrShimmer(value: (_totalWallet == null) ? null : (_cashInWallet + _totalWallet!)),
+
                 ],
               ),
             ),
@@ -1715,10 +1741,7 @@ class _CashierScreenState extends State<CashierScreen> {
                   ),
                 ),
                 SizedBox(height: 10,),
-                Text(
-                  _formatWithSign(_startingAmount+_totalCash!),
-                  style: const TextStyle(color: Colors.white70, fontSize: 14),
-                ),
+                _moneyOrShimmer(value: (_totalCash == null) ? null : (_startingAmount + _totalCash!), withSign: true),
               ],
             ),
           ],
