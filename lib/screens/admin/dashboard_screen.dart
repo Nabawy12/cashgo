@@ -107,89 +107,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               ),
             ),
 
-            // ------------------ أيقونة مسح البيانات (ما عدا المنتجات) ------------------
-            Tooltip(
-              message: 'مسح كل البيانات (ما عدا المنتجات)',
-              waitDuration: const Duration(milliseconds: 1),
-              child: IconButton(
-                icon: const Icon(Icons.delete_forever, color: Colors.white70, size: 22),
-                onPressed: () async {
-                  // 1) حوار التأكيد مع خيار الاحتفاظ بالمستخدمين
-                  final choice = await showDialog<int>(
-                    context: context,
-                    builder: (c) => AlertDialog(
-                      title: const Text('تأكيد عملية المسح'),
-                      content: const Text('هل أنت متأكد؟ سيتم حذف كل البيانات ما عدا جدول "المنتجات".'),
-                      actions: [
-                        TextButton(onPressed: () => Navigator.of(c).pop(0), child: const Text('إلغاء')),
-                        TextButton(onPressed: () => Navigator.of(c).pop(1), child: const Text('مسح واحتفاظ بالمستخدمين')),
-                        ElevatedButton(onPressed: () => Navigator.of(c).pop(2), child: const Text('مسح الكل')),
-                      ],
-                    ),
-                  );
-
-                  if (choice == null || choice == 0) return; // الغى المستخدم
-
-                  final keepUsers = (choice == 1);
-
-                  // 2) مؤشر تقدم غير قابل للإغلاق أثناء التنفيذ
-                  showDialog(
-                    context: context,
-                    barrierDismissible: false,
-                    builder: (c) => Dialog(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: const [
-                            SizedBox(
-                              height: 20,
-                              width: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            SizedBox(width: 16),
-                            Text('جاري المسح...'),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-
-                  try {
-                    // نفّذ المسح عبر singleton (تأكد إن الدالة داخل DBHelper وليست static)
-                    await DBHelper.instance.wipeAllExceptProducts(keepUsers: keepUsers);
-
-                    // اغلاق مؤشر التقدم
-                    Navigator.of(context).pop();
-
-                    // رسالة نجاح
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(keepUsers ? 'تم مسح البيانات مع الاحتفاظ بالمستخدمين.' : 'تم مسح كل البيانات بنجاح.')),
-                    );
-
-                    // لو محتاج تعيد تحميل أي بيانات بالواجهة:
-                    if (mounted) setState(() {
-                      // حدث الحالة لو عندك حاجة تتغير قدام المستخدم
-                      // مثال: _loadData();
-                    });
-                  } catch (e, st) {
-                    // اغلاق مؤشر التقدم
-                    Navigator.of(context).pop();
-                    debugPrint('wipeAllExceptProducts error: $e\n$st');
-
-                    // اظهار خطأ
-                    showDialog(
-                      context: context,
-                      builder: (c) => AlertDialog(
-                        title: const Text('حدث خطأ'),
-                        content: Text('فشل المسح: $e'),
-                        actions: [TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('حسناً'))],
-                      ),
-                    );
-                  }
-                },
-              ),
-            ),
           ],
         ),        body: SafeArea(
           child: SingleChildScrollView(
@@ -207,15 +124,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       onTap: ()=> Navigator.push(
                         context,
                         MaterialPageRoute(builder: (_) => const ProductManagementScreen()),
-                      ),
-                    ),
-                    const SizedBox(width: 20),
-                    DashboardWidget(
-                      title: 'نسبه الارباح',
-                      image: 'assets/icons/profit.svg',
-                      onTap: ()=> Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const TopProductsChartPage()),
                       ),
                     ),
                   ],
@@ -276,15 +184,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       onTap: ()=> Navigator.push(
                         context,
                         MaterialPageRoute(builder: (_) => AdminCashDrawerPage()),
-                      ),
-                    ),
-                    const SizedBox(width: 20,),
-                    DashboardWidget(
-                      title: 'سجل السحب و الايداع',
-                      image: 'assets/icons/deposit.svg',
-                      onTap: ()=> Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => CardWalletActivityScreen()),
                       ),
                     ),
                   ],

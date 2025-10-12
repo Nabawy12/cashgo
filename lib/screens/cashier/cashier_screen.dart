@@ -455,8 +455,8 @@ class _CashierScreenState extends State<CashierScreen> {
       context: context,
       barrierDismissible: false,
       builder: (ctx) => SizedBox(
-        width: 150,
-        height: 100,
+        width: 250,
+        height: 50,
         child: AlertDialog(
           backgroundColor: AppColorsDark.bgCardColor,
           title: Center(child: const Text('اسم العميل للفاتورة الآجلة', style: TextStyle(color: Colors.white))),

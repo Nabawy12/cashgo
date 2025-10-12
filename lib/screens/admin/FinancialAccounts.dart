@@ -53,7 +53,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   void initState() {
     super.initState();
     _loadData();
-    _loadShifts(); // جلب تقفيلات الشيفت للتاريخ الحالي افتراضياً
+    _loadShifts(date: _selectedDate);
   }
 
   @override
@@ -762,7 +762,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     Widget buildRow(String label, String value, {bool isNumber = false}) {
       final labelStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
           color: label == "الاجمالي في الدرج" ? Colors.green : label == "الاجمالي في المحفظه" ? Colors.blueAccent : Colors.white70,
-          fontSize: 14
+          fontSize: 17
       );
       final valueStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
           color: label == "الاجمالي في الدرج" ? Colors.green : label == "الاجمالي في المحفظه" ? Colors.blueAccent : Colors.white70,
@@ -1246,7 +1246,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                       Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                                         Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
                                         const SizedBox(width: 10),
-                                        Text(_formatMoney(_cashInWallet), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                        Text(_formatMoney(_startingInWallet), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
                                       ]),
                                     ])),
                                   ]),
