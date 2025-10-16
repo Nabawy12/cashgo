@@ -1540,7 +1540,7 @@ class _CashierScreenState extends State<CashierScreen> {
           'user_net_sales': _totalCash!,
           'drawer_for_cashier': _totalWallet!,
         },
-        width: 280,
+        width: 300,
         drawerCurrent: _totalCash!,
         cardForCashier: _cashInWallet + _totalWallet!,
         creditOutstandingForCashier: _cash_with_credit!,

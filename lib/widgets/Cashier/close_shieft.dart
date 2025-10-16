@@ -20,7 +20,7 @@ class ShiftReportWidget extends StatelessWidget {
     required this.fromDate,
     required this.toDate,
     required this.totals,
-    this.width = 280,
+    this.width = 300,
     // required new fields:
     required this.drawerCurrent,
     required this.cardForCashier,
