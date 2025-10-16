@@ -17,7 +17,13 @@ class CartList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (cart.isEmpty) return const Center(child: Text('السلة فارغة'));
+    if (cart.isEmpty) return const Center(child: Text(
+        'السلة فارغة',
+      style: TextStyle(
+        fontSize: 25,
+        fontWeight: FontWeight.w400,
+      ),
+    ));
     return ListView.builder(
       itemCount: cart.length,
       itemBuilder: (context, index) {

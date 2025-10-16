@@ -5,11 +5,18 @@ class Session {
   static String? currentRole;
   static String? currentToken;
   static String? currentDateTime;
+  static String? endDateTime;
 
   static void updateDateTime() {
     final now = DateTime.now();
     final formatter = DateFormat('dd/MM/yyyy hh:mm a');
     currentDateTime = formatter.format(now);
+  }
+
+  static void updateDateTime_end() {
+    final now = DateTime.now();
+    final formatter = DateFormat('dd/MM/yyyy hh:mm a');
+    endDateTime = formatter.format(now);
   }
 
   static bool invoice_log = false;

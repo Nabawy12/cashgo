@@ -204,6 +204,19 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     }
 
     setState(() => _processing = true);
+
+    // تأكد أن اسم الكاشير (الذي يقوم بالعملية) موجود
+    final String actorCashier = widget.cashierUsername.trim();
+    if (actorCashier.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('اسم الكاشير غير معروف. الرجاء تسجيل الدخول أو التحقق من حسابك.'))
+        );
+        setState(() => _processing = false);
+      }
+      return;
+    }
+
     try {
       // build return items using original sale unit prices and unified 'qty' key
       final List<Map<String, dynamic>> returnItems = [];
@@ -214,7 +227,8 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
         final it = widget.items.firstWhere((e) {
           final id = (e['product_id'] is num) ? (e['product_id'] as num).toInt() : (int.tryParse(e['product_id']?.toString() ?? '') ?? 0);
           return id == pid;
-        });
+        }, orElse: () => <String, dynamic>{});
+        if (it.isEmpty) continue;
         final unitPrice = (it['price'] as num?)?.toDouble() ?? (it['selling_price'] as num?)?.toDouble() ?? 0.0;
         final name = (it['product_name'] ?? it['name'] ?? '').toString();
         // use 'qty' key to match server expectations
@@ -237,17 +251,13 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
         totalExchangeCost += unitPrice * qty;
       }
 
-      // net = exchangeCost - returnValue
-      // net = exchangeCost - returnValue
+      // compute net and decide refund/paid
       final double netRaw = totalExchangeCost - totalReturnValue;
       final double net = double.parse(netRaw.toStringAsFixed(2));
-      // إذا net > 0 => العميل يدفع الفرق (paid = net)
-      // إذا net < 0 => الكاشير يرجع للعميل (refund_amount = -net)
       final double refundAmount = net < 0 ? -net : 0.0;
       final double paidAmount = net > 0 ? net : 0.0;
 
-      // اختر طريقة الدفع: لو العميل يدفع نرسل 'cash' (أو 'card' إن لزم)
-      // لو الكاشير يعيد نقود نستخدم 'refund' لتمييز العملية
+      // determine paymentMethod: use 'cash' for payments, 'refund' when cashier returns money (server will interpret)
       final String paymentMethod = paidAmount > 0 ? 'cash' : (refundAmount > 0 ? 'refund' : 'cash');
 
       final uri = Uri.parse(apiBase);
@@ -255,30 +265,39 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
       final body = {
         'action': 'process_return',
         'original_invoice_id': widget.originalSaleId,
-        'return_items': returnItems,       // عناصر مرتجعة (qty موجب هنا — السيرفر سيخزنها كـ -qty في child)
-        'exchange_items': exchangeItems,   // عناصر بدل
-        // refund_amount = مبلغ يُعاد للعميل (لو سالب صافي) — positive number or 0
+        'return_items': returnItems,
+        'exchange_items': exchangeItems,
         'refund_amount': refundAmount,
-        // paid = مبلغ دفعه العميل كفرق (لو موجب) — positive number or 0
         'paid': paidAmount,
         'paymentMethod': paymentMethod,
-        'cashierUsername': widget.cashierUsername,
+        // الأهم: هنا نضع اسم الكاشير الذي يقوم بالعملية
+        'cashierUsername': actorCashier,
         'return_note': _isExchange ? 'Exchange (via app)' : 'Refund (via app)',
         'debug': false,
-        // لو تريد إنشاء سجل child invoice ضع true وإلا false لعمل تعديل داخل الفاتورة الأصلية
         'create_child': true,
       };
 
+      debugPrint('[ProcessReturn] payload: ${jsonEncode(body)}');
 
-      final resp = await http.post(uri, headers: {'Content-Type': 'application/json'}, body: jsonEncode(body)).timeout(const Duration(seconds: 20));
+      final resp = await http
+          .post(uri,
+          headers: {'Content-Type': 'application/json; charset=utf-8'},
+          body: jsonEncode(body))
+          .timeout(const Duration(seconds: 20));
+
       if (resp.statusCode != 200) {
         throw Exception('خطأ من الخادم ${resp.statusCode}: ${resp.body}');
       }
-      final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
+
+      final decoded = jsonDecode(resp.body);
+      if (decoded is! Map<String, dynamic>) {
+        throw Exception('استجابة غير متوقعة من الخادم: ${resp.body}');
+      }
       if (decoded['success'] != true) {
         throw Exception(decoded['error'] ?? decoded['message'] ?? 'خطأ غير معروف من الخادم');
       }
 
+      // notify parent to refresh and close dialog
       widget.onDone();
 
       String idShown = '';
@@ -290,7 +309,8 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت العملية بنجاح${idShown.isNotEmpty ? ' — رقم: $idShown' : ''}')));
         Navigator.pop(context, widget.originalSaleId);
       }
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('ProcessReturn error: $e\n$st');
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التطبيق: $e')));
     } finally {
       if (mounted) setState(() => _processing = false);

@@ -39,7 +39,8 @@ class ApiServiceClose_shieft {
   /// إذا كان String نحاول parse بصيغ شائعة لتطبيعها، وإذا فشل نرسله كما هو.
   Future<CloseShiftResponse> closeShift({
     required String cashierName,
-    required dynamic startTimeParam, // DateTime or String
+    required dynamic startTimeParam,
+    required dynamic endTime,
     Duration timeout = const Duration(seconds: 15),
   }) async {
     final endpoint = Uri.parse('$baseUrl/close_shift.php');
@@ -67,6 +68,26 @@ class ApiServiceClose_shieft {
       return CloseShiftResponse(success: false, message: 'startTimeParam must be DateTime or String');
     }
 
+    if (endTime is DateTime) {
+      formattedStart = DateFormat('yyyy-MM-dd HH:mm:ss').format(endTime);
+    } else if (endTime is String) {
+      // نحاول تحويل السلسلة إلى DateTime ثم نصيغها، وإلا نرسلها كما هي
+      try {
+        final parsed = DateTime.parse(endTime);
+        formattedStart = DateFormat('yyyy-MM-dd HH:mm:ss').format(parsed);
+      } catch (_) {
+        try {
+          final parsed = DateFormat('yyyy-MM-dd HH:mm:ss').parse(endTime);
+          formattedStart = DateFormat('yyyy-MM-dd HH:mm:ss').format(parsed);
+        } catch (_) {
+          // لا نستطيع تحليلها — نرسلها كما وردت
+          formattedStart = endTime;
+        }
+      }
+    } else {
+      return CloseShiftResponse(success: false, message: 'startTimeParam must be DateTime or String');
+    }
+
     try {
       final resp = await http
           .post(
@@ -76,13 +97,13 @@ class ApiServiceClose_shieft {
         },
         body: {
           'cashier_name': cashierName,
-          'start_time': formattedStart,
+          'start_time': startTimeParam,
+          'end_time': endTime,
         },
       )
           .timeout(timeout);
 
-      // طباعة الجسم الخام للمساعدة في الـ debugging (تحذفها لو تحب)
-      // debugPrint('closeShift raw response: ${resp.body}');
+
 
       if (resp.statusCode != 200) {
         return CloseShiftResponse(

@@ -42,6 +42,22 @@ class _receiptsScreenState extends State<receiptsScreen> {
     // current user not available from local DB here; keep null (or implement API call if you have one)
   }
 
+  /// Try to parse full DateTime string, fallback to date-only parse, fallback to epoch.
+  DateTime _parseDateTimeString(String raw) {
+    if (raw.isEmpty) return DateTime.fromMillisecondsSinceEpoch(0);
+    try {
+      // try full ISO or any DateTime.parse compatible string
+      return DateTime.parse(raw);
+    } catch (_) {
+      // fallback to date-only parser you already have
+      final dt = _parseDateOnly(raw);
+      if (dt != null) return dt;
+      // last resort: return epoch so unknown dates sort to the end
+      return DateTime.fromMillisecondsSinceEpoch(0);
+    }
+  }
+
+
   // ------------------ Fetch all invoices from API and normalize ------------------
   Future<void> _loadSales({DateTime? date}) async {
     if (mounted) setState(() => loading = true);
@@ -145,6 +161,15 @@ class _receiptsScreenState extends State<receiptsScreen> {
 
       // assign to sales
       sales = filtered;
+// --- sort sales by created_at (most recent first) ---
+      sales.sort((a, b) {
+        final String aDateRaw = (a['date'] ?? '').toString();
+        final String bDateRaw = (b['date'] ?? '').toString();
+        final DateTime aDt = _parseDateTimeString(aDateRaw);
+        final DateTime bDt = _parseDateTimeString(bDateRaw);
+        // descending: most recent first
+        return bDt.compareTo(aDt);
+      });
 
       // clear caches
       saleItemsCache.clear();

@@ -250,7 +250,12 @@ class _CashierScreenState extends State<CashierScreen> {
         // لم يتم العثور على المنتج عبر الـ API
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('المنتج بالباركود $barcode غير موجود')),
+          SnackBar(
+              content: Text(
+                  'المنتج بالباركود $barcode غير موجود',
+                textDirection: TextDirection.rtl,
+              )
+          ),
         );
         return;
       }
@@ -263,12 +268,20 @@ class _CashierScreenState extends State<CashierScreen> {
 
       if (available <= 0) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('الكمية نفدت')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+            'الكمية نفدت',
+          textDirection: TextDirection.rtl,
+
+        )));
         return;
       }
       if (alreadyInCart + 1 > available) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يمكن إضافة أكثر من المتاح')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+            'لا يمكن إضافة أكثر من المتاح',
+          textDirection: TextDirection.rtl,
+
+        )));
         return;
       }
 
@@ -282,7 +295,11 @@ class _CashierScreenState extends State<CashierScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ أثناء التحميل')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+          'حدث خطأ أثناء التحميل',
+        textDirection: TextDirection.rtl,
+
+      )));
     } finally {
       // مهم: تأكد أن الـ widget ما اتلف قبل التحديث
       if (!mounted) return;
@@ -424,7 +441,11 @@ class _CashierScreenState extends State<CashierScreen> {
     if (newQty <= 0) {
       setState(() => _cart.remove(productId));
     } else if (newQty > available) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد كمية كافية')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+          'لا توجد كمية كافية',
+        textDirection: TextDirection.rtl,
+
+      )));
     } else {
       setState(() => _cart[productId]!.quantity = newQty);
     }
@@ -941,13 +962,21 @@ class _CashierScreenState extends State<CashierScreen> {
             Future<void> addRequested() async {
               final pid = (product['id'] as num?)?.toInt();
               if (pid == null) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير صالح')));
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+                    'المنتج غير صالح',
+                  textDirection: TextDirection.rtl,
+
+                )));
                 return;
               }
               final already = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
               final requested = qty <= 0 ? 1 : qty; // default 1 if empty or zero
               if (already + requested > available) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد كمية كافية')));
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+                    'لا توجد كمية كافية',
+                  textDirection: TextDirection.rtl,
+
+                )));
                 return;
               }
 
@@ -966,7 +995,11 @@ class _CashierScreenState extends State<CashierScreen> {
               // close dialog and give feedback
               Navigator.of(ctx2).pop();
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت إضافة $requested قطعة من ${product['name']}')));
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+                    'تمت إضافة $requested قطعة من ${product['name']}',
+                  textDirection: TextDirection.rtl,
+
+                )));
                 _barcodeController.clear();
                 FocusScope.of(context).requestFocus(_barcodeFocus);
               }
@@ -1147,7 +1180,11 @@ class _CashierScreenState extends State<CashierScreen> {
       customerName = await _askForCustomerName();
       if (customerName == null || customerName.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة')),
+          const SnackBar(content: Text(
+              'تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة',
+            textDirection: TextDirection.rtl,
+
+          )),
         );
         return;
       }
@@ -1157,7 +1194,11 @@ class _CashierScreenState extends State<CashierScreen> {
 
     if (requireFullPayment && paid < total) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('العميل لم يدفع كامل المبلغ')),
+        const SnackBar(content: Text(
+            'العميل لم يدفع كامل المبلغ',
+          textDirection: TextDirection.rtl,
+
+        )),
       );
       return;
     }
@@ -1230,20 +1271,36 @@ class _CashierScreenState extends State<CashierScreen> {
       if (paymentMethod == 'credit') {
         final remaining = total - paid;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${remaining.toStringAsFixed(2)}')),
+          SnackBar(content: Text(
+              'تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${remaining.toStringAsFixed(2)}',
+            textDirection: TextDirection.rtl,
+
+          )),
         );
       } else if (paymentMethod == 'card') {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم الحفظ — تم الدفع بالكارت بالكامل')),
+          const SnackBar(content: Text(
+              'تم الحفظ — تم الدفع بالكارت بالكامل',
+            textDirection: TextDirection.rtl,
+
+          )),
         );
       } else if (paymentMethod == 'wallet') {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(serverMessage)),
+          SnackBar(content: Text(
+              serverMessage,
+            textDirection: TextDirection.rtl,
+
+          )),
         );
       } else {
         final change = (paid - total).toStringAsFixed(2);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم الحفظ — الإجمالي قبل الخصم: $beforeStr  — بعد الخصم: $afterStr  — الباقي: $change')),
+          SnackBar(content: Text(
+              'تم الحفظ — الإجمالي قبل الخصم: $beforeStr  — بعد الخصم: $afterStr  — الباقي: $change',
+            textDirection: TextDirection.rtl,
+
+          )),
         );
       }
 
@@ -1272,7 +1329,11 @@ class _CashierScreenState extends State<CashierScreen> {
 
       if (!printSuccess) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('فشل الطباعة. يمكنك المحاولة لاحقًا من صفحة الطباعة.')),
+          const SnackBar(content: Text(
+              'فشل الطباعة. يمكنك المحاولة لاحقًا من صفحة الطباعة.',
+            textDirection: TextDirection.rtl,
+
+          )),
         );
       }
 
@@ -1298,7 +1359,11 @@ class _CashierScreenState extends State<CashierScreen> {
       );
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('فشل حفظ الفاتورة: $e')),
+        SnackBar(content: Text(
+            'فشل حفظ الفاتورة: $e',
+          textDirection: TextDirection.rtl,
+
+        )),
       );
     } finally {
       setState(() => _saving = false);
@@ -1328,7 +1393,11 @@ class _CashierScreenState extends State<CashierScreen> {
     } catch (e, st) {
       debugPrint('Failed to load financials: $e\n$st');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل تحميل بيانات الدرج/المحفظة')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+            'فشل تحميل بيانات الدرج/المحفظة',
+          textDirection: TextDirection.rtl,
+
+        )));
       }
     }
   }
@@ -1343,7 +1412,10 @@ class _CashierScreenState extends State<CashierScreen> {
           content: const Text('هل أنت متأكد من تاكيد هذه العمليه؟', style: TextStyle(color: Colors.white70)),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(context).pop(true), // غلق الدايالوج وإرجاع true
+              onPressed: () {
+                Navigator.of(context).pop(true);
+                Session.updateDateTime_end();
+              },
               child: const Text('تأكيد', style: TextStyle(color: Colors.white)),
             ),
             TextButton(
@@ -1461,8 +1533,8 @@ class _CashierScreenState extends State<CashierScreen> {
         toDate: Session.currentDateTime!,
         totals: {
           'sales_total': _totalCash!,
-          'sales_paid_cash': _wallet_received!,
-          'sales_paid_card': _cash_received!,
+          'sales_paid_cash': _cash_received!,
+          'sales_paid_card': _wallet_received!,
           'purchases_paid': _purchases_paid!,
           'user_starting': _startingAmount,
           'user_net_sales': _totalCash!,
@@ -1478,20 +1550,30 @@ class _CashierScreenState extends State<CashierScreen> {
       // 1) محاولة طباعة التقرير
       try {
         await PrintService.printWidgetUsingOverlay(context, reportWidget, width: 280, pixelRatio: 2.0);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم طباعة تقرير الشفت لليوم')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+            'تم طباعة تقرير الشفت لليوم',
+          textDirection: TextDirection.rtl,
+
+        )));
       } catch (e, st) {
         debugPrint('Shift print failed: $e\n$st');
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل طباعة تقرير الشفت')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+            'فشل طباعة تقرير الشفت',
+          textDirection: TextDirection.rtl,
+
+        )));
       }
 
       // 2) إرسال start_time إلى السيرفر باستخدام Session.currentDateTime! مباشرة
       try {
-        final dynamic startTimeValue = Session.currentDateTime!; // قد يكون String أو DateTime أو epoch
+        final dynamic startTimeValue = Session.currentDateTime!;
+        final dynamic endTimeValue = Session.endDateTime!;
         debugPrint('Sending start_time to server: $startTimeValue');
 
         final apiResp = await _apiService.closeShift(
           cashierName: Session.currentUsername!,
           startTimeParam: startTimeValue,
+          endTime:endTimeValue,
         );
 
         // طباعة النتيجة للتشخيص أثناء التطوير
@@ -1500,17 +1582,29 @@ class _CashierScreenState extends State<CashierScreen> {
         if (apiResp.success) {
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('فشل حفظ الشفت على السيرفر: ${apiResp.message}'),
+            content: Text(
+                'فشل حفظ الشفت على السيرفر: ${apiResp.message}',
+              textDirection: TextDirection.rtl,
+
+            ),
             backgroundColor: Colors.red[700],
           ));
         }
       } catch (e, st) {
         debugPrint('API closeShift failed: $e\n$st');
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء حفظ الشفت: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+            'خطأ أثناء حفظ الشفت: $e',
+          textDirection: TextDirection.rtl,
+
+        )));
       }
     } catch (e, st) {
       debugPrint('Error while closing shift: $e\n$st');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تقفيل الشفت: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+          'فشل تقفيل الشفت: $e',
+        textDirection: TextDirection.rtl,
+
+      )));
     } finally {
       setState(() => _closingShift = false);
     }
@@ -1656,6 +1750,8 @@ class _CashierScreenState extends State<CashierScreen> {
             _discountType == "percent"
                 ? 'تم تطبيق خصم ${_discountValue.toStringAsFixed(0)}% — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}'
                 : 'تم تطبيق خصم بقيمة ${_discountValue.toStringAsFixed(2)} — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}',
+            textDirection: TextDirection.rtl,
+
           ),
         ),
       );
@@ -1715,7 +1811,7 @@ class _CashierScreenState extends State<CashierScreen> {
                 children: [
                   SizedBox(height: 5,),
                   IconButton(
-                    tooltip: 'المحفظه الالكترونيه',
+                    tooltip: "المحفظه الالكترونية",
                     icon: const Icon(Icons.account_balance_wallet,color: Colors.white70,),
                     onPressed: Session.wallet_tx == true ? _openCardWalletDialog:null,
                   ),
@@ -2010,7 +2106,7 @@ class _CashierScreenState extends State<CashierScreen> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.local_offer, color: Colors.white,size: 27,),
+                          const Icon(Icons.local_offer, color: Colors.white70,size: 27,),
                           const SizedBox(height: 5),
                           Text(
                             _discountValue > 0 ? '${_discountValue.toStringAsFixed(0)}%' : 'خصم',

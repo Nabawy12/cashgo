@@ -1,4 +1,3 @@
-// PreviousSalesGroupedByCashier_with_shimmer.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -264,50 +263,20 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
     }
   }
 
-  // ------------------ Process Return API call ------------------
-  Future<Map<String, dynamic>> _processReturn({
-    required int originalInvoiceId,
-    required List<Map<String, dynamic>> returnItems,
-    required List<Map<String, dynamic>> exchangeItems,
-    required double refundAmount,
-    required String cashierUsername,
-    String paymentMethod = 'cash',
-    double paid = 0.0,
-    String returnNote = '',
-    bool debug = false,
-  }) async {
-    final uri = Uri.parse(apiBase);
-    final body = {
-      'action': 'process_return',
-      'original_invoice_id': originalInvoiceId,
-      'return_items': returnItems,
-      'exchange_items': exchangeItems,
-      'refund_amount': refundAmount,
-      'paid': paid,
-      'paymentMethod': paymentMethod,
-      'cashierUsername': cashierUsername,
-      'return_note': returnNote,
-      'debug': debug,
-    };
-
-    final resp = await http.post(uri, headers: {'Content-Type': 'application/json'}, body: jsonEncode(body)).timeout(const Duration(seconds: 20));
-    debugPrint('[processReturn] status=${resp.statusCode} body=${resp.body}');
-    if (resp.statusCode != 200) {
-      throw Exception('Server error ${resp.statusCode}: ${resp.body}');
-    }
-    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
-    if (decoded['success'] != true) {
-      throw Exception(decoded['error'] ?? decoded['message'] ?? 'Unknown error');
-    }
-    return decoded;
-  }
-
-  // ------------------ UI: open sale details + process return dialog ------------------
   void _openSaleDetails(Map<String, dynamic> sale) async {
     final saleId = (sale['id'] as num).toInt();
     await _ensureItems(saleId);
 
-    final cashierName = (sale['cashier_username'] ?? widget.cashierUsername).toString();
+// القديم:
+// final cashierName = (sale['cashier_username'] ?? widget.cashierUsername).toString();
+
+// الجديد: استخدم دائماً اسم الكاشير الحالي (actor) من الـ widget
+    final actorCashier = widget.cashierUsername.toString();
+
+// إذا رغبت تعرض صاحب الفاتورة في العنوان يمكنك حفظه أيضاً:
+    final originalCashier = (sale['cashier_username'] ?? '').toString();
+
+
 
     await showDialog(
       context: context,
@@ -317,7 +286,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text('#فاتورة رقم : $saleId', style: TextStyle(fontSize: 18, color: Colors.white)),
-            Text(cashierName, style: TextStyle(fontSize: 13, color: Colors.white70)),
+            Text(actorCashier, style: TextStyle(fontSize: 13, color: Colors.white70)),
           ],
         ),
         content: SizedBox(
@@ -365,7 +334,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
             onPressed: () async {
               if (Navigator.canPop(context)) Navigator.pop(context);
               // open return dialog as full-screen ProcessReturnDialog (uses ProductApi inside dialog)
-              await _showProcessReturnDialog(saleId, cashierName);
+              await _showProcessReturnDialog(saleId, actorCashier);
             },
             child: const Text('معالجة مرتجع / بدل', style: TextStyle(color: Colors.white)),
           ),
@@ -374,250 +343,6 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
     );
   }
 
-  void _applyReturnExchangeLocally(int saleId, List<Map<String, dynamic>> returns, List<Map<String, dynamic>> exchanges) {
-    // تحديث saleItems (قائمة العناصر المعروضة) بتطبيق المرتجعات والاستبدالات محليًا
-    final current = List<Map<String, dynamic>>.from(saleItems[saleId] ?? []);
-
-    // تطبيق المرتجعات: نقص الكميات أو احذف العنصر إن صارت الكمية <= 0
-    for (final ret in returns) {
-      final pid = (ret['product_id'] is num) ? (ret['product_id'] as num).toInt() : int.tryParse(ret['product_id']?.toString() ?? '') ?? 0;
-      final rqty = (ret['qty'] is num) ? (ret['qty'] as num).toInt() : int.tryParse(ret['qty']?.toString() ?? '') ?? 0;
-      for (int i = current.length - 1; i >= 0; i--) {
-        final it = current[i];
-        final ipid = (it['product_id'] is num) ? (it['product_id'] as num).toInt() : int.tryParse(it['product_id']?.toString() ?? '') ?? 0;
-        if (ipid != pid) continue;
-        final existingQty = (it['qty'] is num) ? (it['qty'] as num).toInt() : int.tryParse(it['qty']?.toString() ?? '') ?? 0;
-        final newQty = existingQty - rqty;
-        if (newQty <= 0) {
-          current.removeAt(i);
-        } else {
-          current[i] = {...it, 'qty': newQty};
-        }
-        break;
-      }
-    }
-
-    // تطبيق الاستبدالات: أضف العناصر الجديدة كعناصر في الفاتورة
-    for (final ex in exchanges) {
-      final pid = (ex['product_id'] is num) ? (ex['product_id'] as num).toInt() : int.tryParse(ex['product_id']?.toString() ?? '') ?? 0;
-      final name = (ex['name'] ?? '').toString();
-      final price = (ex['price'] is num) ? (ex['price'] as num).toDouble() : double.tryParse(ex['price']?.toString() ?? '') ?? 0.0;
-      final qty = (ex['qty'] is num) ? (ex['qty'] as num).toInt() : int.tryParse(ex['qty']?.toString() ?? '') ?? 0;
-      if (pid <= 0 || qty <= 0) continue;
-      bool merged = false;
-      for (int i = 0; i < current.length; i++) {
-        final it = current[i];
-        final ipid = (it['product_id'] is num) ? (it['product_id'] as num).toInt() : int.tryParse(it['product_id']?.toString() ?? '') ?? 0;
-        if (ipid == pid) {
-          final existingQty = (it['qty'] is num) ? (it['qty'] as num).toInt() : int.tryParse(it['qty']?.toString() ?? '') ?? 0;
-          current[i] = {...it, 'qty': existingQty + qty, 'price': price};
-          merged = true;
-          break;
-        }
-      }
-      if (!merged) {
-        current.add({
-          'product_id': pid,
-          'product_name': name,
-          'qty': qty,
-          'price': price,
-          'barcode': '',
-        });
-      }
-    }
-
-    // حفظ التعديل محليًا
-    saleItems[saleId] = current;
-
-    // إذا ما بقى عناصر -> احذف الفاتورة محليًا من lists
-    if (current.isEmpty) {
-      sales.removeWhere((s) => (s['id'] as num).toInt() == saleId);
-    } else {
-      // تحديث sales: إعادة حساب المجموع المحلي التقريبي
-      for (int i = 0; i < sales.length; i++) {
-        if ((sales[i]['id'] as num).toInt() == saleId) {
-          double newTotal = 0.0;
-          for (final it in current) {
-            final p = (it['price'] is num) ? (it['price'] as num).toDouble() : double.tryParse(it['price']?.toString() ?? '') ?? 0.0;
-            final q = (it['qty'] is num) ? (it['qty'] as num).toInt() : int.tryParse(it['qty']?.toString() ?? '') ?? 0;
-            newTotal += p * q;
-          }
-          sales[i] = {...sales[i], 'product_list': current, 'total': newTotal};
-          break;
-        }
-      }
-    }
-
-    // إعادة تجميع groupedSales بسرعة
-    final Map<String, List<Map<String, dynamic>>> map = {};
-    for (final s in sales) {
-      final cashierName = (s['cashier_username'] ?? s['username'] ?? s['cashier'] ?? s['user'] ?? 'Unknown').toString();
-      map.putIfAbsent(cashierName, () => []);
-      map[cashierName]!.add(s);
-    }
-    setState(() {
-      groupedSales = map;
-    });
-  }
-
-  // ------------------ New: dialog to lookup product by barcode and return exchange item ------------------
-  Future<Map<String, dynamic>?> _showAddExchangeItemDialog(BuildContext ctx) async {
-    final TextEditingController barcodeController = TextEditingController();
-    final TextEditingController qtyController = TextEditingController(text: '1');
-    final TextEditingController priceController = TextEditingController(text: '0.0');
-
-    bool loadingProduct = false;
-    Map<String, dynamic>? foundProduct;
-    String? errorMsg;
-
-    return showDialog<Map<String, dynamic>>(
-      context: ctx,
-      barrierDismissible: false,
-      builder: (dialogCtx) {
-        return StatefulBuilder(builder: (dialogCtx, setStateDialog) {
-          Future<void> lookupByBarcode() async {
-            final code = barcodeController.text.trim();
-            if (code.isEmpty) {
-              setStateDialog(() { errorMsg = 'ادخل الباركود'; });
-              return;
-            }
-            setStateDialog(() { loadingProduct = true; errorMsg = null; foundProduct = null; });
-            try {
-              final apiResp = await ProductApi.getProductByBarcode(code);
-              if (apiResp == null) {
-                setStateDialog(() { errorMsg = 'لم يتم العثور على المنتج بالباركود'; foundProduct = null; });
-              } else {
-                final prod = Product.fromMap(apiResp);
-                foundProduct = {
-                  'product_id': prod.id,
-                  'name': prod.name ?? '',
-                  'barcode': prod.barcode ?? code,
-                  'price': prod.sellingPrice?.toDouble() ?? 0.0,
-                  'available': prod.totalUnits ?? 0
-                };
-                priceController.text = (foundProduct!['price'] as double).toString();
-                qtyController.text = '1';
-                setStateDialog(() { errorMsg = null; });
-              }
-            } catch (e) {
-              setStateDialog(() { errorMsg = 'خطأ في الاتصال أو الاستجابة'; foundProduct = null; });
-            } finally {
-              setStateDialog(() { loadingProduct = false; });
-            }
-          }
-
-          return AlertDialog(
-            backgroundColor: AppColorsDark.bgCardColor,
-            title: Text('أضف عنصر استبدال بالباركود', style: TextStyle(color: Colors.white)),
-            content: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.7, maxWidth: MediaQuery.of(ctx).size.width * 0.8),
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      Expanded(
-                        child: TextField(
-                          controller: barcodeController,
-                          keyboardType: TextInputType.text,
-                          decoration: InputDecoration(labelText: 'باركود', labelStyle: TextStyle(color: Colors.white70)),
-                          style: TextStyle(color: Colors.white),
-                          onSubmitted: (_) => lookupByBarcode(),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(
-                        onPressed: loadingProduct ? null : () => lookupByBarcode(),
-                        child: loadingProduct ? SizedBox(width:16, height:16, child: CircularProgressIndicator(strokeWidth:2)) : Text('بحث'),
-                      ),
-                    ]),
-                    if (errorMsg != null) ...[
-                      const SizedBox(height: 8),
-                      Text(errorMsg!, style: TextStyle(color: Colors.redAccent)),
-                    ],
-                    const SizedBox(height: 12),
-                    if (foundProduct != null) ...[
-                      Text('المنتج: ${foundProduct!['name']}', style: TextStyle(color: Colors.white)),
-                      const SizedBox(height: 6),
-                      Text('متاح: ${foundProduct!['available']}', style: TextStyle(color: Colors.white70)),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          SizedBox(
-                            width: 100,
-                            child: TextField(
-                              controller: qtyController,
-                              keyboardType: TextInputType.number,
-                              style: TextStyle(color: Colors.white),
-                              decoration: InputDecoration(labelText: 'الكمية', labelStyle: TextStyle(color: Colors.white70)),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          SizedBox(
-                            width: 120,
-                            child: TextField(
-                              controller: priceController,
-                              keyboardType: TextInputType.numberWithOptions(decimal: true),
-                              style: TextStyle(color: Colors.white),
-                              decoration: InputDecoration(labelText: 'السعر', labelStyle: TextStyle(color: Colors.white70)),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text('(اضبط الكمية والسعر قبل الإضافة)', style: TextStyle(color: Colors.white54)),
-                    ] else ...[
-                      Text('ابحث أولاً عن المنتج بالباركود ثم أضفه.', style: TextStyle(color: Colors.white70)),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  barcodeController.dispose();
-                  qtyController.dispose();
-                  priceController.dispose();
-                  Navigator.pop(dialogCtx, null);
-                },
-                child: Text('إلغاء', style: TextStyle(color: Colors.white)),
-              ),
-              TextButton(
-                onPressed: foundProduct == null ? null : () {
-                  final available = (foundProduct!['available'] ?? 0) as int;
-                  final qty = int.tryParse(qtyController.text.trim()) ?? 0;
-                  final price = double.tryParse(priceController.text.trim()) ?? (foundProduct!['price'] as double? ?? 0.0);
-                  if (qty <= 0) {
-                    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('ادخل كمية صحيحة')));
-                    return;
-                  }
-                  if (qty > available) {
-                    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('الكمية أكبر من المتاح ($available)')));
-                    return;
-                  }
-                  final out = {
-                    'product_id': (foundProduct!['product_id'] ?? 0),
-                    'name': foundProduct!['name'] ?? '',
-                    'barcode': foundProduct!['barcode'] ?? '',
-                    'qty': qty,
-                    'price': price
-                  };
-                  barcodeController.dispose();
-                  qtyController.dispose();
-                  priceController.dispose();
-                  Navigator.pop(dialogCtx, out);
-                },
-                child: Text('أضف', style: TextStyle(color: Colors.white)),
-              ),
-            ],
-          );
-        });
-      },
-    );
-  }
-
-  // ------------------ REPLACED: show process return dialog now opens the full-screen ProcessReturnDialog (matches the dialog you sent) ------------------
   Future<void> _showProcessReturnDialog(int originalSaleId, String cashierName) async {
     // ensure items loaded
     await _ensureItems(originalSaleId);

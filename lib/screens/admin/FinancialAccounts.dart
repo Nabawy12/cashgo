@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:http/http.dart' as http;
+import 'package:skeletonizer/skeletonizer.dart';
 import '../../services/Api/Admin/financle.dart';
 import '../../utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
@@ -1300,14 +1301,32 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         backgroundColor: Colors.transparent,
         iconTheme: const IconThemeData(color: Colors.white70),
         title: const Text('الدرج والتقارير', style: TextStyle(fontSize: 27, color: Colors.white)),
-        actions: [IconButton(onPressed: () {
-          _loadData();
-          _loadShifts(date: _selectedDate);
-        }, icon: const Icon(Icons.refresh))],
+        actions: [
+          IconButton(
+            onPressed: () {
+              _loadData();
+              _loadShifts(date: _selectedDate);
+            },
+            icon: const Icon(Icons.refresh),
+          )
+        ],
       ),
-      body: _loading ? const Center(child: CircularProgressIndicator()) : LayoutBuilder(builder: (context, constraints) {
-        return _desktopLayout(constraints);
-      }),
+
+      body: Skeletonizer(
+        enabled: _loading,
+        enableSwitchAnimation: true,
+        effect: ShimmerEffect(
+          baseColor: AppColorsDark.mainColor,
+          highlightColor: Colors.grey.shade600,
+          duration: const Duration(seconds: 2),
+        ),
+        containersColor: AppColorsDark.bgCardColor,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return _desktopLayout(constraints);
+          },
+        ),
+      ),
     );
   }
 }

@@ -33,7 +33,12 @@ class MyApp extends StatelessWidget {
 
       theme: ThemeData(
         // بقية ثيم التطبيق...
-        colorScheme: ColorScheme.fromSeed(seedColor: AppColorsDark.mainColor),
+        colorScheme: ColorScheme.fromSeed(
+            primary:AppColorsDark.mainColor ,
+            seedColor: AppColorsDark.mainColor,
+            onSurface: Colors.white70,
+            surface: Colors.white70
+        ),
         useMaterial3: true,
 
         // هنا نعرف ثيم للـ SnackBar على مستوى التطبيق
@@ -57,6 +62,42 @@ class MyApp extends StatelessWidget {
           ),
           width: 1400,
           insetPadding: const EdgeInsets.symmetric(horizontal: 500, vertical: 25), // مسافة من الحواف
+        ),
+
+        textTheme: const TextTheme(
+          bodyLarge: TextStyle(color: Colors.white), // ← يؤثر على النص داخل TextField
+          bodyMedium: TextStyle(color: Colors.white), // ← مهم جدًا
+        ),
+        iconTheme: const IconThemeData(
+          color: Colors.white70,
+        ),
+
+        dialogBackgroundColor: AppColorsDark.bgCardColor, // خلفية الديالوج
+        datePickerTheme: DatePickerThemeData(
+          backgroundColor: AppColorsDark.bgCardColor, // خلفية داخلية للديالوج
+          headerBackgroundColor: AppColorsDark.bgCardColor, // خلفية الهيدر
+          headerForegroundColor: Colors.white,            // لون "October 2025" والنّص في الهيدر
+          dayForegroundColor: MaterialStateProperty.all(Colors.white),
+          todayForegroundColor: MaterialStateProperty.all(Colors.white),
+          todayBackgroundColor: MaterialStateProperty.all(AppColorsDark.mainColor),
+          rangePickerBackgroundColor: AppColorsDark.mainColor.withOpacity(0.5),
+          weekdayStyle: const TextStyle(color: Colors.white70), // لون أيام الأسبوع S M T W ...
+          yearStyle: const TextStyle(color: Colors.white70),
+          headerHeadlineStyle: const TextStyle(color: Colors.white70),
+          headerHelpStyle: const TextStyle(color: Colors.white70),
+
+          inputDecorationTheme:  InputDecorationTheme(
+            labelStyle: TextStyle(color: Colors.white70), // لون نص "Enter Date"
+            hintStyle: TextStyle(color: Colors.white),
+
+            enabledBorder: OutlineInputBorder(
+              borderSide: BorderSide(color: AppColorsDark.mainColor), // حدود عادية
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderSide: BorderSide(color: AppColorsDark.mainColor), // حدود لما يكون الفوكس
+            ),
+          ),
+
         ),
       ),
     );

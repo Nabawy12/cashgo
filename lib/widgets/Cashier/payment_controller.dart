@@ -47,7 +47,7 @@ class _PaymentControlsState extends State<PaymentControls> {
 
         return Column(children: [
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Text('الإجمالي: ${widget.total.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text('الإجمالي: ${widget.total.toStringAsFixed(2)}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             // لو حابب تعرض عدد القطع هنا ضيف باراميتر لتمريره
           ]),
           const SizedBox(height: 8),

@@ -2,6 +2,7 @@
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:flutter/material.dart';
+import 'package:skeletonizer/skeletonizer.dart';
 import '../../services/Api/Admin/Products.dart';
 import '../../widgets/custom_form.dart';
 
@@ -251,220 +252,228 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
           style: TextStyle(fontSize: 17, color: Colors.white),
         ),
       ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          return Center(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(minWidth: constraints.maxWidth),
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          flex: 7,
-                          child: CustomFormField(
-                            hint: "بحث بواسطه الاسم او الرمز التعريفي",
-                            onChanged: (v) => setState(() {
-                              searchQuery = v;
-                              // reset pagination when searching
-                              displayCount = 50;
-                              if (verticalScrollController.hasClients) {
-                                verticalScrollController.jumpTo(0);
-                              }
-                            }),
-                            centerHint: true,
+      body: Skeletonizer(
+        enabled: loading,
+          enableSwitchAnimation: true,
+          effect: ShimmerEffect(
+            baseColor: AppColorsDark.mainColor,
+            highlightColor: Colors.grey.shade600,
+            duration: const Duration(seconds: 2),
+          ),
+          containersColor: AppColorsDark.bgCardColor,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            flex: 7,
+                            child: CustomFormField(
+                              hint: "بحث بواسطه الاسم او الرمز التعريفي",
+                              onChanged: (v) => setState(() {
+                                searchQuery = v;
+                                // reset pagination when searching
+                                displayCount = 50;
+                                if (verticalScrollController.hasClients) {
+                                  verticalScrollController.jumpTo(0);
+                                }
+                              }),
+                              centerHint: true,
+                            ),
                           ),
-                        ),
-                        SizedBox(width: 20),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            const Text(
-                              'صافي الربح',
-                              style: TextStyle(
-                                fontSize: 15,
-                                color: Colors.white,
+                          SizedBox(width: 20),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              const Text(
+                                'صافي الربح',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  color: Colors.white,
+                                ),
+                                textAlign: TextAlign.center,
                               ),
-                              textAlign: TextAlign.center,
-                            ),
-                            Text(
-                              '${computeTotalProfit().toStringAsFixed(2)}',
-                              style: const TextStyle(
-                                  fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Expanded(
-                      child: loading
-                          ? const Center(child: CircularProgressIndicator())
-                          : filteredProducts.isEmpty
-                          ? const Center(
-                          child: Text(
-                            'لا توجد قائمه منتجات حتي الان',
-                            style: TextStyle(fontSize: 25, color: Colors.white),
-                          ))
-                          : LayoutBuilder(
-                        builder: (context, constraints) {
-                          // only show up to displayCount items (lazy load)
-                          final visibleProducts = filteredProducts.take(displayCount).toList();
-
-                          return SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: ConstrainedBox(
-                              constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                              child: SingleChildScrollView(
-                                // attach the vertical controller so we can detect reaching bottom
-                                scrollDirection: Axis.vertical,
-                                controller: verticalScrollController,
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    border: Border.all(color: Colors.white, width: 1),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: DataTable(
-                                    columnSpacing: 18,
-                                    headingRowColor:
-                                    MaterialStateProperty.all(AppColorsDark.bgCardColor),
-                                    dataRowColor:
-                                    MaterialStateProperty.all(AppColorsDark.bgCardColor),
-                                    columns: const [
-                                      DataColumn(label: Text('ID', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('Barcode', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('Name', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('Purchase', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('Selling', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('carton', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('unit in carton', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('Days Left', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('Profit', style: TextStyle(color: Colors.white))),
-                                      DataColumn(label: Text('Actions', style: TextStyle(color: Colors.white))),
-                                    ],
-                                    rows: visibleProducts.map((p) {
-                                      final profit = computeProductProfit(p);
-                                      final totalUnits = ((p['total_units'] ??
-                                          ((p['quantity'] as num? ?? 0) *
-                                              (p['units_in_carton'] as num? ?? 0) +
-                                              (p['units_remainder'] ?? 0))) as num)
-                                          .toInt();
-                                      final cartons = (p['quantity'] as num? ?? 0).toInt();
-                                      final unitsInCarton = (p['units_in_carton'] as num? ?? 0).toInt();
-                                      final remainder = (p['units_remainder'] ?? 0) as int;
-                                      final lowStock = totalUnits <= 5;
-                                      String stockText;
-                                      // عرض بصيغة: "2crt + 3pcs = 27pcs" أو "-" لو غير معروف
-                                      if (unitsInCarton > 0) {
-                                        stockText = '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
-                                      } else {
-                                        stockText = '$totalUnits قطعة';
-                                      }
-
-                                      return DataRow(
-                                        cells: [
-                                          DataCell(Text('${p['id']}', style: const TextStyle(color: Colors.white))),
-                                          DataCell(Text(p['barcode']?.toString() ?? '-', style: const TextStyle(color: Colors.white))),
-                                          DataCell(Text(p['name'], style: const TextStyle(color: Colors.white))),
-                                          DataCell(Text((p['purchase_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
-                                          DataCell(Text((p['selling_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
-                                          DataCell(
-                                            Text(
-                                              "$cartons",
-                                              style: TextStyle(
-                                                color: lowStock ? Colors.red : Colors.white,
-                                              ),
-                                            ),
-                                          ),
-                                          DataCell(
-                                            Text(
-                                              "$totalUnits",
-                                              style: TextStyle(
-                                                color: lowStock ? Colors.red : Colors.white,
-                                              ),
-                                            ),
-                                          ),
-                                          DataCell(
-                                            Container(
-                                              alignment: Alignment.center,
-                                              width: 50,
-                                              child: Text(
-                                                    () {
-                                                  if (p['expiry_date'] == null || p['expiry_date'].toString().isEmpty) return '-';
-                                                  final expiry = DateTime.tryParse(p['expiry_date']);
-                                                  if (expiry == null) return '-';
-                                                  final daysLeft = expiry.difference(DateTime.now()).inDays;
-                                                  return '$daysLeft';
-                                                }(),
-                                                style: const TextStyle(
-                                                  color: Colors.white,
+                              Text(
+                                '${computeTotalProfit().toStringAsFixed(2)}',
+                                style: const TextStyle(
+                                    fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Expanded(
+                        child:  filteredProducts.isEmpty
+                            ? const Center(
+                            child: Text(
+                              'لا توجد قائمه منتجات حتي الان',
+                              style: TextStyle(fontSize: 25, color: Colors.white),
+                            ))
+                            : LayoutBuilder(
+                          builder: (context, constraints) {
+                            // only show up to displayCount items (lazy load)
+                            final visibleProducts = filteredProducts.take(displayCount).toList();
+        
+                            return SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                                child: SingleChildScrollView(
+                                  // attach the vertical controller so we can detect reaching bottom
+                                  scrollDirection: Axis.vertical,
+                                  controller: verticalScrollController,
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      border: Border.all(color: Colors.white, width: 1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: DataTable(
+                                      columnSpacing: 18,
+                                      headingRowColor:
+                                      MaterialStateProperty.all(AppColorsDark.bgCardColor),
+                                      dataRowColor:
+                                      MaterialStateProperty.all(AppColorsDark.bgCardColor),
+                                      columns: const [
+                                        DataColumn(label: Text('ID', style: TextStyle(color: Colors.white))),
+                                        DataColumn(label: Text('Barcode', style: TextStyle(color: Colors.white))),
+                                        DataColumn(label: Text('Name', style: TextStyle(color: Colors.white))),
+                                        DataColumn(label: Text('Purchase', style: TextStyle(color: Colors.white))),
+                                        DataColumn(label: Text('Selling', style: TextStyle(color: Colors.white))),
+                                        DataColumn(label: Text('carton', style: TextStyle(color: Colors.white))),
+                                        DataColumn(label: Text('unit in carton', style: TextStyle(color: Colors.white))),
+                                        DataColumn(label: Text('Days Left', style: TextStyle(color: Colors.white))),
+                                        DataColumn(label: Text('Profit', style: TextStyle(color: Colors.white))),
+                                        DataColumn(label: Text('Actions', style: TextStyle(color: Colors.white))),
+                                      ],
+                                      rows: visibleProducts.map((p) {
+                                        final profit = computeProductProfit(p);
+                                        final totalUnits = ((p['total_units'] ??
+                                            ((p['quantity'] as num? ?? 0) *
+                                                (p['units_in_carton'] as num? ?? 0) +
+                                                (p['units_remainder'] ?? 0))) as num)
+                                            .toInt();
+                                        final cartons = (p['quantity'] as num? ?? 0).toInt();
+                                        final unitsInCarton = (p['units_in_carton'] as num? ?? 0).toInt();
+                                        final remainder = (p['units_remainder'] ?? 0) as int;
+                                        final lowStock = totalUnits <= 5;
+                                        String stockText;
+                                        // عرض بصيغة: "2crt + 3pcs = 27pcs" أو "-" لو غير معروف
+                                        if (unitsInCarton > 0) {
+                                          stockText = '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
+                                        } else {
+                                          stockText = '$totalUnits قطعة';
+                                        }
+        
+                                        return DataRow(
+                                          cells: [
+                                            DataCell(Text('${p['id']}', style: const TextStyle(color: Colors.white))),
+                                            DataCell(Text(p['barcode']?.toString() ?? '-', style: const TextStyle(color: Colors.white))),
+                                            DataCell(Text(p['name'], style: const TextStyle(color: Colors.white))),
+                                            DataCell(Text((p['purchase_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
+                                            DataCell(Text((p['selling_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
+                                            DataCell(
+                                              Text(
+                                                "$cartons",
+                                                style: TextStyle(
+                                                  color: lowStock ? Colors.red : Colors.white,
                                                 ),
-                                                textAlign: TextAlign.center,
                                               ),
                                             ),
-                                          ),
-                                          DataCell(Text(profit.toStringAsFixed(2), style: const TextStyle(color: Colors.white))),
-                                          DataCell(Row(
-                                            children: [
-                                              IconButton(
-                                                tooltip: 'Edit',
-                                                icon: const Icon(Icons.edit, color: Colors.white),
-                                                onPressed: () => openAddEditDialog(existing: p),
+                                            DataCell(
+                                              Text(
+                                                "$totalUnits",
+                                                style: TextStyle(
+                                                  color: lowStock ? Colors.red : Colors.white,
+                                                ),
                                               ),
-                                              const Spacer(),
-                                              IconButton(
-                                                tooltip: 'Delete',
-                                                icon: const Icon(Icons.delete, color: Colors.red),
-                                                onPressed: () async {
-                                                  final ok = await showDialog<bool>(
-                                                    context: context,
-                                                    builder: (_) => AlertDialog(
-                                                      title: const Text('Delete product'),
-                                                      content: Text('Delete "${p['name']}" ?'),
-                                                      actions: [
-                                                        TextButton(
-                                                          onPressed: () => Navigator.pop(context, false),
-                                                          child: const Text('Cancel'),
-                                                        ),
-                                                        TextButton(
-                                                          onPressed: () => Navigator.pop(context, true),
-                                                          child: const Text('Delete'),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  );
-                                                  if (ok == true) {
-                                                    final deleted = await ProductApi.deleteProduct(p['id']);
-                                                    if (deleted) {
-                                                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Deleted successfully')));
-                                                      await refreshProducts();
-                                                    } else {
-                                                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delete failed')));
+                                            ),
+                                            DataCell(
+                                              Container(
+                                                alignment: Alignment.center,
+                                                width: 50,
+                                                child: Text(
+                                                      () {
+                                                    if (p['expiry_date'] == null || p['expiry_date'].toString().isEmpty) return '-';
+                                                    final expiry = DateTime.tryParse(p['expiry_date']);
+                                                    if (expiry == null) return '-';
+                                                    final daysLeft = expiry.difference(DateTime.now()).inDays;
+                                                    return '$daysLeft';
+                                                  }(),
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                  ),
+                                                  textAlign: TextAlign.center,
+                                                ),
+                                              ),
+                                            ),
+                                            DataCell(Text(profit.toStringAsFixed(2), style: const TextStyle(color: Colors.white))),
+                                            DataCell(Row(
+                                              children: [
+                                                IconButton(
+                                                  tooltip: 'Edit',
+                                                  icon: const Icon(Icons.edit, color: Colors.white),
+                                                  onPressed: () => openAddEditDialog(existing: p),
+                                                ),
+                                                const Spacer(),
+                                                IconButton(
+                                                  tooltip: 'Delete',
+                                                  icon: const Icon(Icons.delete, color: Colors.red),
+                                                  onPressed: () async {
+                                                    final ok = await showDialog<bool>(
+                                                      context: context,
+                                                      builder: (_) => AlertDialog(
+                                                        title: const Text('Delete product'),
+                                                        content: Text('Delete "${p['name']}" ?'),
+                                                        actions: [
+                                                          TextButton(
+                                                            onPressed: () => Navigator.pop(context, false),
+                                                            child: const Text('Cancel'),
+                                                          ),
+                                                          TextButton(
+                                                            onPressed: () => Navigator.pop(context, true),
+                                                            child: const Text('Delete'),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    );
+                                                    if (ok == true) {
+                                                      final deleted = await ProductApi.deleteProduct(p['id']);
+                                                      if (deleted) {
+                                                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Deleted successfully')));
+                                                        await refreshProducts();
+                                                      } else {
+                                                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delete failed')));
+                                                      }
                                                     }
-                                                  }
-                                                },
-                                              ),
-                                            ],
-                                          )),
-                                        ],
-                                      );
-                                    }).toList(),
+                                                  },
+                                                ),
+                                              ],
+                                            )),
+                                          ],
+                                        );
+                                      }).toList(),
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                          );
-                        },
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
