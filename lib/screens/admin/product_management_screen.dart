@@ -20,8 +20,12 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   final barcodeFocusNode = FocusNode();
   final barcodeController = TextEditingController();
 
-  // NEW: pagination state
-  int displayCount = 50;
+  // Pagination state
+  int currentPage = 1;
+  int totalPages = 1; // will be updated from meta if available
+  bool loadingMore = false;
+  bool allLoaded = false;
+
   final ScrollController verticalScrollController = ScrollController();
 
   @override
@@ -34,13 +38,13 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
       if (!verticalScrollController.hasClients) return;
       final pos = verticalScrollController.position;
       if (pos.maxScrollExtent <= 0) return;
-      // when close to bottom (threshold 40), try to load more
+      // when close to bottom (threshold 40), try to load next page
       if (pos.pixels >= pos.maxScrollExtent - 40) {
-        final total = filteredProducts.length;
-        if (displayCount < total) {
-          setState(() {
-            displayCount = (displayCount + 50) > total ? total : (displayCount + 50);
-          });
+        if (!loadingMore && !allLoaded && currentPage < totalPages) {
+          loadMoreProducts();
+        } else if (!loadingMore && !allLoaded && currentPage >= totalPages) {
+          // If totalPages not trustworthy (==1) we still try to load next page once
+          loadMoreProducts();
         }
       }
     });
@@ -49,21 +53,115 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   Future<void> refreshProducts() async {
     setState(() {
       loading = true;
+      currentPage = 1;
+      totalPages = 1;
+      allLoaded = false;
     });
-    final rows = await ProductApi.getAllProducts();
-    setState(() {
-      products = rows;
-      loading = false;
-      // reset pagination on refresh
-      displayCount = 50;
+
+    try {
+      // Try to use paged endpoint (returns meta + rows)
+      final page = await ProductApi.getProductsPage(count: 1);
+      List<Map<String, dynamic>> rows = [];
+      int tp = 1;
+      if (page != null && page['rows'] is List) {
+        rows = List<Map<String, dynamic>>.from(page['rows'] as List);
+        final meta = page['meta'] as Map<String, dynamic>? ?? {};
+        if (meta.containsKey('total_pages')) {
+          tp = (meta['total_pages'] is int) ? meta['total_pages'] as int : int.tryParse(meta['total_pages']?.toString() ?? '1') ?? 1;
+        } else if (meta.containsKey('total') && meta.containsKey('per_page')) {
+          final total = int.tryParse(meta['total']?.toString() ?? '0') ?? 0;
+          final perPage = int.tryParse(meta['per_page']?.toString() ?? '10') ?? 10;
+          tp = perPage > 0 ? ((total + perPage - 1) ~/ perPage) : 1;
+        }
+      } else {
+        // fallback: call getAllProducts with count=1 (if you implemented that earlier)
+        final fallbackRows = await ProductApi.getAllProducts(count: 1);
+        rows = fallbackRows;
+        // best-effort: if returned less than per-page (10) assume only one page
+        tp = (rows.length < 10) ? 1 : 999999; // unknown total -> allow more loads
+      }
+
+      setState(() {
+        products = rows;
+        currentPage = 1;
+        totalPages = tp;
+        loading = false;
+        allLoaded = rows.isEmpty || (currentPage >= totalPages && totalPages > 0);
+      });
+
+      // scroll to top
       if (verticalScrollController.hasClients) {
         verticalScrollController.jumpTo(0);
       }
+    } catch (e) {
+      setState(() {
+        loading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to load products: $e')));
+    }
+  }
+
+  Future<void> loadMoreProducts() async {
+    if (loading || loadingMore || allLoaded) return;
+    setState(() {
+      loadingMore = true;
     });
+
+    final nextPage = currentPage + 1;
+    try {
+      // try paged endpoint first
+      final page = await ProductApi.getProductsPage(count: nextPage);
+      List<Map<String, dynamic>> rows = [];
+      int tp = totalPages;
+      if (page != null && page['rows'] is List) {
+        rows = List<Map<String, dynamic>>.from(page['rows'] as List);
+        final meta = page['meta'] as Map<String, dynamic>? ?? {};
+        if (meta.containsKey('total_pages')) {
+          tp = (meta['total_pages'] is int) ? meta['total_pages'] as int : int.tryParse(meta['total_pages']?.toString() ?? tp.toString()) ?? tp;
+        } else if (meta.containsKey('total') && meta.containsKey('per_page')) {
+          final total = int.tryParse(meta['total']?.toString() ?? '0') ?? 0;
+          final perPage = int.tryParse(meta['per_page']?.toString() ?? '10') ?? 10;
+          tp = perPage > 0 ? ((total + perPage - 1) ~/ perPage) : tp;
+        }
+      } else {
+        // fallback to getAllProducts(count)
+        final fallbackRows = await ProductApi.getAllProducts(count: nextPage);
+        rows = fallbackRows;
+        // if returned empty, mark allLoaded
+        if (fallbackRows.isEmpty) {
+          rows = [];
+          tp = currentPage; // no more pages
+        } else {
+          // unknown total -> leave tp large
+          tp = 999999;
+        }
+      }
+
+      // append unique rows (avoid duplicates by id)
+      final existingIds = products.map((e) => e['id']).toSet();
+      final newRows = rows.where((r) => !existingIds.contains(r['id'])).toList();
+
+      setState(() {
+        if (newRows.isNotEmpty) {
+          products.addAll(newRows);
+          currentPage = nextPage;
+        } else {
+          // if no new rows returned, assume no more pages
+          allLoaded = true;
+        }
+        totalPages = tp;
+        if (currentPage >= totalPages) allLoaded = true;
+      });
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to load more: $e')));
+    } finally {
+      setState(() {
+        loadingMore = false;
+      });
+    }
   }
 
   double computeProductProfit(Map<String, dynamic> p) {
-    // استخدم total_units إن وُجد، وإلا نحسبه
     final unitsInCarton = (p['units_in_carton'] ?? 0) as num;
     final totalUnits = (p['total_units'] ??
         ((p['quantity'] as num? ?? 0) *
@@ -74,7 +172,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
     final sellingPrice = (p['selling_price'] as num? ?? 0).toDouble();
 
     if (unitsInCarton == 0) {
-      // لو مفيش تعريف لعدد القطع في الكرتونه، نرجع فرق سعر القطعة مضروب في عدد الوحدات
       final profitPerUnit = sellingPrice - (purchasePrice);
       return profitPerUnit * totalUnits;
     }
@@ -99,7 +196,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
 
   Future<void> onScanBarcodeSubmitted(String code) async {
     if (code.trim().isEmpty) return;
-    // show loader dialog while searching
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -107,7 +203,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
     );
     try {
       final p = await ProductApi.getProductByBarcode(code.trim());
-      Navigator.pop(context); // close loader
+      Navigator.pop(context);
       if (p != null) {
         await showDialog(
           context: context,
@@ -155,7 +251,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         }
       }
     } catch (e) {
-      Navigator.pop(context); // close loader if error
+      Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error searching barcode: $e')));
     } finally {
       barcodeController.clear();
@@ -209,7 +305,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
           IconButton(
             tooltip: 'Barcode search',
             onPressed: () {
-              // open small dialog to input barcode
               showDialog(
                 context: context,
                 builder: (_) => AlertDialog(
@@ -254,13 +349,13 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
       ),
       body: Skeletonizer(
         enabled: loading,
-          enableSwitchAnimation: true,
-          effect: ShimmerEffect(
-            baseColor: AppColorsDark.mainColor,
-            highlightColor: Colors.grey.shade600,
-            duration: const Duration(seconds: 2),
-          ),
-          containersColor: AppColorsDark.bgCardColor,
+        enableSwitchAnimation: true,
+        effect: ShimmerEffect(
+          baseColor: AppColorsDark.mainColor,
+          highlightColor: Colors.grey.shade600,
+          duration: const Duration(seconds: 2),
+        ),
+        containersColor: AppColorsDark.bgCardColor,
         child: LayoutBuilder(
           builder: (context, constraints) {
             return Center(
@@ -279,7 +374,9 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                               onChanged: (v) => setState(() {
                                 searchQuery = v;
                                 // reset pagination when searching
-                                displayCount = 50;
+                                currentPage = 1;
+                                allLoaded = false;
+                                // scroll to top
                                 if (verticalScrollController.hasClients) {
                                   verticalScrollController.jumpTo(0);
                                 }
@@ -318,9 +415,8 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                             ))
                             : LayoutBuilder(
                           builder: (context, constraints) {
-                            // only show up to displayCount items (lazy load)
-                            final visibleProducts = filteredProducts.take(displayCount).toList();
-        
+                            final visibleProducts = filteredProducts; // show all loaded items
+
                             return SingleChildScrollView(
                               scrollDirection: Axis.horizontal,
                               child: ConstrainedBox(
@@ -329,137 +425,152 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                   // attach the vertical controller so we can detect reaching bottom
                                   scrollDirection: Axis.vertical,
                                   controller: verticalScrollController,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      border: Border.all(color: Colors.white, width: 1),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: DataTable(
-                                      columnSpacing: 18,
-                                      headingRowColor:
-                                      MaterialStateProperty.all(AppColorsDark.bgCardColor),
-                                      dataRowColor:
-                                      MaterialStateProperty.all(AppColorsDark.bgCardColor),
-                                      columns: const [
-                                        DataColumn(label: Text('ID', style: TextStyle(color: Colors.white))),
-                                        DataColumn(label: Text('Barcode', style: TextStyle(color: Colors.white))),
-                                        DataColumn(label: Text('Name', style: TextStyle(color: Colors.white))),
-                                        DataColumn(label: Text('Purchase', style: TextStyle(color: Colors.white))),
-                                        DataColumn(label: Text('Selling', style: TextStyle(color: Colors.white))),
-                                        DataColumn(label: Text('carton', style: TextStyle(color: Colors.white))),
-                                        DataColumn(label: Text('unit in carton', style: TextStyle(color: Colors.white))),
-                                        DataColumn(label: Text('Days Left', style: TextStyle(color: Colors.white))),
-                                        DataColumn(label: Text('Profit', style: TextStyle(color: Colors.white))),
-                                        DataColumn(label: Text('Actions', style: TextStyle(color: Colors.white))),
-                                      ],
-                                      rows: visibleProducts.map((p) {
-                                        final profit = computeProductProfit(p);
-                                        final totalUnits = ((p['total_units'] ??
-                                            ((p['quantity'] as num? ?? 0) *
-                                                (p['units_in_carton'] as num? ?? 0) +
-                                                (p['units_remainder'] ?? 0))) as num)
-                                            .toInt();
-                                        final cartons = (p['quantity'] as num? ?? 0).toInt();
-                                        final unitsInCarton = (p['units_in_carton'] as num? ?? 0).toInt();
-                                        final remainder = (p['units_remainder'] ?? 0) as int;
-                                        final lowStock = totalUnits <= 5;
-                                        String stockText;
-                                        // عرض بصيغة: "2crt + 3pcs = 27pcs" أو "-" لو غير معروف
-                                        if (unitsInCarton > 0) {
-                                          stockText = '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
-                                        } else {
-                                          stockText = '$totalUnits قطعة';
-                                        }
-        
-                                        return DataRow(
-                                          cells: [
-                                            DataCell(Text('${p['id']}', style: const TextStyle(color: Colors.white))),
-                                            DataCell(Text(p['barcode']?.toString() ?? '-', style: const TextStyle(color: Colors.white))),
-                                            DataCell(Text(p['name'], style: const TextStyle(color: Colors.white))),
-                                            DataCell(Text((p['purchase_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
-                                            DataCell(Text((p['selling_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
-                                            DataCell(
-                                              Text(
-                                                "$cartons",
-                                                style: TextStyle(
-                                                  color: lowStock ? Colors.red : Colors.white,
-                                                ),
-                                              ),
-                                            ),
-                                            DataCell(
-                                              Text(
-                                                "$totalUnits",
-                                                style: TextStyle(
-                                                  color: lowStock ? Colors.red : Colors.white,
-                                                ),
-                                              ),
-                                            ),
-                                            DataCell(
-                                              Container(
-                                                alignment: Alignment.center,
-                                                width: 50,
-                                                child: Text(
-                                                      () {
-                                                    if (p['expiry_date'] == null || p['expiry_date'].toString().isEmpty) return '-';
-                                                    final expiry = DateTime.tryParse(p['expiry_date']);
-                                                    if (expiry == null) return '-';
-                                                    final daysLeft = expiry.difference(DateTime.now()).inDays;
-                                                    return '$daysLeft';
-                                                  }(),
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                  ),
-                                                  textAlign: TextAlign.center,
-                                                ),
-                                              ),
-                                            ),
-                                            DataCell(Text(profit.toStringAsFixed(2), style: const TextStyle(color: Colors.white))),
-                                            DataCell(Row(
-                                              children: [
-                                                IconButton(
-                                                  tooltip: 'Edit',
-                                                  icon: const Icon(Icons.edit, color: Colors.white),
-                                                  onPressed: () => openAddEditDialog(existing: p),
-                                                ),
-                                                const Spacer(),
-                                                IconButton(
-                                                  tooltip: 'Delete',
-                                                  icon: const Icon(Icons.delete, color: Colors.red),
-                                                  onPressed: () async {
-                                                    final ok = await showDialog<bool>(
-                                                      context: context,
-                                                      builder: (_) => AlertDialog(
-                                                        title: const Text('Delete product'),
-                                                        content: Text('Delete "${p['name']}" ?'),
-                                                        actions: [
-                                                          TextButton(
-                                                            onPressed: () => Navigator.pop(context, false),
-                                                            child: const Text('Cancel'),
-                                                          ),
-                                                          TextButton(
-                                                            onPressed: () => Navigator.pop(context, true),
-                                                            child: const Text('Delete'),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    );
-                                                    if (ok == true) {
-                                                      final deleted = await ProductApi.deleteProduct(p['id']);
-                                                      if (deleted) {
-                                                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Deleted successfully')));
-                                                        await refreshProducts();
-                                                      } else {
-                                                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delete failed')));
-                                                      }
-                                                    }
-                                                  },
-                                                ),
-                                              ],
-                                            )),
+                                  child: Column(
+                                    children: [
+                                      Container(
+                                        width: constraints.maxWidth, // <-- يجبر الحاوية تأخذ كامل العرض المتاح
+                                        decoration: BoxDecoration(
+                                          border: Border.all(color: Colors.white, width: 1),
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: DataTable(
+                                          columnSpacing: 18,
+                                          headingRowColor:
+                                          MaterialStateProperty.all(AppColorsDark.bgCardColor),
+                                          dataRowColor:
+                                          MaterialStateProperty.all(AppColorsDark.bgCardColor),
+                                          columns: const [
+                                            DataColumn(label: Text('ID', style: TextStyle(color: Colors.white))),
+                                            DataColumn(label: Text('Barcode', style: TextStyle(color: Colors.white))),
+                                            DataColumn(label: Text('Name', style: TextStyle(color: Colors.white))),
+                                            DataColumn(label: Text('Purchase', style: TextStyle(color: Colors.white))),
+                                            DataColumn(label: Text('Selling', style: TextStyle(color: Colors.white))),
+                                            DataColumn(label: Text('carton', style: TextStyle(color: Colors.white))),
+                                            DataColumn(label: Text('unit in carton', style: TextStyle(color: Colors.white))),
+                                            DataColumn(label: Text('Days Left', style: TextStyle(color: Colors.white))),
+                                            DataColumn(label: Text('Profit', style: TextStyle(color: Colors.white))),
+                                            DataColumn(label: Text('Actions', style: TextStyle(color: Colors.white))),
                                           ],
-                                        );
-                                      }).toList(),
-                                    ),
+                                          rows: visibleProducts.map((p) {
+                                            final profit = computeProductProfit(p);
+                                            final totalUnits = ((p['total_units'] ??
+                                                ((p['quantity'] as num? ?? 0) *
+                                                    (p['units_in_carton'] as num? ?? 0) +
+                                                    (p['units_remainder'] ?? 0))) as num)
+                                                .toInt();
+                                            final cartons = (p['quantity'] as num? ?? 0).toInt();
+                                            final unitsInCarton = (p['units_in_carton'] as num? ?? 0).toInt();
+                                            final remainder = (p['units_remainder'] ?? 0) as int;
+                                            final lowStock = totalUnits <= 5;
+                                            String stockText;
+                                            if (unitsInCarton > 0) {
+                                              stockText = '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
+                                            } else {
+                                              stockText = '$totalUnits قطعة';
+                                            }
+
+                                            return DataRow(
+                                              cells: [
+                                                DataCell(Text('${p['id']}', style: const TextStyle(color: Colors.white))),
+                                                DataCell(Text(p['barcode']?.toString() ?? '-', style: const TextStyle(color: Colors.white))),
+                                                DataCell(Text(p['name'], style: const TextStyle(color: Colors.white))),
+                                                DataCell(Text((p['purchase_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
+                                                DataCell(Text((p['selling_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
+                                                DataCell(
+                                                  Text(
+                                                    "$cartons",
+                                                    style: TextStyle(
+                                                      color: lowStock ? Colors.red : Colors.white,
+                                                    ),
+                                                  ),
+                                                ),
+                                                DataCell(
+                                                  Text(
+                                                    "$totalUnits",
+                                                    style: TextStyle(
+                                                      color: lowStock ? Colors.red : Colors.white,
+                                                    ),
+                                                  ),
+                                                ),
+                                                DataCell(
+                                                  Container(
+                                                    alignment: Alignment.center,
+                                                    width: 50,
+                                                    child: Text(
+                                                          () {
+                                                        if (p['expiry_date'] == null || p['expiry_date'].toString().isEmpty) return '-';
+                                                        final expiry = DateTime.tryParse(p['expiry_date']);
+                                                        if (expiry == null) return '-';
+                                                        final daysLeft = expiry.difference(DateTime.now()).inDays;
+                                                        return '$daysLeft';
+                                                      }(),
+                                                      style: const TextStyle(
+                                                        color: Colors.white,
+                                                      ),
+                                                      textAlign: TextAlign.center,
+                                                    ),
+                                                  ),
+                                                ),
+                                                DataCell(Text(profit.toStringAsFixed(2), style: const TextStyle(color: Colors.white))),
+                                                DataCell(Row(
+                                                  children: [
+                                                    IconButton(
+                                                      tooltip: 'Edit',
+                                                      icon: const Icon(Icons.edit, color: Colors.white),
+                                                      onPressed: () => openAddEditDialog(existing: p),
+                                                    ),
+                                                    const Spacer(),
+                                                    IconButton(
+                                                      tooltip: 'Delete',
+                                                      icon: const Icon(Icons.delete, color: Colors.red),
+                                                      onPressed: () async {
+                                                        final ok = await showDialog<bool>(
+                                                          context: context,
+                                                          builder: (_) => AlertDialog(
+                                                            title: const Text('Delete product'),
+                                                            content: Text('Delete "${p['name']}" ?'),
+                                                            actions: [
+                                                              TextButton(
+                                                                onPressed: () => Navigator.pop(context, false),
+                                                                child: const Text('Cancel'),
+                                                              ),
+                                                              TextButton(
+                                                                onPressed: () => Navigator.pop(context, true),
+                                                                child: const Text('Delete'),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        );
+                                                        if (ok == true) {
+                                                          final deleted = await ProductApi.deleteProduct(p['id']);
+                                                          if (deleted) {
+                                                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Deleted successfully')));
+                                                            await refreshProducts();
+                                                          } else {
+                                                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Delete failed')));
+                                                          }
+                                                        }
+                                                      },
+                                                    ),
+                                                  ],
+                                                )),
+                                              ],
+                                            );
+                                          }).toList(),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      if (loadingMore)
+                                        const Padding(
+                                          padding: EdgeInsets.symmetric(vertical: 8.0),
+                                          child: Center(child: CircularProgressIndicator()),
+                                        ),
+                                      if (allLoaded)
+                                        const Padding(
+                                          padding: EdgeInsets.symmetric(vertical: 8.0),
+                                          child: Center(child: Text('لا يوجد منتجات اخرا', style: TextStyle(color: Colors.white70))),
+                                        ),
+                                    ],
                                   ),
                                 ),
                               ),
@@ -487,6 +598,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   }
 }
 
+// AddEditProductDialog remains unchanged (copied from your original file)
 class AddEditProductDialog extends StatefulWidget {
   final Map<String, dynamic>? existing;
   final String? prefillBarcode;
@@ -507,7 +619,6 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
   final unitsRemainderController = TextEditingController(); // محجوز داخلياً (لن يدخل المستخدمه يدوياً)
   final productionDateController = TextEditingController();
   final expiryDateController = TextEditingController();
-  // NEW: وحدات خارج الكراتين (اللي طلبتها)
   final externalUnitsController = TextEditingController();
 
   final barcodeFocusNode = FocusNode();
@@ -538,13 +649,10 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
     widget.existing != null ? (widget.existing!['selling_price']?.toString() ?? '') : '';
     unitsInCartonController.text =
     widget.existing != null ? (widget.existing!['units_in_carton']?.toString() ?? '') : '';
-    // qtyController represents number of cartons
     qtyController.text = widget.existing != null ? (widget.existing!['quantity']?.toString() ?? '') : '';
-    // units_remainder previously stored - نعرضه كمقدار وحدات خارج الكراتين (افتراضي 0)
     externalUnitsController.text = widget.existing != null
         ? (widget.existing!['units_remainder']?.toString() ?? '0')
         : '0';
-    // unitsRemainderController نحتفظ به لكن يتم احتسابه تلقائياً عند الحفظ
     unitsRemainderController.text =
     widget.existing != null ? (widget.existing!['units_remainder']?.toString() ?? '0') : '0';
     productionDateController.text = widget.existing?['production_date'] ?? '';
@@ -558,18 +666,15 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
     final cartons = int.tryParse(qtyController.text.trim()) ?? 0;
     final external = int.tryParse(externalUnitsController.text.trim()) ?? 0;
 
-    // تحويل الوحدات الخارجية إلى عدد كراتين وباقي وحدات
     int finalCartons = cartons;
     int remainder = 0;
     if (unitsInCarton > 0) {
       finalCartons += external ~/ unitsInCarton;
       remainder = external % unitsInCarton;
     } else {
-      // لو لم تُدخل عدد وحدات في الكرتونة أو كان صفر، نخزن كل الوحدات الخارجية كباقي
       remainder = external;
     }
 
-    // نحفظ (سواء إضافة أو تعديل) — ملاحظة: عند التعديل نستبدل القيم الحالية بالقيم الجديدة (لا نجمع على القديم)
     final prod = {
       'id': isEdit ? widget.existing!['id'] : null,
       'barcode': barcodeController.text.trim(),
@@ -577,13 +682,12 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
       'purchase_price': double.tryParse(purchaseController.text.trim()) ?? 0.0,
       'selling_price': double.tryParse(sellingController.text.trim()) ?? 0.0,
       'units_in_carton': unitsInCarton,
-      'quantity': finalCartons, // عدد الكراتين النهائي بعد إضافة ما تحوّل من وحدات خارجية
-      'units_remainder': remainder, // الباقي داخل الكرتونة الأخيرة
+      'quantity': finalCartons,
+      'units_remainder': remainder,
       'production_date': productionDateController.text.trim(),
       'expiry_date': expiryDateController.text.trim(),
     };
 
-    // show loading dialog
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -595,7 +699,6 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
     Navigator.pop(context); // close loading
 
     if (!success) {
-      // show error and keep dialog open
       await showDialog(
         context: context,
         builder: (_) => AlertDialog(
@@ -609,7 +712,6 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
       return;
     }
 
-    // close add/edit dialog and indicate change
     Navigator.pop(context, true);
   }
 
@@ -694,7 +796,6 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                   },
                 ),
                 const SizedBox(height: 10),
-                // NEW: حقل وحدات خارج الكراتين
                 CustomFormField(
                   controller: externalUnitsController,
                   focusNode: externalUnitsFocusNode,

@@ -7,20 +7,34 @@ const String _BASE_URL = 'https://nabawisolution.com/products.php';
 
 class ProductApi {
   /// جلب كل المنتجات
-  static Future<List<Map<String, dynamic>>> getAllProducts() async {
+  /// جلب المنتجات صفحة بصفحة (count يبدأ من 1).
+  /// ترجع قائمة المنتجات (rows) كما كانت سابقًا.
+  static Future<List<Map<String, dynamic>>> getAllProducts({int count = 1}) async {
     try {
-      final uri = Uri.parse('$_BASE_URL?action=get_all');
+      if (count < 1) count = 1;
+      final uri = Uri.parse('$_BASE_URL?action=get_all&count=${count}');
       final resp = await http.get(uri).timeout(const Duration(seconds: 10));
       if (resp.statusCode != 200) {
         return [];
       }
       final body = jsonDecode(resp.body);
-      if (body is Map && body['success'] == true && body['data'] is List) {
-        final List data = body['data'];
-        return data
-            .map<Map<String, dynamic>>(
-                (e) => _normalizeProductMap(Map<String, dynamic>.from(e)))
-            .toList();
+      // الآن السيرفر يرجع data كـ { meta: {...}, rows: [...] }
+      if (body is Map && body['success'] == true) {
+        final data = body['data'];
+        if (data is Map && data['rows'] is List) {
+          final List rows = data['rows'];
+          return rows
+              .map<Map<String, dynamic>>(
+                  (e) => _normalizeProductMap(Map<String, dynamic>.from(e)))
+              .toList();
+        }
+        // backward-compat: لو رجع مباشرة لستة (نادر الآن)
+        if (data is List) {
+          return data
+              .map<Map<String, dynamic>>(
+                  (e) => _normalizeProductMap(Map<String, dynamic>.from(e)))
+              .toList();
+        }
       }
       return [];
     } catch (e) {
@@ -28,6 +42,34 @@ class ProductApi {
       return [];
     }
   }
+  /// جلب صفحة منتجات مع الـ meta
+  /// يرجع Map يحتوي keys: 'meta' (Map) و 'rows' (List<Map>)
+  static Future<Map<String, dynamic>?> getProductsPage({int count = 1}) async {
+    try {
+      if (count < 1) count = 1;
+      final uri = Uri.parse('$_BASE_URL?action=get_all&count=${count}');
+      final resp = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (resp.statusCode != 200) return null;
+      final body = jsonDecode(resp.body);
+      if (body is Map && body['success'] == true && body['data'] is Map) {
+        final data = body['data'] as Map;
+        final meta = data['meta'] ?? {};
+        final List rowsRaw = data['rows'] is List ? data['rows'] : [];
+        final rows = rowsRaw
+            .map<Map<String, dynamic>>(
+                (e) => _normalizeProductMap(Map<String, dynamic>.from(e)))
+            .toList();
+        return {
+          'meta': Map<String, dynamic>.from(meta),
+          'rows': rows,
+        };
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
 
   /// جلب منتج بالباركود — يرجع null لو مش موجود
   static Future<Map<String, dynamic>?> getProductByBarcode(String code) async {
