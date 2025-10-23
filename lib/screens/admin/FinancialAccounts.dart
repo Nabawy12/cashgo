@@ -1,17 +1,22 @@
-// admin_cash_drawer_page_network.dart
+// lib/screens/admin/admin_cash_drawer_page_network.dart
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:http/http.dart' as http;
 import 'package:skeletonizer/skeletonizer.dart';
+import 'package:uuid/uuid.dart';
+import 'package:hive/hive.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+
 import '../../services/Api/Admin/financle.dart';
 import '../../utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 
-// عدّل المسار حسب مكان ملف الخدمة عندك
-
+/// شاشة الدرج — تدعم offline / online: تحفظ محليًا في Hive وتضع ops في صندوق 'ops'
+/// لكي يقوم SyncManager لاحقًا برفعها عند عودة الاتصال.
 class AdminCashDrawerPage extends StatefulWidget {
   const AdminCashDrawerPage({Key? key}) : super(key: key);
 
@@ -20,14 +25,12 @@ class AdminCashDrawerPage extends StatefulWidget {
 }
 
 class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
-  // Controllers منفصلة كما طلبت
-  final TextEditingController _startingController = TextEditingController(); // لتعيين المبلغ المبدئي في الدرج
-  final TextEditingController _maxLimitController = TextEditingController(); // لوضع الحد الاقصي لبدايه الدرج بعد تقفيل الشيفت
-  final TextEditingController _walletController = TextEditingController(); // رصيد المحفظة
+  final TextEditingController _startingController = TextEditingController();
+  final TextEditingController _maxLimitController = TextEditingController();
+  final TextEditingController _walletController = TextEditingController();
 
   final NumberFormat _moneyFmt = NumberFormat.currency(locale: 'ar', symbol: '', decimalDigits: 0);
   final NumberFormat _moneyFmtNoDecimal = NumberFormat.currency(locale: 'ar', symbol: '', decimalDigits: 0);
-
   final DateFormat _dateFormat = DateFormat('yyyy-MM-dd');
 
   bool _loading = true;
@@ -40,15 +43,15 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   double _salesNet = 0.0;
   double _purchasePaidCash = 0.0;
   double _creditOutstanding = 0.0;
+  double _purchasePaidOnCredit = 0.0;
 
-  // service الشبكة — عدّل baseUrl إلى عنوان API الخاص بك
   final InsertFinancialAccountService _service = InsertFinancialAccountService();
-
-  // --- إضافات لعرض تقفيلات الشيفت لكل كاشير ---
   final String _closeShiftUrl = 'https://nabawisolution.com/get_close_shieft.php';
   List<CloseShift> _shifts = [];
   bool _loadingShifts = false;
   DateTime _selectedDate = DateTime.now();
+
+  final Uuid _uuid = const Uuid();
 
   @override
   void initState() {
@@ -77,55 +80,233 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     return _formatMoney(value);
   }
 
-  // تحميل اخر سجل من السيرفر (latest record)
+  // ---------------------------
+  // Offline/online helpers
+  // ---------------------------
+  Future<bool> _isOnline() async {
+    try {
+      final c = await Connectivity().checkConnectivity();
+      return c != ConnectivityResult.none;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _saveLocalAndQueue(FinancialAccount payload, {String? localKey, Map<String, dynamic>? extraMeta}) async {
+    // open boxes
+    final finBox = await Hive.openBox('financial_accounts');
+    final opsBox = await Hive.openBox('ops');
+
+    final lid = localKey ?? 'local_${DateTime.now().microsecondsSinceEpoch}';
+    final record = payload.toJsonFull();
+    // ensure created_at exists
+    record['created_at'] = record['created_at'] ?? DateTime.now().toUtc().toIso8601String();
+    record['sync_state'] = 'pending';
+    record['local_id'] = lid;
+    if (extraMeta != null) record.addAll(extraMeta);
+
+    await finBox.put(lid, record);
+
+    // create op for SyncManager
+    final opId = _uuid.v4();
+    final op = {
+      'opId': opId,
+      'entity': 'financial_account',
+      'type': 'create',
+      'payload': {...payload.toJsonForServer(), 'local_id': lid},
+      'timestamp': DateTime.now().toUtc().toIso8601String(),
+      'state': 'pending',
+      'retries': 0,
+    };
+
+    await opsBox.put(opId, op);
+  }
+
+  Future<void> _saveServerRecordToLocal(Map<String, dynamic> serverData) async {
+    final finBox = await Hive.openBox('financial_accounts');
+    if (serverData['id'] != null) {
+      final key = serverData['id'].toString();
+      final toStore = Map<String, dynamic>.from(serverData);
+      toStore['sync_state'] = 'synced';
+      await finBox.put(key, toStore);
+    } else {
+      // fallback: store with generated id
+      final key = 'local_${DateTime.now().microsecondsSinceEpoch}';
+      final toStore = Map<String, dynamic>.from(serverData);
+      toStore['sync_state'] = 'synced';
+      await finBox.put(key, toStore);
+    }
+  }
+
+  Future<FinancialAccount?> _latestFromLocal() async {
+    final finBox = await Hive.openBox('financial_accounts');
+    if (finBox.isEmpty) return null;
+
+    // try to pick latest by created_at if available
+    DateTime? bestDate;
+    dynamic bestVal;
+    for (final k in finBox.keys) {
+      final v = finBox.get(k);
+      if (v == null || v is! Map) continue;
+      DateTime? created;
+      try {
+        if (v['created_at'] != null) {
+          created = DateTime.tryParse(v['created_at'].toString());
+        }
+      } catch (_) {
+        created = null;
+      }
+      if (created == null) {
+        // fallback to insertion order: use numeric local id timestamp if present
+        if (k is String && k.startsWith('local_')) {
+          final parts = k.split('_');
+          if (parts.length > 1) {
+            final ts = int.tryParse(parts[1]);
+            if (ts != null) created = DateTime.fromMillisecondsSinceEpoch((ts / 1000).round());
+          }
+        }
+      }
+      if (created != null) {
+        if (bestDate == null || created.isAfter(bestDate)) {
+          bestDate = created;
+          bestVal = v;
+        }
+      } else {
+        // if no created dates at all, just keep the last value encountered
+        bestVal = v;
+      }
+    }
+
+    if (bestVal != null && bestVal is Map) {
+      try {
+        return FinancialAccount.fromJson(Map<String, dynamic>.from(bestVal));
+      } catch (_) {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  // ---------------------------
+  // Load data: try online then fallback to local
+  // ---------------------------
   Future<void> _loadData() async {
     if (!mounted) return;
     setState(() => _loading = true);
 
+    final online = await _isOnline();
+    if (online) {
+      // try fetch latest from server
+      try {
+        final list = await _service.getLatest(limit: 1);
+        if (list.isNotEmpty) {
+          final rec = list.first;
+          // save server record to local cache for offline usage
+          await _saveServerRecordToLocal(rec.toJsonFull());
+          _applyRecordToState(rec);
+          return;
+        } else {
+          // server returned empty -> try local cache
+          final local = await _latestFromLocal();
+          if (local != null) {
+            _applyRecordToState(local);
+            return;
+          } else {
+            // no data at all
+            _applyDefaults();
+            return;
+          }
+        }
+      } catch (e, st) {
+        debugPrint('Failed to load from server, will attempt local: $e\n$st');
+        // fallthrough to local
+      }
+    }
+
+    // offline or server failed: load local
     try {
-      final list = await _service.getLatest(limit: 1);
-      if (list.isNotEmpty) {
-        final rec = list.first;
-        setState(() {
-          _startingAmount = rec.startingAmount;
-          _maxLimit = rec.maxLimit;
-          _cashInWallet = rec.cashInWallet;
-          _startingInWallet = rec.cashInWallet;
-          // قد تكون القيمة من السيرفر null => نتعامل معها ونعرض 0.0 في الحالة دي
-          _totalInDrawer = rec.totalInDrawer ?? 0.0;
-
-          _startingController.text = _startingAmount.toStringAsFixed(2);
-          _maxLimitController.text = _maxLimit.toStringAsFixed(2);
-          _walletController.text = _cashInWallet.toStringAsFixed(2);
-        });
+      final local = await _latestFromLocal();
+      if (local != null) {
+        _applyRecordToState(local);
       } else {
-        setState(() {
-          _startingAmount = 0.0;
-          _maxLimit = 0.0;
-          _cashInWallet = 0.0;
-          _totalInDrawer = 0.0;
-
-          _startingController.text = '0.00';
-          _maxLimitController.text = '0.00';
-          _walletController.text = '0.00';
-        });
+        _applyDefaults();
       }
     } catch (e, st) {
-      debugPrint('Failed to load financial accounts from API: $e\n$st');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('فشل تحميل البيانات من السيرفر: $e',
-              textAlign: TextAlign.right,
-            )
-        )
-        );
-      }
+      debugPrint('Failed to load local financial accounts: $e\n$st');
+      _applyDefaults();
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  // ---------- دوال الحفظ كما في كودك الأصلي ----------
+  void _applyDefaults() {
+    if (!mounted) return;
+    setState(() {
+      _startingAmount = 0.0;
+      _maxLimit = 0.0;
+      _cashInWallet = 0.0;
+      _totalInDrawer = 0.0;
+      _startingController.text = '0.00';
+      _maxLimitController.text = '0.00';
+      _walletController.text = '0.00';
+      _loading = false;
+    });
+  }
+
+  void _applyRecordToState(FinancialAccount rec) {
+    if (!mounted) return;
+    setState(() {
+      _startingAmount = rec.startingAmount;
+      _maxLimit = rec.maxLimit;
+      _cashInWallet = rec.cashInWallet;
+      _totalInDrawer = rec.totalInDrawer ?? 0.0;
+      _startingController.text = _startingAmount.toStringAsFixed(2);
+      _maxLimitController.text = _maxLimit.toStringAsFixed(2);
+      _walletController.text = _cashInWallet.toStringAsFixed(2);
+      _loading = false;
+    });
+  }
+
+  // ---------- Save helpers that try online, else queue ----------
+  Future<void> _saveOnlineOrQueue(FinancialAccount payload) async {
+    final online = await _isOnline();
+
+    if (online) {
+      try {
+        final inserted = await _service.insert(payload);
+        // server returned inserted record; persist locally and update UI
+        // InsertFinancialAccountService.insert returns FinancialAccount.fromJson(...)
+        // Save server record into Hive
+        await _saveServerRecordToLocal(inserted.toJsonFull());
+        _applyRecordToState(inserted);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('تم الحفظ على السيرفر'),
+            duration: Duration(seconds: 2),
+          ));
+        }
+        return;
+      } catch (e) {
+        // network/API error -> fallthrough to queue
+        debugPrint('[AdminCashDrawerPage] online save failed, queueing locally: $e');
+      }
+    }
+
+    // offline or failed: save local and queue op
+    await _saveLocalAndQueue(payload);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('لا يوجد اتصال — تم الحفظ محليًا وسيتم رفعه تلقائيًا عند عودة الشبكة'),
+        duration: Duration(seconds: 3),
+      ));
+    }
+    // update UI to reflect local change
+    final localLatest = await _latestFromLocal();
+    if (localLatest != null) _applyRecordToState(localLatest);
+  }
+
+  // ---------- دوال الحفظ المستخدمة في الواجهة ----------
   Future<void> _saveStartingAmount_replace() async {
     final text = _startingController.text.trim().replaceAll(',', '');
     final entered = double.tryParse(text) ?? 0.0;
@@ -138,52 +319,12 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         cashInWallet: _cashInWallet,
       );
 
-      final inserted = await _service.insert(payload);
-
-      setState(() {
-        _startingAmount = inserted.startingAmount;
-        _maxLimit = inserted.maxLimit;
-        _cashInWallet = inserted.cashInWallet;
-        _totalInDrawer = inserted.totalInDrawer ?? 0.0;
-
-        _startingController.text = _startingAmount.toStringAsFixed(2);
-        _maxLimitController.text = _maxLimit.toStringAsFixed(2);
-        _walletController.text = _cashInWallet.toStringAsFixed(2);
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text(
-                'تم حفظ مبلغ البداية بنجاح',
-              textAlign: TextAlign.right,
-            )));
-      }
-    } on ValidationException catch (ve) {
-      final msg = ve.errors.join('\n');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-          msg,
-        textAlign: TextAlign.right,
-      )
-      )
-      );
-    } on ApiException catch (ae) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-          'API error: ${ae.message}',
-          textAlign: TextAlign.right,
-
-      )
-      )
-      );
+      await _saveOnlineOrQueue(payload);
     } catch (e) {
-      debugPrint('Error saving starting amount via API: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-          'خطأ أثناء الحفظ: $e',
-        textAlign: TextAlign.right,
-
-      )
-      )
-      );
+      debugPrint('Error saving starting amount: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء الحفظ: $e')));
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -201,45 +342,10 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         cashInWallet: _cashInWallet,
       );
 
-      final inserted = await _service.insert(payload);
-
-      setState(() {
-        _startingAmount = inserted.startingAmount;
-        _maxLimit = inserted.maxLimit;
-        _cashInWallet = inserted.cashInWallet;
-        _totalInDrawer = inserted.totalInDrawer ?? 0.0;
-
-        _startingController.text = _startingAmount.toStringAsFixed(2);
-        _maxLimitController.text = _maxLimit.toStringAsFixed(2);
-        _walletController.text = _cashInWallet.toStringAsFixed(2);
-      });
-
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-          'تم حفظ الحد الأقصى بنجاح',
-        textAlign: TextAlign.right,
-
-      )
-      )
-      );
-    } on ValidationException catch (ve) {
-      final msg = ve.errors.join('\n');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-          msg,
-        textAlign: TextAlign.right,
-      )));
-    } on ApiException catch (ae) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-          'API error: ${ae.message}',
-        textAlign: TextAlign.right,
-
-      )));
+      await _saveOnlineOrQueue(payload);
     } catch (e) {
-      debugPrint('Error saving max limit via API: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-          'خطأ أثناء الحفظ: $e',
-        textAlign: TextAlign.right,
-
-      )));
+      debugPrint('Error saving max limit: $e');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء الحفظ: $e')));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -249,11 +355,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     final text = _walletController.text.trim().replaceAll(',', '');
     final entered = double.tryParse(text) ?? 0.0;
     if (entered < 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-          'أدخل مبلغًا صالحًا (0 أو أكبر)',
-        textAlign: TextAlign.right,
-
-      )));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صالحًا (0 أو أكبر)', textAlign: TextAlign.right)));
       return;
     }
 
@@ -265,55 +367,26 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         cashInWallet: entered,
       );
 
-      final inserted = await _service.insert(payload);
-
-      setState(() {
-        _startingAmount = inserted.startingAmount;
-        _maxLimit = inserted.maxLimit;
-        _cashInWallet = inserted.cashInWallet;
-        _totalInDrawer = inserted.totalInDrawer ?? 0.0;
-
-        _startingController.text = _startingAmount.toStringAsFixed(2);
-        _walletController.text = _cashInWallet.toStringAsFixed(2);
-        _maxLimitController.text = _maxLimit.toStringAsFixed(2);
-      });
-
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(
-              'تم ضبط رصيد المحفظة إلى EGP ${entered.toStringAsFixed(2)}',
-            textAlign: TextAlign.right,
-
-          )));
-    } on ValidationException catch (ve) {
-      final msg = ve.errors.join('\n');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg,              textAlign: TextAlign.right,
-      )));
-    } on ApiException catch (ae) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('API error: ${ae.message}',              textAlign: TextAlign.right,
-      )));
+      await _saveOnlineOrQueue(payload);
     } catch (e) {
-      debugPrint('Error updating wallet via API: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء تحديث المحفظة: $e',              textAlign: TextAlign.right,
-      )));
+      debugPrint('Error updating wallet: $e');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء التحديث: $e')));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
-
 
   Future<void> _transferCardToDrawer({required double amount}) async {
     setState(() => _loading = true);
     try {
       double transferAmount = amount;
       if (transferAmount <= 0) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يوجد مبلغ قابل للتحويل',              textAlign: TextAlign.right,
-        )));
-        setState(() => _loading = false);
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يوجد مبلغ قابل للتحويل', textAlign: TextAlign.right)));
+        if (mounted) setState(() => _loading = false);
         return;
       }
 
       if (transferAmount > _cashInWallet) transferAmount = _cashInWallet;
-
       final newWallet = _cashInWallet - transferAmount;
 
       final payload = FinancialAccount(
@@ -322,39 +395,23 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         cashInWallet: newWallet,
       );
 
-      final inserted = await _service.insert(payload);
+      await _saveOnlineOrQueue(payload);
+      // reflect change in UI (either server or local)
+      final localLatest = await _latestFromLocal();
+      if (localLatest != null) _applyRecordToState(localLatest);
 
-      setState(() {
-        _cashInWallet = inserted.cashInWallet;
-        _totalInDrawer = inserted.totalInDrawer ?? 0.0;
-        _walletController.text = _cashInWallet.toStringAsFixed(2);
-      });
-
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم إضافة EGP ${transferAmount.toStringAsFixed(2)} إلى الدرج',
-        textAlign: TextAlign.right,
-      )));
-    } on ValidationException catch (ve) {
-      final msg = ve.errors.join('\n');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg,
-        textAlign: TextAlign.right,
-      )));
-    } on ApiException catch (ae) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('API error: ${ae.message}',
-        textAlign: TextAlign.right,
-      )));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تم إضافة EGP ${transferAmount.toStringAsFixed(2)} إلى الدرج', textAlign: TextAlign.right)));
     } catch (e) {
-      debugPrint('Error transferring via API: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التحويل: $e',
-        textAlign: TextAlign.right,
-      )));
+      debugPrint('Error transferring: $e');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التحويل: $e', textAlign: TextAlign.right)));
       await _loadData();
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
+  // ------------------ بقية الكود كما كان مع بعض التحسينات البسيطة ------------------
 
-  // ------------------ واجهة المستخدم ------------------
   Widget _buildSummaryRow(String label, double value, {TextStyle? style}) {
     final formatted = _formatMoney(value.abs());
     final sign = value < 0 ? '-' : '';
@@ -375,11 +432,9 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     );
   }
 
-  // ------------------ دوال جديدة: تحميل تقفيلات الشيفت ------------------
+  // ---------- شيفتات ----------
   Future<void> _loadShifts({DateTime? date, bool tryWithoutDateIfEmpty = false}) async {
     final d = date ?? _selectedDate;
-    final dateStr = _dateFormat.format(d);
-
     if (!mounted) return;
     setState(() {
       _loadingShifts = true;
@@ -387,10 +442,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
 
     try {
       final baseUri = Uri.parse(_closeShiftUrl);
-
-      // نرسل table افتراضي
       Uri uri = baseUri.replace(queryParameters: {
-        'date': dateStr,
+        'date': _dateFormat.format(d),
         'table': 'close_shieft',
       });
 
@@ -399,10 +452,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         'Accept': 'application/json',
       };
 
-      debugPrint('Trying GET $uri');
       final resp = await http.get(uri, headers: headers).timeout(const Duration(seconds: 15));
-      debugPrint('-> status ${resp.statusCode}');
-      debugPrint('-> full response body:\n${resp.body}');
 
       if (resp.statusCode != 200) {
         String serverMsg = resp.body;
@@ -410,36 +460,25 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           final parsed = json.decode(resp.body);
           if (parsed is Map && parsed.containsKey('error')) serverMsg = parsed['error'].toString();
         } catch (_) {}
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ من السيرفر ${resp.statusCode}: ${serverMsg.length>200?serverMsg.substring(0,200)+'...':serverMsg}',
-          textAlign: TextAlign.right,
-        )));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ من السيرفر ${resp.statusCode}: ${serverMsg.length>200?serverMsg.substring(0,200)+'...':serverMsg}', textAlign: TextAlign.right)));
         if (mounted) setState(() => _shifts = []);
         return;
       }
 
-      // معالجة الجسم كما سابق
       await _processShiftsResponse(resp.body, d);
-
-      // **ملاحظة**: لم نعد نجرب تلقائيًا بدون تاريخ عند عدم وجود صفوف.
-      // هذا السلوك يضمن أنّه لو المستخدم اختار تاريخ معين ولم يتم العثور على بيانات
-      // لن يتم عرض "كل التقفيلات" بدون إذن المستخدم.
     } catch (e, st) {
       debugPrint('Failed to load close shifts: $e\n$st');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تحميل تقفيلات الشيفت: $e',
-          textAlign: TextAlign.right,
-        )));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تحميل تقفيلات الشيفت: $e', textAlign: TextAlign.right)));
         setState(() => _shifts = []);
       }
     } finally {
       if (mounted) setState(() => _loadingShifts = false);
     }
   }
-  double _purchasePaidOnCredit = 0.0;       // المدفوع لمشتريات آجلة (دفعات على الائتمان)
 
   DateTime? _extractRecordDateFromMap(Map m) {
     if (m.isEmpty) return null;
-
     final candidates = [
       'date',
       'shift_date',
@@ -458,53 +497,37 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     for (final key in candidates) {
       if (!m.containsKey(key) || m[key] == null) continue;
       final val = m[key];
-      // إذا كان رقم: افترض epoch (ثواني أو ملّلي)
       if (val is num) {
         final n = val.toInt();
-        // تمييز ms vs s
         if (n > 1000000000000) {
-          // ملّلي
           try {
             return DateTime.fromMillisecondsSinceEpoch(n);
           } catch (_) {}
         } else if (n > 1000000000) {
-          // ثواني
           try {
             return DateTime.fromMillisecondsSinceEpoch(n * 1000);
           } catch (_) {}
         }
       }
 
-      // إذا كان نص
       if (val is String) {
         final s = val.trim();
         if (s.isEmpty) continue;
-
-        // محاولات متدرجة لتحليل التاريخ/الوقت
-        // 1) ISO / RFC
         try {
           return DateTime.parse(s);
         } catch (_) {}
-
-        // 2) yyyy-MM-dd
         try {
           return DateFormat('yyyy-MM-dd').parseLoose(s);
         } catch (_) {}
-
-        // 3) dd/MM/yyyy أو dd-MM-yyyy
         try {
           return DateFormat('dd/MM/yyyy').parseLoose(s);
         } catch (_) {}
         try {
           return DateFormat('dd-MM-yyyy').parseLoose(s);
         } catch (_) {}
-
-        // 4) yyyy/MM/dd
         try {
           return DateFormat('yyyy/MM/dd').parseLoose(s);
         } catch (_) {}
-
-        // 5) صيغ تحتوي تاريخ ووقت شائعة: 'yyyy-MM-dd HH:mm:ss' أو 'dd/MM/yyyy HH:mm'
         final patterns = [
           'yyyy-MM-dd HH:mm:ss',
           'yyyy-MM-dd HH:mm',
@@ -520,8 +543,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         }
       }
     }
-
-    // لا شيء نجح
     return null;
   }
 
@@ -543,34 +564,25 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           if (possible is List) listData = possible;
         }
       } else {
-        debugPrint('Unexpected JSON shape: ${decoded.runtimeType}');
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('استجابة غير متوقعة من السيرفر. راجع اللوغ.',
-          textAlign: TextAlign.right,
-        )));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('استجابة غير متوقعة من السيرفر. راجع اللوغ.', textAlign: TextAlign.right)));
         if (mounted) setState(() => _shifts = []);
         return;
       }
     } catch (e) {
       debugPrint('JSON decode failed: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذر فك JSON: $e',
-          textAlign: TextAlign.right,
-
-        )));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذر فك JSON: $e', textAlign: TextAlign.right)));
         setState(() => _shifts = []);
       }
       return;
     }
 
-    // بناء الـ model من listData + حساب المجاميع المطلوبة
     final shifts = <CloseShift>[];
     double totalDrawerSum = 0.0;
     double totalWalletSum = 0.0;
     double totalCreditSum = 0.0;
     double totalSalesCash = 0.0;
     double totalPurchasesPaidCash = 0.0;
-
-    // المجاميع الجديدة للمشتريات الآجلة
     double totalPurchasesPaidOnCredit = 0.0;
 
     for (final e in listData) {
@@ -583,21 +595,15 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           'total_in_wallet', 'wallet_total', 'total_wallet', 'cash_in_wallet', 'in_wallet'
         ]) ?? 0.0;
 
-        // مبيعات نقدي / محفظة
         final salesCash = _pickDoubleFromMap(e, [
           'profit_value_cash', 'profit_cash', 'sales_cash', 'cash_sales', 'net_cash', 'profit_value'
         ]) ?? 0.0;
 
-
-        // مشتريات مدفوعة نقداً (موجود سابقاً)
         final purchasesPaidCash = _pickDoubleFromMap(e, [
           'purchases_paid', 'purchases_paid_cash', 'purchases_cash_paid'
         ]) ?? 0.0;
 
-        // ---------- استخراج المدفوع لمشتريات آجلة (محاولات متعددة) ----------
         double purchasesPaidOnCredit = 0.0;
-
-        // 1) قائمة مفاتيح مرشحة (أعطى الأولوية للمفاتيح التي تحتوي كلمة credit)
         final creditPaidKeys = [
           'purchases_credit_paid',
           'purchases_paid_on_credit',
@@ -617,7 +623,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           }
         }
 
-        // 2) إذا لم نجد شيء، حاول حسابه من (purchases_paid_total - purchases_paid_cash) إن توفرا
         if (purchasesPaidOnCredit == 0.0) {
           final totalPaidPossible = _pickDoubleFromMap(e, ['purchases_paid_total', 'purchases_total_paid', 'purchases_paid', 'purchases_total']);
           final paidCashPossible = _pickDoubleFromMap(e, ['purchases_paid_cash', 'purchases_cash_paid', 'purchases_cash']);
@@ -626,13 +631,11 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           }
         }
 
-        // 3) بحث ديناميكي في المفاتيح: لو المفتاح يحتوي كلمات credit + paid أو purchases + credit
         if (purchasesPaidOnCredit == 0.0) {
           for (final entry in e.entries) {
             final key = entry.key.toString().toLowerCase();
             if ((key.contains('credit') && (key.contains('paid') || key.contains('payment'))) ||
                 ((key.contains('purchase') || key.contains('purchas') || key.contains('purchases')) && key.contains('credit'))) {
-              // حاول تحويل القيمة
               final val = entry.value;
               double? numVal;
               if (val is num) numVal = val.toDouble();
@@ -648,10 +651,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           }
         }
 
-        // 4) ضمان عدم أن تكون سالبة
         if (purchasesPaidOnCredit.isNegative) purchasesPaidOnCredit = 0.0;
 
-        // فواتير آجلة / مستحقات عامة
         final credit = _pickDoubleFromMap(e, [
           'cash_with_credit', 'credit_outstanding', 'total_credit', 'due_amount', 'outstanding', 'credit_value', 'credit'
         ]) ?? 0.0;
@@ -668,8 +669,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         totalCreditSum += credit;
         totalSalesCash += salesCash;
         totalPurchasesPaidCash += purchasesPaidCash;
-
-        // مجمّع المشتريات الآجلة
         totalPurchasesPaidOnCredit += purchasesPaidOnCredit;
       }
     }
@@ -678,34 +677,23 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       setState(() {
         _shifts = shifts;
         _selectedDate = d;
-
-        // القيم المجمعة للعرض في واجهة "ملخص سريع"
         _totalInDrawer = totalDrawerSum;
         _cashInWallet = totalWalletSum;
         _creditOutstanding = totalCreditSum;
-
-        // قيم أخرى ملخصة
         _salesNet = totalSalesCash;
         _purchasePaidCash = totalPurchasesPaidCash;
-
-        // **المتغيران الجدد**
         _purchasePaidOnCredit = totalPurchasesPaidOnCredit;
-
-        // تحديث النص في حقول التحرير إن رغبت
         _walletController.text = _startingInWallet.toString();
       });
     }
 
-    // تشخيص: لو وجدنا بيانات لكن الحقول فارغة، نظهر أول عنصر للوغ
     if (shifts.isEmpty && listData.isNotEmpty) {
       debugPrint('listData has entries but parser produced 0 shifts. First entry keys:');
       final first = listData.first;
       if (first is Map) {
         debugPrint(first.keys.toList().join(', '));
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('الاستجابة تحتوي عناصر لكن المفاتيح غير متوقعة — راجع اللوغ (keys)',
-            textAlign: TextAlign.right,
-          )));
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('الاستجابة تحتوي عناصر لكن المفاتيح غير متوقعة — راجع اللوغ (keys)', textAlign: TextAlign.right)));
         }
       }
     }
@@ -742,8 +730,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   }
 
   Widget _buildCashierCard(CloseShift s) {
-
-    // قائمة الحقول المراد عرضها مع تسميات عربية مرتبة
     final List<List<String>> fields = [
       ['profit_value_cash', 'صافي مبيعات نقدي'],
       ['profit_value_wallet', 'صافي مبيعات محفظه'],
@@ -766,9 +752,9 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           fontSize: 17
       );
       final valueStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
-          color: label == "الاجمالي في الدرج" ? Colors.green : label == "الاجمالي في المحفظه" ? Colors.blueAccent : Colors.white70,
-          fontWeight: label == "الاجمالي في الدرج" ? FontWeight.bold: label == "الاجمالي في المحفظه" ? FontWeight.bold :FontWeight.normal,
-          fontSize: label == "الاجمالي في الدرج" ? 15: label == "الاجمالي في المحفظه" ? 15 :13,
+        color: label == "الاجمالي في الدرج" ? Colors.green : label == "الاجمالي في المحفظه" ? Colors.blueAccent : Colors.white70,
+        fontWeight: label == "الاجمالي في الدرج" ? FontWeight.bold: label == "الاجمالي في المحفظه" ? FontWeight.bold :FontWeight.normal,
+        fontSize: label == "الاجمالي في الدرج" ? 15: label == "الاجمالي في المحفظه" ? 15 :13,
       );
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 2.0),
@@ -789,30 +775,25 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       );
     }
 
-    // Helper to extract string or number from raw map
+
     String _valueForKey(String key) {
       final raw = s.raw ?? {};
       if (raw.containsKey(key) && raw[key] != null) {
         final v = raw[key];
 
         if (v is num) return _formatMoney(v.toDouble());
-
         if (v is String) {
-          // حاول تحويل النص إلى رقم أولاً
           final cleaned = v.replaceAll(',', '');
           final asNum = double.tryParse(cleaned);
           if (asNum != null) return _formatMoney(asNum);
 
-          // حاول تحويله إلى DateTime بعدة أساليب
           DateTime? dt;
-          // 1) ISO / full datetime
           try {
             dt = DateTime.parse(v);
           } catch (_) {
             dt = null;
           }
 
-          // 2) محاولات لقراءة time-only بصيغ شائعة
           if (dt == null) {
             try {
               dt = DateFormat('HH:mm:ss').parseStrict(v);
@@ -826,18 +807,13 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           }
 
           if (dt != null) {
-            // لو المطلوب هو بداية/نهاية الشيفت، نعرض الوقت فقط بصيغة 12 ساعة مع AM/PM
             if (key == 'start_time' || key == 'end_time') {
-              // ملاحظة: DateFormat('hh:mm a') يعطي AM/PM باللغة الافتراضية.
-              // لو تريد AM/PM بالعربي استعمل: DateFormat('hh:mm a', 'ar')
               return DateFormat('hh:mm a').format(dt);
             } else {
-              // الحقول الأخرى نظهر تاريخ + وقت كما سابق
               return DateFormat('yyyy-MM-dd HH:mm').format(dt);
             }
           }
 
-          // إن لم نتمكن من التحويل — نعيد النص كما هو
           return v;
         }
       }
@@ -853,13 +829,11 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // عنوان (اسم الكاشير) — نستخدم القيمة المرسلة أو الاسم الموجود في النموذج
               Text(
                 s.cashierName.isNotEmpty ? s.cashierName : (_pickStringFromMap(s.raw ?? {}, ['cashier_name','cashier','name','username','user']) ?? 'غير معروف'),
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
-
               Column(
                 children: fields.map((pair) {
                   final key = pair[0];
@@ -868,7 +842,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                   return buildRow(label, value);
                 }).toList(),
               ),
-
               const SizedBox(height: 8),
             ],
           ),
@@ -878,6 +851,236 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   }
 
 
+  Widget _desktopLayout(BoxConstraints constraints) {
+    final maxWidth = constraints.maxWidth.clamp(800.0, 1400.0);
+
+    return SingleChildScrollView(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxWidth),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Flexible(
+                flex: 3,
+                child: Card(
+                  color: AppColorsDark.bgCardColor,
+                  margin: const EdgeInsets.only(right: 12.0, top: 8.0, bottom: 8.0),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Center(child: Text('تعيين المبلغ المبدئي في الدرج', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
+                      const SizedBox(height: 20),
+                      CustomFormField(
+                        controller: _startingController,
+                        hint: 'تعيين المبلغ المبدئي في الدرج',
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      ),
+                      const SizedBox(height: 20),
+                      CustomButton(text: 'حفظ القيمه للدرج', onPressed: _saveStartingAmount_replace, infinity: true, color: AppColorsDark.mainColor.withOpacity(0.9)),
+                      const SizedBox(height: 20),
+                      Center(child: Text('وضع الحد الاقسي لبدايه الدرج بعد تقفيل الشيفت', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white), textAlign: TextAlign.center)),
+                      const SizedBox(height: 20),
+                      CustomFormField(
+                        controller: _maxLimitController,
+                        hint: 'وضع الحد الاقصي لبدايه الدرج بعد تقفيل الشيفت',
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      ),
+                      const SizedBox(height: 20),
+                      CustomButton(text: 'حفظ الحد الأقصى', onPressed: _saveMaxLimit, infinity: true, color: AppColorsDark.mainColor.withOpacity(0.7)),
+                      const SizedBox(height: 20),
+                      Divider(height: 30, color: AppColorsDark.mainColor),
+                      Center(child: Text('تعيين/تعديل رصيد المحفظة الإلكترونية', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
+                      const SizedBox(height: 12),
+                      CustomFormField(controller: _walletController, hint: 'EGP رصيد المحفظة', keyboardType: const TextInputType.numberWithOptions(decimal: true)),
+                      const SizedBox(height: 20),
+                      CustomButton(text: 'حفظ القيمه للمحفظة', onPressed: _addToWallet, infinity: true, color: AppColorsDark.mainColor.withOpacity(0.5)),
+                      const SizedBox(height: 20),
+                      Divider(height: 30, color: AppColorsDark.mainColor),
+                      Center(child: Text('ملخص سريع', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
+                      const SizedBox(height: 10),
+                      _buildSummaryRow('المبلغ في الدرج الآن', _totalInDrawer),
+                      const SizedBox(height: 10),
+                      _buildSummaryRow('صافي مبيعات نقدي', _salesNet),
+                      const SizedBox(height: 10),
+                      _buildSummaryRow('صافي مبيعات المحفظة الإلكترونية', _cashInWallet),
+                      const SizedBox(height: 10),
+                      _buildSummaryRow('مدفوعات مشتريات (نقدي)', _purchasePaidCash),
+                      const SizedBox(height: 8),
+                      _buildSummaryRow("المدفوع (مشتريات آجلة)",   _purchasePaidOnCredit),
+                      const SizedBox(height: 10),
+                    ]),
+                  ),
+                ),
+              ),
+              Flexible(
+                flex: 6,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(left: 12.0, top: 8.0, bottom: 8.0),
+                      child: Row(children: [
+                        Expanded(
+                          child: SizedBox(
+                            height: 200,
+                            child: Card(
+                              elevation: 3,
+                              color: AppColorsDark.bgCardColor,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Center(child: Text('المبلغ البدايه للدرج', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
+                                  const SizedBox(height: 12),
+                                  Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.center, children: [
+                                    Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                    const SizedBox(width: 10),
+                                    Text(_formatWithSign(_startingAmount), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                  ])),
+                                ]),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: SizedBox(
+                            height: 200,
+                            child: Card(
+                              elevation: 3,
+                              color: AppColorsDark.bgCardColor,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Center(child: Text('الحد الادني لبدايه كل شيفت', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
+                                  const SizedBox(height: 12),
+                                  Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.center, children: [
+                                    Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                    const SizedBox(width: 10),
+                                    Text(_formatWithSign(_maxLimit), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                  ])),
+                                ]),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ]),
+                    ),
+                    const SizedBox(height: 15),
+                    Directionality(
+                      textDirection: TextDirection.rtl,
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('تقفيلات الشيفت الخاصة بكل كاشير', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white)),
+                            Row(
+                              children: [
+                                TextButton.icon(
+                                  onPressed: _pickDateAndReload,
+                                  icon: const Icon(Icons.calendar_today, color: Colors.white),
+                                  label: Text(_dateFormat.format(_selectedDate), style: const TextStyle(color: Colors.white)),
+                                  style: TextButton.styleFrom(backgroundColor: Colors.transparent),
+                                ),
+                                const SizedBox(width: 8),
+                                IconButton(
+                                  onPressed: () => _loadShifts(date: _selectedDate),
+                                  icon: const Icon(Icons.refresh, color: Colors.white),
+                                )
+                              ],
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        LayoutBuilder(
+                          builder: (context, constraints) {
+                            return _buildShiftsGrid(constraints);
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                      ]),
+                    ),
+                    const SizedBox(height: 20),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 12.0, top: 8.0, bottom: 8.0),
+                      child: Row(children: [
+                        Expanded(
+                          child: SizedBox(
+                            height: 200,
+                            child: Card(
+                              elevation: 3,
+                              color: AppColorsDark.bgCardColor,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Center(child: Text('الاجمالي في الدرج لكل الشيفتات', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white,height: 1.5),textAlign: TextAlign.center,)),
+                                  const SizedBox(height: 12),
+                                  Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.center, children: [
+                                    Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                    const SizedBox(width: 10),
+                                    Text(_formatWithSign(_totalInDrawer), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                  ])),
+                                ]),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: SizedBox(
+                            height: 200,
+                            child: Card(
+                              elevation: 3,
+                              color: AppColorsDark.bgCardColor,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                                  Center(child: Text('الاجمالي في المحفظه لكل الشيفتات', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white,height: 1.5),textAlign: TextAlign.center)),
+                                  const SizedBox(height: 12),
+                                  Expanded(child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.center, children: [
+                                    Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                                      Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                      const SizedBox(width: 10),
+                                      Text(_formatMoney(_startingInWallet), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                    ]),
+                                  ])),
+                                ]),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: SizedBox(
+                            height: 200,
+                            child: Card(
+                              elevation: 3,
+                              color: AppColorsDark.mainColor.withOpacity(0.08),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Center(child: Text('الفواتير الاجله التي لم يتم دفعها', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
+                                  const SizedBox(height: 12),
+                                  Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+                                    Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                    const SizedBox(width: 10),
+                                    Text(_formatMoney(_creditOutstanding), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
+                                  ])),
+                                ]),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ]),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
   Widget _buildShiftsGrid(BoxConstraints constraints) {
 
     if (_shifts.isEmpty) {
@@ -1027,6 +1230,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     );
   }
 
+
   Future<void> _pickDateAndReload() async {
     DateTime? picked;
     try {
@@ -1035,259 +1239,17 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         initialDate: _selectedDate,
         firstDate: DateTime(2000),
         lastDate: DateTime.now().add(const Duration(days: 365)),
-        // لا تمرر locale: Locale('ar') إن لم تضبط localizationsDelegates (لقد وضّحت أعلاه)
       );
     } catch (e, st) {
       debugPrint('showDatePicker error: $e\n$st');
-      // كحل مؤقت افتح date picker بدون locale أو استخدم حوار بديل
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('خطأ في اختيار التاريخ — حاول مجدداً',
-          textAlign: TextAlign.right,
-
-        )));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('خطأ في اختيار التاريخ — حاول مجدداً', textAlign: TextAlign.right)));
       }
       return;
     }
     if (picked != null) {
       await _loadShifts(date: picked);
     }
-  }
-
-
-
-
-  Widget _desktopLayout(BoxConstraints constraints) {
-    final maxWidth = constraints.maxWidth.clamp(800.0, 1400.0);
-
-    return SingleChildScrollView(
-      child: Center(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: maxWidth),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Flexible(
-                flex: 3,
-                child: Card(
-                  color: AppColorsDark.bgCardColor,
-                  margin: const EdgeInsets.only(right: 12.0, top: 8.0, bottom: 8.0),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Center(child: Text('تعيين المبلغ المبدئي في الدرج', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
-                      const SizedBox(height: 20),
-                      CustomFormField(
-                        controller: _startingController,
-                        hint: 'تعيين المبلغ المبدئي في الدرج',
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      ),
-                      const SizedBox(height: 20),
-                      CustomButton(text: 'حفظ القيمه للدرج', onPressed: _saveStartingAmount_replace, infinity: true, color: AppColorsDark.mainColor.withOpacity(0.9)),
-                      const SizedBox(height: 20),
-                      Center(child: Text('وضع الحد الاقصي لبدايه الدرج بعد تقفيل الشيفت', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white), textAlign: TextAlign.center)),
-                      const SizedBox(height: 20),
-                      CustomFormField(
-                        controller: _maxLimitController,
-                        hint: 'وضع الحد الاقصي لبدايه الدرج بعد تقفيل الشيفت',
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      ),
-                      const SizedBox(height: 20),
-                      CustomButton(text: 'حفظ الحد الأقصى', onPressed: _saveMaxLimit, infinity: true, color: AppColorsDark.mainColor.withOpacity(0.7)),
-                      const SizedBox(height: 20),
-                      Divider(height: 30, color: AppColorsDark.mainColor),
-                      Center(child: Text('تعيين/تعديل رصيد المحفظة الإلكترونية', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
-                      const SizedBox(height: 12),
-                      CustomFormField(controller: _walletController, hint: 'EGP رصيد المحفظة', keyboardType: const TextInputType.numberWithOptions(decimal: true)),
-                      const SizedBox(height: 20),
-                      CustomButton(text: 'حفظ القيمه للمحفظة', onPressed: _addToWallet, infinity: true, color: AppColorsDark.mainColor.withOpacity(0.5)),
-                      const SizedBox(height: 20),
-                      Divider(height: 30, color: AppColorsDark.mainColor),
-                      Center(child: Text('ملخص سريع', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
-                      const SizedBox(height: 10),
-                      _buildSummaryRow('المبلغ في الدرج الآن', _totalInDrawer),
-                      const SizedBox(height: 10),
-                      _buildSummaryRow('صافي مبيعات نقدي', _salesNet),
-                      const SizedBox(height: 10),
-                      _buildSummaryRow('صافي مبيعات المحفظة الإلكترونية', _cashInWallet),
-                      const SizedBox(height: 10),
-                      _buildSummaryRow('مدفوعات مشتريات (نقدي)', _purchasePaidCash),
-                      const SizedBox(height: 8),
-                      _buildSummaryRow("المدفوع (مشتريات آجلة)",   _purchasePaidOnCredit),
-                      const SizedBox(height: 10),
-                    ]),
-                  ),
-                ),
-              ),
-              Flexible(
-                flex: 6,
-                child: Column(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(left: 12.0, top: 8.0, bottom: 8.0),
-                        child: Row(children: [
-                          Expanded(
-                            child: SizedBox(
-                              height: 200,
-                              child: Card(
-                                elevation: 3,
-                                color: AppColorsDark.bgCardColor,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
-                                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                    Center(child: Text('المبلغ البدايه للدرج', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
-                                    const SizedBox(height: 12),
-                                    Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.center, children: [
-                                      Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                      const SizedBox(width: 10),
-                                      // نعرض القيمة المقروءة من السيرفر هنا — غير قابلة للتحرير من الواجهة
-                                      Text(_formatWithSign(_startingAmount), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                    ])),
-                                  ]),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: SizedBox(
-                              height: 200,
-                              child: Card(
-                                elevation: 3,
-                                color: AppColorsDark.bgCardColor,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
-                                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                    Center(child: Text('الحد الادني لبدايه كل شيفت', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
-                                    const SizedBox(height: 12),
-                                    Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.center, children: [
-                                      Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                      const SizedBox(width: 10),
-                                      // نعرض القيمة المقروءة من السيرفر هنا — غير قابلة للتحرير من الواجهة
-                                      Text(_formatWithSign(_maxLimit), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                    ])),
-                                  ]),
-                                ),
-                              ),
-                            ),
-                          ),                        ]),
-                      ),
-                      SizedBox(height: 15,),
-                     Directionality(
-                        textDirection: TextDirection.rtl,
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text('تقفيلات الشيفت الخاصة بكل كاشير', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white)),
-                              Row(
-                                children: [
-                                  TextButton.icon(
-                                    onPressed: _pickDateAndReload,
-                                    icon: const Icon(Icons.calendar_today, color: Colors.white),
-                                    label: Text(_dateFormat.format(_selectedDate), style: const TextStyle(color: Colors.white)),
-                                    style: TextButton.styleFrom(backgroundColor: Colors.transparent),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  IconButton(
-                                    onPressed: () => _loadShifts(date: _selectedDate),
-                                    icon: const Icon(Icons.refresh, color: Colors.white),
-                                  )
-                                ],
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          // المحتوى: شبكة/قائمة البطاقات
-                          _buildShiftsGrid(constraints),
-                          const SizedBox(height: 12),
-                        ]),
-                  ),
-                      /////////////////////
-
-                     SizedBox(height: 20,),
-
-                      Padding(
-                        padding: const EdgeInsets.only(left: 12.0, top: 8.0, bottom: 8.0),
-                        child: Row(children: [
-                          Expanded(
-                            child: SizedBox(
-                              height: 200,
-                              child: Card(
-                                elevation: 3,
-                                color: AppColorsDark.bgCardColor,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
-                                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                    Center(child: Text('الاجمالي في الدرج لكل الشيفتات', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white,height: 1.5),textAlign: TextAlign.center,)),
-                                    const SizedBox(height: 12),
-                                    Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.center, children: [
-                                      Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                      const SizedBox(width: 10),
-                                      // نعرض القيمة المقروءة من السيرفر هنا — غير قابلة للتحرير من الواجهة
-                                      Text(_formatWithSign(_totalInDrawer), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                    ])),
-                                  ]),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: SizedBox(
-                              height: 200,
-                              child: Card(
-                                elevation: 3,
-                                color: AppColorsDark.bgCardColor,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
-                                  child: Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
-                                    Center(child: Text('الاجمالي في المحفظه لكل الشيفتات', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white,height: 1.5),textAlign: TextAlign.center,)),
-                                    const SizedBox(height: 12),
-                                    Expanded(child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.center, children: [
-                                      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                                        Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                        const SizedBox(width: 10),
-                                        Text(_formatMoney(_startingInWallet), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                      ]),
-                                    ])),
-                                  ]),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: SizedBox(
-                              height: 200,
-                              child: Card(
-                                elevation: 3,
-                                color: AppColorsDark.mainColor.withOpacity(0.08),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
-                                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                    Center(child: Text('الفواتير الاجله التي لم يتم دفعها', style: Theme.of(context).textTheme.titleLarge!.copyWith(color: Colors.white))),
-                                    const SizedBox(height: 12),
-                                    Expanded(child: Row(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-                                      Text("جنيه", style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                      const SizedBox(width: 10),
-                                      Text(_formatMoney(_creditOutstanding), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.white)),
-                                    ])),
-                                  ]),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ]),
-                      ),
-
-
-                    ]),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   @override
@@ -1311,7 +1273,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           )
         ],
       ),
-
       body: Skeletonizer(
         enabled: _loading,
         enableSwitchAnimation: true,

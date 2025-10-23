@@ -1,7 +1,12 @@
 // lib/main.dart
+import 'package:cashgo/services/Api/Admin/Products.dart';
+import 'package:cashgo/services/cashier/close_shieft.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:flutter/material.dart';
+import 'package:hive/hive.dart';
+import 'package:hive_flutter/adapters.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:intl/intl.dart';
 
 import 'screens/shared/login_screen.dart';
 import 'screens/admin/dashboard_screen.dart';
@@ -10,7 +15,34 @@ import 'screens/admin/receipts.dart';
 import 'screens/admin/stock_screen.dart';
 
 Future<void> main() async {
+  /// استدعي هذي الوظيفة مرة واحدة (مثلاً من main أثناء التطوير) لتصحيح ops القديمة.
+
   WidgetsFlutterBinding.ensureInitialized();
+  await Hive.initFlutter();
+  // open boxes used by the code
+  await Hive.openBox('products');
+  await Hive.openBox('sales');
+  await Hive.openBox('users');
+  await Hive.openBox('financial_accounts');
+  await Hive.openBox('close_shifts');
+  await Hive.openBox('meta');
+
+  await Hive.openBox('ops');
+  // init product api boxes
+  await ProductApi.initBoxes();
+  await ProductApi.initBoxes();
+  final box = await Hive.openBox('products');
+  for (final k in box.keys) {
+    print('product key=$k value=${box.get(k)}');
+  }
+
+  // start sync manager
+  await SyncManager.init();
+  await Hive.openBox('ops');
+  final api = ApiServiceClose_shieft();
+  await api.migrateOldCloseShiftOps(); // لو ضفتها في نفس الملف
+  await SyncManager.init();
+  SyncManager.start();
   await initializeDateFormatting('ar');
   runApp(const MyApp());
 }

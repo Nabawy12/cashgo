@@ -415,7 +415,13 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                             ))
                             : LayoutBuilder(
                           builder: (context, constraints) {
-                            final visibleProducts = filteredProducts; // show all loaded items
+                            final visibleProducts = filteredProducts.where((p) {
+                              final name = (p['name']?.toString() ?? '').trim();
+                              final barcode = (p['barcode']?.toString() ?? '').trim();
+                              // show if either name أو barcode موجود أو id موجود وصالح
+                              final hasValidId = p['id'] != null && p['id'].toString().isNotEmpty;
+                              return name.isNotEmpty || barcode.isNotEmpty || hasValidId;
+                            }).toList();
 
                             return SingleChildScrollView(
                               scrollDirection: Axis.horizontal,
@@ -471,10 +477,10 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
 
                                             return DataRow(
                                               cells: [
-                                                DataCell(Text('${p['id']}', style: const TextStyle(color: Colors.white))),
+                                                DataCell(Text(p['id']?.toString() ?? '-', style: const TextStyle(color: Colors.white))),
                                                 DataCell(Text(p['barcode']?.toString() ?? '-', style: const TextStyle(color: Colors.white))),
-                                                DataCell(Text(p['name'], style: const TextStyle(color: Colors.white))),
-                                                DataCell(Text((p['purchase_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
+                                                DataCell(Text(p['name']?.toString() ?? '-', style: const TextStyle(color: Colors.white))),
+                                                DataCell(Text((p['purchase_price'] != null) ? p['purchase_price'].toString() : '0', style: const TextStyle(color: Colors.white))),
                                                 DataCell(Text((p['selling_price'] as num? ?? 0).toString(), style: const TextStyle(color: Colors.white))),
                                                 DataCell(
                                                   Text(

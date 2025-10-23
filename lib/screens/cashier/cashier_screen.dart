@@ -7,12 +7,15 @@ import 'package:cashgo/services/cashier/profit_api.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:hive/hive.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart' hide TextDirection ;
 import 'package:shimmer/shimmer.dart';
+import 'package:uuid/uuid.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../models/cart.dart';
 import '../../models/cashier/profit.dart';
@@ -140,7 +143,10 @@ class _CashierScreenState extends State<CashierScreen> {
     }
   }
 
+  StreamSubscription<dynamic>? _connSub; // مرن لقبول أي StreamSubscription
 
+  StreamSubscription? _finBoxSub; // استماع لصندوق financial_accounts
+  Box? _financialBox; // cache للصندوق المحلي
 
   @override
   void initState() {
@@ -150,12 +156,222 @@ class _CashierScreenState extends State<CashierScreen> {
     });
     _loadCurrentUser();
     WakelockPlus.enable();
-    //////
 
-    _loadFinancials();
+    // استمع لـ Hive local financials + حاول جلب من السيرفر
+    _initFinancialsListener();
+    _loadFinancials(); // محفوظة لديك — ممكن تبقى مُحدّثة لعمل sync عند online
+
     _loadTotalProfit();
+    _loadFinancialsFromLocal().then((_) => _loadFinancials()); // _loadFinancials يحاول السيرفر بعد المحلي
     Session.updateDateTime();
+
+    // موجود بالفعل: _connSub subscription...
+    _connSub = Connectivity().onConnectivityChanged.listen((event) async {
+      if (event != ConnectivityResult.none) {
+        // الشبكه رجعت — نعمل مزامنة للسجلات المالية من السيرفر لو متوفر
+        try {
+          await _fetchAndSyncFinancialsFromServer();
+        } catch (e, st) {
+          debugPrint('[UI] fetchAndSyncFinancialsFromServer failed: $e');
+        }
+        // بقية الشيفرة الموجودة...
+        final metaBox = await Hive.openBox('meta');
+        await metaBox.put('lastOfflineSale', 0.0);
+        debugPrint('[UI] cleared lastOfflineSale due to connectivity regained');
+        final v = await _getLastOfflineSale();
+        if (!mounted) return;
+        setState(() => _lastOfflineSale = v);
+      }
+    });
   }
+
+  Future<void> _initFinancialsListener() async {
+    try {
+      _financialBox = await Hive.openBox('financial_accounts');
+      // load once
+      await _applyLatestFinancialFromBox();
+      // listen for changes
+      _finBoxSub?.cancel();
+      _finBoxSub = _financialBox!.watch().listen((event) {
+        // كل مرة يتغير الصندوق نقرأ اخر سجل
+        _applyLatestFinancialFromBox();
+      });
+    } catch (e, st) {
+      debugPrint('[Financials] _initFinancialsListener error: $e\n$st');
+    }
+  }
+
+  Future<void> _attachFinancialsHiveListener() async {
+    try {
+      final box = await Hive.openBox('financial_accounts');
+      // استماع لتغييرات الصندوق
+      box.watch().listen((event) {
+        // event.key, event.value
+        if (!mounted) return;
+        _loadFinancialsFromLocal(); // كل ما اتغير صندوق نعيد تحميل القيم المحلية
+      });
+    } catch (e) {
+      debugPrint('Failed to attach financials listener: $e');
+    }
+  }
+
+  Future<void> _loadFinancialsFromLocal() async {
+    try {
+      final box = await Hive.openBox('financial_accounts');
+      if (box.isEmpty) {
+        setState(() {
+          _startingAmount = 0.0;
+          _cashInWallet = 0.0;
+          _financialsLoaded = true;
+        });
+        return;
+      }
+      // خذ آخر سجل (أو اختَر حسب منطقك)
+      final lastKey = box.keys.toList().last;
+      final raw = Map<String, dynamic>.from(box.get(lastKey) as Map);
+      final localStart = double.tryParse((raw['starting_amount'] ?? raw['startingAmount'] ?? '0').toString().replaceAll(',', '')) ?? 0.0;
+      final localWallet = double.tryParse((raw['cash_in_wallet'] ?? raw['cashInWallet'] ?? '0').toString().replaceAll(',', '')) ?? 0.0;
+
+      if (!mounted) return;
+      setState(() {
+        _startingAmount = localStart;
+        _cashInWallet = localWallet;
+        _financialsLoaded = true;
+      });
+    } catch (e) {
+      debugPrint('Failed to load local financials: $e');
+    }
+  }
+
+  bool _financialsLoaded = false;
+
+  Future<void> _applyLatestFinancialFromBox() async {
+    try {
+      if (!mounted) return;
+      if (_financialBox == null || _financialBox!.isEmpty) {
+        setState(() {
+          _startingAmount = 0.0;
+          _cashInWallet = 0.0;
+          _totalCash = 0.0;
+          _totalWallet = 0.0;
+          _financialsLoaded = true; // حتى لو فاضي، نوقف الـ loading
+        });
+        return;
+      }
+
+      final keys = _financialBox!.keys.toList();
+      if (keys.isEmpty) {
+        setState(() {
+          _startingAmount = 0.0;
+          _cashInWallet = 0.0;
+          _totalCash = 0.0;
+          _totalWallet = 0.0;
+          _financialsLoaded = true;
+        });
+        return;
+      }
+
+      final lastKey = keys.last;
+      final raw = _financialBox!.get(lastKey);
+      final Map<String, dynamic> row = _toMapFlexible(raw);
+
+      double pickVal(List<String> candidates) {
+        for (final k in candidates) {
+          if (row.containsKey(k) && row[k] != null) {
+            final v = row[k];
+            if (v is num) return v.toDouble();
+            if (v is String) {
+              final s = v.replaceAll(',', '').trim();
+              final d = double.tryParse(s);
+              if (d != null) return d;
+            }
+          }
+        }
+        return 0.0;
+      }
+
+      final localStart = pickVal(['starting_amount', 'startingAmount', 'start', 'start_amount']);
+      final localWallet = pickVal(['cash_in_wallet', 'cashInWallet', 'wallet', 'wallet_amount']);
+
+      // لو عندك قيم إجماعية (totalCash/totalWallet) المعرفة في recs سابقًا ضعها هنا
+      final localTotalCash = pickVal(['total_in_drawer', 'totalCash', 'total_cash']);
+      final localTotalWallet = pickVal(['total_in_wallet', 'totalWallet', 'total_wallet']);
+
+      setState(() {
+        _startingAmount = localStart;
+        _cashInWallet = localWallet;
+        _totalCash = localTotalCash;    // غير null => _moneyOrShimmer يظهر القيمة
+        _totalWallet = localTotalWallet; // غير null => يظهر القيمة
+        _financialsLoaded = true;
+      });
+    } catch (e, st) {
+      debugPrint('[Financials] _applyLatestFinancialFromBox error: $e\n$st');
+      // لو فشل، على الأقل نوقف الـ shimmer و نعرض صفر
+      if (mounted) {
+        setState(() {
+          _startingAmount = 0.0;
+          _cashInWallet = 0.0;
+          _totalCash = 0.0;
+          _totalWallet = 0.0;
+          _financialsLoaded = true;
+        });
+      }
+    }
+  }
+
+  Widget _moneyOrShimmerWithFlag({double? value, bool withSign = false, bool asInt = true}) {
+    if (!_financialsLoaded) {
+      // عرض shimmer أثناء انتظار أول قراءة (أونلاين أو أوفلاين)
+      return _shimmerMoney(width: 64, height: 16);
+    }
+    // لو جاهز لكن القيمة لا تزال null (نعتبرها صفر)
+    final v = value ?? 0.0;
+    final text = withSign ? _formatWithSign(v) : NumberFormat("#,###").format(asInt ? v.toInt() : v);
+    return Text(text, style: const TextStyle(color: Colors.white70, fontSize: 14));
+  }
+
+
+  Map<String, dynamic> _toMapFlexible(dynamic raw) {
+    if (raw == null) return {};
+    if (raw is Map) {
+      try {
+        return Map<String, dynamic>.from(raw);
+      } catch (_) {
+        final out = <String, dynamic>{};
+        raw.forEach((k, v) => out[k.toString()] = v);
+        return out;
+      }
+    }
+    if (raw is String) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+    }
+    return {};
+  }
+
+  Future<void> _fetchAndSyncFinancialsFromServer() async {
+    try {
+      // استخدم نفس خدمة InsertFinancialAccountService.getLatest() الموجودة عندك
+      final list = await _service.getLatest(limit: 5); // جيب آخر 5 أو 1 حسب رغبتك
+      if (list.isEmpty) return;
+
+      // نحول كل FinancialAccount إلى Map ونخزنهم في صندوق financial_accounts
+      final box = await Hive.openBox('financial_accounts');
+      for (final rec in list) {
+        final key = rec.id?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString();
+        await box.put(key, rec.toJsonFull());
+      }
+
+      // بعد التخزين حدّث الحالة من الصندوق (ستلتقطه الـ listener تلقائيًا لكن نضرب تحميل احتياطي)
+      await _applyLatestFinancialFromBox();
+      debugPrint('[Financials] synced ${list.length} financial records locally');
+    } catch (e, st) {
+      debugPrint('[Financials] _fetchAndSyncFinancialsFromServer error: $e\n$st');
+    }
+  }
+
 
 
   Future<void> _loadCurrentUser() async {
@@ -227,8 +443,9 @@ class _CashierScreenState extends State<CashierScreen> {
     _inlineKeyboardNode.dispose();
     WakelockPlus.disable();
 
-    ///////////
     _service.dispose();
+
+    _finBoxSub?.cancel(); // <-- تأكد إيقاف الاستماع هنا
     super.dispose();
   }
 
@@ -1151,6 +1368,35 @@ class _CashierScreenState extends State<CashierScreen> {
   }
 ///////////////////////////////////////////////////////////////////////////////
   final InsertFinancialAccountService _service = InsertFinancialAccountService();
+
+
+// UUID للـ sales ops
+  final _uuidForSale = Uuid();
+
+  double _lastOfflineSale = 0.0;   // <-- ضيف هذا السطر هنا جنب _totalCash
+
+
+  Future<double> _getLastOfflineSale() async {
+    final box = await Hive.openBox('meta');
+    final v = box.get('lastOfflineSale');
+    if (v == null) return 0.0;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString()) ?? 0.0;
+  }
+
+  Future<void> _setLastOfflineSale(double val) async {
+    final box = await Hive.openBox('meta');
+    final safeVal = (val.isFinite && val >= 0.0) ? val : 0.0;
+    await box.put('lastOfflineSale', safeVal);
+  }
+
+  Future<void> _clearLastOfflineSale() async {
+    final box = await Hive.openBox('meta');
+    await box.put('lastOfflineSale', 0.0);
+  }
+
+
+
   Future<void> _saveSale({required bool requireFullPayment, String paymentMethod = 'cash'}) async {
     if (_cart.isEmpty) return;
 
@@ -1181,9 +1427,8 @@ class _CashierScreenState extends State<CashierScreen> {
       if (customerName == null || customerName.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text(
-              'تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة',
+            'تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة',
             textDirection: TextDirection.rtl,
-
           )),
         );
         return;
@@ -1195,9 +1440,8 @@ class _CashierScreenState extends State<CashierScreen> {
     if (requireFullPayment && paid < total) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text(
-            'العميل لم يدفع كامل المبلغ',
+          'العميل لم يدفع كامل المبلغ',
           textDirection: TextDirection.rtl,
-
         )),
       );
       return;
@@ -1213,8 +1457,8 @@ class _CashierScreenState extends State<CashierScreen> {
       _cart.forEach((productId, cartItem) {
         cartPayload.add({
           'product_id': productId,
-          'barcode': cartItem.product.barcode,
-          'name': cartItem.product.name,
+          'barcode': cartItem.product.barcode ?? '',
+          'name': cartItem.product.name ?? '',
           'price': cartItem.product.sellingPrice,
           'qty': cartItem.quantity,
         });
@@ -1224,15 +1468,14 @@ class _CashierScreenState extends State<CashierScreen> {
 
       final payload = {
         'cart': cartPayload,
-        'subtotal': subtotal, // إجمالي قبل الخصم (حافظ على المفتاح الأصلي)
-        'total': total,       // الإجمالي النهائي بعد الخصم
+        'subtotal': subtotal,
+        'total': total,
         'paid': paid,
         'requireFullPayment': requireFullPayment,
         'paymentMethod': paymentMethod,
         'cashierUsername': cashierNameToUse,
         'discountType': normalizedDiscountType,
         'discountValue': _discountValue,
-        // حقول واضحة ومساعدة للسيرفر / لوج
         'subtotal_before_discount': subtotal,
         'discount_amount': discountAmount,
         'discount_label': discountLabel,
@@ -1240,112 +1483,210 @@ class _CashierScreenState extends State<CashierScreen> {
         'customerName': customerName,
       };
 
-      final resp = await http.post(
-        apiUrl,
-        headers: {'Content-Type': 'application/json; charset=utf-8'},
-        body: jsonEncode(payload),
-      );
-
-      if (resp.statusCode != 200) {
-        String message = 'فشل حفظ الفاتورة (خطاء من السيرفر).';
-        try {
-          final parsed = jsonDecode(resp.body);
-          if (parsed is Map && parsed['error'] != null) message = parsed['error'].toString();
-        } catch (_) {}
-        throw Exception(message);
-      }
-
-      final body = jsonDecode(resp.body);
-      if (body == null || body is! Map || body['success'] != true) {
-        final serverMsg = (body != null && body['error'] != null) ? body['error'] : 'إستجابة غير متوقعة من السيرفر';
-        throw Exception(serverMsg);
-      }
-
-      final serverMessage = (body['message'] ?? 'تم الحفظ بنجاح').toString();
-      final saleId = body['sale_id'];
-
-      // إعلام المستخدم مع توضيح قبل/بعد الخصم
-      final beforeStr = subtotal.toStringAsFixed(2);
-      final afterStr = total.toStringAsFixed(2);
-
-      if (paymentMethod == 'credit') {
-        final remaining = total - paid;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(
-              'تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${remaining.toStringAsFixed(2)}',
-            textDirection: TextDirection.rtl,
-
-          )),
-        );
-      } else if (paymentMethod == 'card') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text(
-              'تم الحفظ — تم الدفع بالكارت بالكامل',
-            textDirection: TextDirection.rtl,
-
-          )),
-        );
-      } else if (paymentMethod == 'wallet') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(
-              serverMessage,
-            textDirection: TextDirection.rtl,
-
-          )),
-        );
-      } else {
-        final change = (paid - total).toStringAsFixed(2);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(
-              'تم الحفظ — الإجمالي قبل الخصم: $beforeStr  — بعد الخصم: $afterStr  — الباقي: $change',
-            textDirection: TextDirection.rtl,
-
-          )),
-        );
-      }
-
-      // طباعة الإيصال مع تمرير النوع المطبع
-      bool printSuccess = false;
+      // حاول ترسل للسيرفر أولًا
+      bool serverSaved = false;
+      Map<String, dynamic>? serverResponseBody;
       try {
-        await Future.delayed(const Duration(milliseconds: 250));
-        final printedCart = Map<int, CartItem>.from(_cart);
+        final resp = await http.post(
+          apiUrl,
+          headers: {'Content-Type': 'application/json; charset=utf-8'},
+          body: jsonEncode(payload),
+        ).timeout(const Duration(seconds: 12));
 
-        final receiptWidget = ReceiptWidget(
-          cart: printedCart,
-          paid: paid,
-          cashierUsername: cashierNameToUse,
-          width: 220,
-          useCairo: true,
-          discountType: normalizedDiscountType, // مهم: 'percent' أو 'fixed'
-          discountValue: _discountValue,
-        );
-
-        await PrintService.printWidgetUsingOverlay(context, receiptWidget, width: 220, pixelRatio: 2.0);
-        printSuccess = true;
-        debugPrint('Print succeeded (overlay method).');
-      } catch (e, st) {
-        debugPrint('Print failed (overlay method): $e\n$st');
+        if (resp.statusCode == 200) {
+          final body = jsonDecode(resp.body);
+          if (body is Map && body['success'] == true) {
+            serverSaved = true;
+            serverResponseBody = Map<String, dynamic>.from(body);
+          } else {
+            final serverMsg = (body != null && body['error'] != null) ? body['error'] : 'Server returned failure';
+            throw Exception(serverMsg);
+          }
+        } else {
+          throw Exception('HTTP ${resp.statusCode}');
+        }
+      } catch (e) {
+        serverSaved = false;
+        debugPrint('[saveSale] server save failed: $e');
       }
 
-      if (!printSuccess) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text(
+      // لو السيرفر حفظ: نفس السلوك القديم (تنبيه، طباعة، تنظيف)
+      if (serverSaved) {
+        final serverMessage = (serverResponseBody?['message'] ?? 'تم الحفظ بنجاح').toString();
+
+        if (paymentMethod == 'credit') {
+          final remaining = total - paid;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(
+              'تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${remaining.toStringAsFixed(2)}',
+              textDirection: TextDirection.rtl,
+            )),
+          );
+        } else if (paymentMethod == 'card') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text(
+              'تم الحفظ — تم الدفع بالكارت بالكامل',
+              textDirection: TextDirection.rtl,
+            )),
+          );
+        } else if (paymentMethod == 'wallet') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(
+              serverMessage,
+              textDirection: TextDirection.rtl,
+            )),
+          );
+        } else {
+          final beforeStr = subtotal.toStringAsFixed(2);
+          final afterStr = total.toStringAsFixed(2);
+          final change = (paid - total).toStringAsFixed(2);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(
+              'تم الحفظ — الإجمالي قبل الخصم: $beforeStr  — بعد الخصم: $afterStr  — الباقي: $change',
+              textDirection: TextDirection.rtl,
+            )),
+          );
+        }
+
+        // طباعة الإيصال كما كان
+        bool printSuccess = false;
+        try {
+          await Future.delayed(const Duration(milliseconds: 250));
+          final printedCart = Map<int, CartItem>.from(_cart);
+
+          final receiptWidget = ReceiptWidget(
+            cart: printedCart,
+            paid: paid,
+            cashierUsername: cashierNameToUse,
+            width: 220,
+            useCairo: true,
+            discountType: normalizedDiscountType,
+            discountValue: _discountValue,
+          );
+
+          await PrintService.printWidgetUsingOverlay(context, receiptWidget, width: 220, pixelRatio: 2.0);
+          printSuccess = true;
+          debugPrint('Print succeeded (overlay method).');
+        } catch (e, st) {
+          debugPrint('Print failed (overlay method): $e\n$st');
+        }
+
+        if (!printSuccess) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text(
               'فشل الطباعة. يمكنك المحاولة لاحقًا من صفحة الطباعة.',
-            textDirection: TextDirection.rtl,
+              textDirection: TextDirection.rtl,
+            )),
+          );
+        }
 
-          )),
-        );
+        setState(() {
+          _cart.clear();
+          _paidController.clear();
+          _discountValue = 0.0;
+          _discountType = 'percent';
+          debugPrint("Cart cleared, items = ${_cart.length}");
+        });
+
+        await _loadTotalProfit();
+      } else {
+        // OFFLINE: خزّن الفاتورة محليًا في sales + ops (كما كنا) + خزن قيمة آخر عملية اوفلاين
+        try {
+          final opsBox = await Hive.openBox('ops');
+          final salesBox = await Hive.openBox('sales');
+          final localSaleId = -DateTime.now().millisecondsSinceEpoch;
+
+          final saleRecord = <String, dynamic>{
+            'local_id': localSaleId,
+            'cart': cartPayload,
+            'subtotal': subtotal,
+            'total': total,
+            'paid': paid,
+            'requireFullPayment': requireFullPayment,
+            'paymentMethod': paymentMethod,
+            'cashierUsername': cashierNameToUse,
+            'discountType': normalizedDiscountType,
+            'discountValue': _discountValue,
+            'discount_amount': discountAmount,
+            'discount_label': discountLabel,
+            'total_after_discount': total,
+            'customerName': customerName,
+            'created_at': DateTime.now().toUtc().toIso8601String(),
+            'sync_state': 'pending',
+            'counted_locally': true, // ضع هاش علشان SyncManager يعرف يعالجه لاحقًا
+          };
+
+          await salesBox.put(localSaleId.toString(), saleRecord);
+
+          final op = {
+            'opId': _uuidForSale.v4(),
+            'entity': 'sale',
+            'entityId': localSaleId,
+            'type': 'create',
+            'payload': saleRecord,
+            'timestamp': DateTime.now().toUtc().toIso8601String(),
+            'state': 'pending',
+            'retries': 0,
+          };
+          await opsBox.put(op['opId'] as String, op);
+
+          // ---- خزن قيمة آخر عملية اوفلاين هنا ----
+          await _setLastOfflineSale(total);
+          setState(() => _lastOfflineSale = total);
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text(
+              'لا يوجد اتصال — تم حفظ الفاتورة محليًا وسيتم رفعها عند استعادة الاتصال.',
+              textDirection: TextDirection.rtl,
+            )),
+          );
+
+          // محاولة الطباعة كما سابقًا
+          bool printSuccess = false;
+          try {
+            await Future.delayed(const Duration(milliseconds: 250));
+            final printedCart = Map<int, CartItem>.from(_cart);
+
+            final receiptWidget = ReceiptWidget(
+              cart: printedCart,
+              paid: paid,
+              cashierUsername: cashierNameToUse,
+              width: 220,
+              useCairo: true,
+              discountType: normalizedDiscountType,
+              discountValue: _discountValue,
+            );
+
+            await PrintService.printWidgetUsingOverlay(context, receiptWidget, width: 220, pixelRatio: 2.0);
+            printSuccess = true;
+            debugPrint('Print succeeded (overlay method) [offline save].');
+          } catch (e, st) {
+            debugPrint('Print failed (overlay method) [offline save]: $e\n$st');
+          }
+
+          if (!printSuccess) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text(
+                'تم الحفظ محليًا لكن فشلت الطباعة. يمكنك المحاولة لاحقًا.',
+                textDirection: TextDirection.rtl,
+              )),
+            );
+          }
+
+          setState(() {
+            _cart.clear();
+            _paidController.clear();
+            _discountValue = 0.0;
+            _discountType = 'percent';
+            debugPrint("Cart cleared (saved offline), items = ${_cart.length}");
+          });
+
+          await _loadTotalProfit();
+        } catch (e, st) {
+          debugPrint('Failed to save sale locally: $e\n$st');
+          throw Exception('فشل التخزين المحلي للفاتورة: $e');
+        }
       }
-
-      setState(() {
-        _cart.clear();
-        _paidController.clear();
-        _discountValue = 0.0;
-        _discountType = 'percent'; // إعادة الحالة إلى الافتراضي إن رغبت
-        debugPrint("Cart cleared, items = ${_cart.length}");
-      });
-
-      await _loadTotalProfit();
     } catch (e, st) {
       debugPrint('Failed to save sale (client) — error: $e\nstack:\n$st');
 
@@ -1360,9 +1701,8 @@ class _CashierScreenState extends State<CashierScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(
-            'فشل حفظ الفاتورة: $e',
+          'فشل حفظ الفاتورة: $e',
           textDirection: TextDirection.rtl,
-
         )),
       );
     } finally {
@@ -1370,35 +1710,48 @@ class _CashierScreenState extends State<CashierScreen> {
       FocusScope.of(context).requestFocus(_barcodeFocus);
     }
   }
+
+
+
   bool _closingShift = false;
   final ApiServiceClose_shieft _apiService = ApiServiceClose_shieft(baseUrl: 'https://nabawisolution.com');
   Future<void> _loadFinancials() async {
     if (!mounted) return;
+    setState(() => _loading = true);
     try {
-      final list = await _service.getLatest(limit: 1);
-      if (list.isNotEmpty) {
-        final rec = list.first;
-        if (!mounted) return;
-        setState(() {
-          _startingAmount = rec.startingAmount ?? 0.0;
-          _cashInWallet = rec.cashInWallet ?? 0.0;
-        });
-      } else {
-        if (!mounted) return;
-        setState(() {
-          _startingAmount = 0.0;
-          _cashInWallet = 0.0;
-        });
+      // محاولة online أولًا
+      final conn = await Connectivity().checkConnectivity();
+      final online = conn != ConnectivityResult.none;
+
+      if (online) {
+        try {
+          final list = await _service.getLatest(limit: 1);
+          if (list.isNotEmpty) {
+            final rec = list.first;
+            // حدّث الواجهة فوراً
+            if (!mounted) return;
+            setState(() {
+              _startingAmount = rec.startingAmount;
+              _cashInWallet = rec.cashInWallet;
+            });
+            // خزّن محليًا للاستعمال وقت الأوفلاين
+            final box = await Hive.openBox('financial_accounts');
+            final key = rec.id?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString();
+            await box.put(key, rec.toJsonFull());
+            return;
+          }
+        } catch (e) {
+          debugPrint('[Financials] online fetch failed, will fallback to local: $e');
+          // fallthrough to local
+        }
       }
+
+      // OFFLINE fallback: اقرأ من الـ Hive (listener يحدّث الحالة تلقائياً لكن نقرأ الآن احتياطي)
+      await _applyLatestFinancialFromBox();
     } catch (e, st) {
       debugPrint('Failed to load financials: $e\n$st');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-            'فشل تحميل بيانات الدرج/المحفظة',
-          textDirection: TextDirection.rtl,
-
-        )));
-      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
   Future<void> _confirm_CloseShift() async {
@@ -1527,44 +1880,64 @@ class _CashierScreenState extends State<CashierScreen> {
       final startOfDay = DateTime(now.year, now.month, now.day);
       final fromDateStr = startOfDay.toIso8601String().split('T').first;
 
+      // قيم افتراضية بديلة بدل null لتجنّب Null check operator crash
+      final totalCashSafe = _totalCash ?? 0.0;
+      final cashReceivedSafe = _cash_received ?? 0.0;
+      final walletReceivedSafe = _wallet_received ?? 0.0;
+      final purchasesPaidSafe = _purchases_paid ?? 0.0;
+      final userStartingSafe = _startingAmount;
+      final userNetSalesSafe = _totalCash ?? 0.0;
+      final drawerForCashierSafe = _totalWallet ?? 0.0;
+      final cardForCashierSafe = (_cashInWallet ?? 0.0) + (_totalWallet ?? 0.0);
+      final creditOutstandingSafe = _cash_with_credit ?? 0.0;
+      final purchasesCreditSafe = _purchases_credit ?? 0.0;
+
+      // تشخيص سريع: لو البيانات كلها صفر قد يعني أن التحميل فشل
+      final anyLoaded = (totalCashSafe + cashReceivedSafe + walletReceivedSafe + userStartingSafe) != 0.0;
+      if (!anyLoaded) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+          'لا توجد بيانات كافية لإجراء تقفيل الشيفت — تأكد من تحميل البيانات أو المحاولة بعد التحديث.',
+          textDirection: TextDirection.rtl,
+        )));
+        return;
+      }
+
       final reportWidget = ShiftReportWidget(
         cashierUsername: Session.currentUsername!,
         fromDate: fromDateStr,
         toDate: Session.currentDateTime!,
         totals: {
-          'sales_total': _totalCash!,
-          'sales_paid_cash': _cash_received!,
-          'sales_paid_card': _wallet_received!,
-          'purchases_paid': _purchases_paid!,
-          'user_starting': _startingAmount,
-          'user_net_sales': _totalCash!,
-          'drawer_for_cashier': _totalWallet!,
+          'sales_total': totalCashSafe,
+          'sales_paid_cash': cashReceivedSafe,
+          'sales_paid_card': walletReceivedSafe,
+          'purchases_paid': purchasesPaidSafe,
+          'user_starting': userStartingSafe,
+          'user_net_sales': userNetSalesSafe,
+          'drawer_for_cashier': drawerForCashierSafe,
         },
         width: 300,
-        drawerCurrent: _totalCash!,
-        cardForCashier: _cashInWallet + _totalWallet!,
-        creditOutstandingForCashier: _cash_with_credit!,
-        purchaseReceiptsOutstandingForUser: _purchases_credit!,
+        drawerCurrent: totalCashSafe,
+        cardForCashier: cardForCashierSafe,
+        creditOutstandingForCashier: creditOutstandingSafe,
+        purchaseReceiptsOutstandingForUser: purchasesCreditSafe,
       );
 
       // 1) محاولة طباعة التقرير
       try {
         await PrintService.printWidgetUsingOverlay(context, reportWidget, width: 280, pixelRatio: 2.0);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-            'تم طباعة تقرير الشفت لليوم',
+          'تم طباعة تقرير الشفت لليوم',
           textDirection: TextDirection.rtl,
-
         )));
       } catch (e, st) {
         debugPrint('Shift print failed: $e\n$st');
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-            'فشل طباعة تقرير الشفت',
+          'فشل طباعة تقرير الشفت',
           textDirection: TextDirection.rtl,
-
         )));
       }
 
-      // 2) إرسال start_time إلى السيرفر باستخدام Session.currentDateTime! مباشرة
+      // 2) إرسال start_time إلى السيرفر أو وضعها في الـ queue لو اوفلاين
       try {
         final dynamic startTimeValue = Session.currentDateTime!;
         final dynamic endTimeValue = Session.endDateTime!;
@@ -1573,38 +1946,29 @@ class _CashierScreenState extends State<CashierScreen> {
         final apiResp = await _apiService.closeShift(
           cashierName: Session.currentUsername!,
           startTimeParam: startTimeValue,
-          endTime:endTimeValue,
+          endTime: endTimeValue,
         );
 
-        // طباعة النتيجة للتشخيص أثناء التطوير
-        debugPrint('closeShift API response: success=${apiResp.success}, message=${apiResp.message}, id=${apiResp.insertId}, start=${apiResp.startTime}, end=${apiResp.endTime}');
+        debugPrint('closeShift API response: success=${apiResp.success}, queued=${apiResp.queued}, message=${apiResp.message}, id=${apiResp.insertId}');
 
-        if (apiResp.success) {
+        if (apiResp.success || apiResp.queued) {
+          final msg = apiResp.queued
+              ? 'تم حفظ تقفيل الشيفت محليًا وسيتم رفعه عند استعادة الاتصال'
+              : 'تم حفظ الشفت على السيرفر بنجاح';
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg, textDirection: TextDirection.rtl)));
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(
-                'فشل حفظ الشفت على السيرفر: ${apiResp.message}',
-              textDirection: TextDirection.rtl,
-
-            ),
+            content: Text('فشل حفظ الشفت على السيرفر: ${apiResp.message}', textDirection: TextDirection.rtl),
             backgroundColor: Colors.red[700],
           ));
         }
       } catch (e, st) {
         debugPrint('API closeShift failed: $e\n$st');
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-            'خطأ أثناء حفظ الشفت: $e',
-          textDirection: TextDirection.rtl,
-
-        )));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء حفظ الشفت: $e', textDirection: TextDirection.rtl)));
       }
     } catch (e, st) {
       debugPrint('Error while closing shift: $e\n$st');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-          'فشل تقفيل الشفت: $e',
-        textDirection: TextDirection.rtl,
-
-      )));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تقفيل الشفت: $e', textDirection: TextDirection.rtl)));
     } finally {
       setState(() => _closingShift = false);
     }
@@ -1815,7 +2179,7 @@ class _CashierScreenState extends State<CashierScreen> {
                     icon: const Icon(Icons.account_balance_wallet,color: Colors.white70,),
                     onPressed: Session.wallet_tx == true ? _openCardWalletDialog:null,
                   ),
-                  _moneyOrShimmer(value: (_totalWallet == null) ? null : (_cashInWallet + _totalWallet!)),
+                  _moneyOrShimmerWithFlag(value: (_totalWallet ?? 0.0) + (_cashInWallet ?? 0.0))
 
                 ],
               ),
@@ -1837,7 +2201,7 @@ class _CashierScreenState extends State<CashierScreen> {
                   ),
                 ),
                 SizedBox(height: 10,),
-                _moneyOrShimmer(value: (_totalCash == null) ? null : (_startingAmount + _totalCash!), withSign: true),
+                _moneyOrShimmerWithFlag(value: (_totalCash ?? 0.0) + (_startingAmount ?? 0.0) + _lastOfflineSale, withSign: true)
               ],
             ),
           ],

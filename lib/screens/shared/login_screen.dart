@@ -4,9 +4,11 @@ import 'dart:io'; // <- موجود لاستخدام Platform و Process و Direc
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 import '../../models/login.dart'; // يحتوي على Session class (currentUsername, currentRole, optional token)
-import '../../services/Api/Admin/settings.dart'; // يحتوي على ApiService.loginOnline
+// استبدل المسار إذا كانت ApiService في ملف آخر عندك
+import '../../services/Api/Admin/settings.dart';
 import '../../services/cashier/app_controller.dart';
 import '../../utils/colors.dart';
 import '../../widgets/Loading/Shared/login.dart';
@@ -82,16 +84,31 @@ class _LoginScreenState extends State<LoginScreen> {
         print(sb.toString());
       }
 
-      // بعدما حصلنا على hostname نبدأ polling حتى نتأكد enabled == 0
+      // جديد: لو مفيش اتصال نسمح بفتح شاشة الدخول فورًا (offline login)
+      try {
+        final conn = await Connectivity().checkConnectivity();
+        final online = conn != ConnectivityResult.none;
+        if (!online) {
+          if (kDebugMode) debugPrint('[LoginScreen] No connectivity on start — skipping maintenance polling.');
+          setState(() {
+            _initialChecking = false; // افتح الشاشة للمستخدم ليجرب الـ offline login
+          });
+          return;
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('[LoginScreen] connectivity check failed: $e — continuing to polling.');
+        // لو فشل فحص الاتصال هنحاول polling عادي (كما قبل)
+      }
+
+      // بعدما حصلنا على hostname ونأكد ان فيه اتصال نبدأ polling حتى نتأكد enabled == 0
       _startPollingForMaintenance();
     } catch (e, st) {
       if (kDebugMode) print('Failed to get machine identity: $e\n$st');
-      // لو فشلنا في الحصول على hostname سنبقي hostName فارغاً،
-      // لكن نبدأ المحاولة مع قيمة 'unknown' عوضاً عن ذلك
+      // لو فشلنا في الحصول على hostname سنبقي hostName 'unknown' ونفتح الشاشة (مانعش المستخدمين)
       setState(() {
         hostName = 'unknown';
+        _initialChecking = false;
       });
-      _startPollingForMaintenance();
     }
   }
 
@@ -308,35 +325,49 @@ class _LoginScreenState extends State<LoginScreen> {
     });
   }
 
+  // --- helper: استخراج payload المستخدم بشكل مرن من أشكال الاستجابة المختلفة ---
+  Map<String, dynamic> _extractUserPayload(dynamic raw) {
+    try {
+      if (raw == null) return {};
+
+      // case A: raw has 'data' and it's a Map
+      if (raw is Map && raw['data'] is Map) {
+        final Map<String, dynamic> topData = Map<String, dynamic>.from(raw['data']);
+
+        // server sometimes returns { data: { data: { user... } } }
+        if (topData['data'] is Map) {
+          return Map<String, dynamic>.from(topData['data'] as Map);
+        }
+
+        // queued / local case: { status: 'success_offline', data: local } where local may contain 'raw'
+        if (topData.containsKey('username')) {
+          return topData;
+        }
+        if (topData.containsKey('raw') && topData['raw'] is Map) {
+          return Map<String, dynamic>.from(topData['raw'] as Map);
+        }
+
+        // fallback: return topData as-is
+        return topData;
+      }
+
+      // case B: raw itself is a Map describing the user
+      if (raw is Map && raw.containsKey('username')) {
+        return Map<String, dynamic>.from(raw);
+      }
+
+      // default: cannot extract
+      return {};
+    } catch (e) {
+      if (kDebugMode) debugPrint('Failed to extract user payload: $e');
+      return {};
+    }
+  }
+
   Future<void> _login() async {
     setState(() {
       errorMessage = '';
     });
-
-    // أثناء محاولة تسجيل الدخول نعيد التحقق السريع من الصيانة (لتغطية حالة النقر السريع)
-    if (hostName.isNotEmpty) {
-      try {
-        final enabled = await _fetchEnabledFromServer(hostName);
-        if (enabled == 1) {
-          // عرض الدايلوج المحلي إن لم يظهر
-          if (!_maintenanceDialogShown && mounted) _showLocalMaintenanceDialog();
-          return;
-        } else if (enabled == -1) {
-          // خطأ في التحقق => نمنع المتابعة حسب طلبك (ابقاء الصفحة محجوبة)
-          // نعيد محاولة لاحقًا بدل المتابعة
-          setState(() {
-            errorMessage = 'لا يمكن التحقق من حالة الصيانة حالياً. أعد المحاولة لاحقاً.';
-          });
-          return;
-        }
-      } catch (e) {
-        if (kDebugMode) print('Maintenance quick-check failed during login: $e');
-        setState(() {
-          errorMessage = 'حدث خطأ أثناء التحقق من الصيانة.';
-        });
-        return;
-      }
-    }
 
     final usernameInput = usernameController.text.trim();
     final password = passwordController.text.trim();
@@ -353,59 +384,100 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final raw = await ApiService.loginOnline(usernameInput, password);
+      // أولاً: نتحقق من حالة الاتصال. لو مفيش اتصال نتجاوز فحص الصيانة ونسنخدم الـ offline login مباشرة.
+      final conn = await Connectivity().checkConnectivity();
+      final online = conn != ConnectivityResult.none;
+
+      if (online) {
+        // محاولة سريعة للتحقق من حالة الصيانة
+        try {
+          final enabled = await _fetchEnabledFromServer(hostName);
+          if (kDebugMode) print('[LoginScreen] quick maintenance check => enabled=$enabled');
+          if (enabled == 1) {
+            // اذا السيرفر قفل التطبيق، نعرض الدايلوج ونمنع الدخول
+            if (!_maintenanceDialogShown && mounted) _showLocalMaintenanceDialog();
+            return;
+          }
+          // إذا enabled == -1 (خطأ في الفحص)، سنستمر بمحاولة تسجيل الدخول لأن المستخدم طلب أن يكون بإمكانه الدخول
+          if (enabled == -1 && kDebugMode) {
+            debugPrint('[LoginScreen] maintenance check returned error (-1) but continuing to login (online).');
+          }
+        } catch (e) {
+          // لو حصل خطأ في الفحص ونحنا متصلين، نسمح بالمحاولة (لا نغلق على طول) — أعطِ تحذير في الـ debug
+          if (kDebugMode) debugPrint('[LoginScreen] maintenance quick-check failed: $e — continuing to login.');
+        }
+      } else {
+        // offline: نتجاوز فحص الصيانة كلياً ونستخدم الفالباك المحلي
+        if (kDebugMode) debugPrint('[LoginScreen] No connectivity — will attempt offline login if possible.');
+      }
+
+      // استدعاء ApiService.login الذي يدعم fallback محلي
+      final raw = await ApiService.login(usernameInput, password, allowOffline: true);
 
       if (kDebugMode) {
         print('Login response (raw): $raw');
       }
 
-      // --- تحقق من فشل تسجيل الدخول ---
-      if (raw == null || raw['status'] != 'success') {
+      if (raw == null) {
         setState(() {
-          errorMessage = raw?['message']?.toString() ?? 'اسم المستخدم أو كلمة السر غير صحيحة';
+          errorMessage = 'اسم المستخدم أو كلمة السر غير صحيحة';
         });
         return;
       }
 
-      // --- استخراج الداتا من الرد ---
-      Map<String, dynamic> payload = {};
-      if (raw.containsKey('data') && raw['data'] is Map) {
-        payload = Map<String, dynamic>.from(raw['data'] as Map);
+      final status = (raw['status'] ?? '').toString();
+
+      if (status == 'success' || status == 'success_offline') {
+        // استخدم الدالة المرنة لاستخراج payload
+        final extracted = _extractUserPayload(raw);
+
+        Map<String, dynamic> finalPayload = {};
+        if (extracted.isNotEmpty) {
+          finalPayload = extracted;
+        } else if (raw is Map && raw['data'] is Map) {
+          finalPayload = Map<String, dynamic>.from(raw['data']);
+        } else if (raw is Map) {
+          finalPayload = Map<String, dynamic>.from(raw);
+        }
+
+        String returnedUsername = finalPayload['username']?.toString() ?? usernameInput;
+        String returnedRole = finalPayload['role']?.toString() ?? 'cashier';
+        String? token = finalPayload['token']?.toString() ?? raw['token']?.toString();
+
+        // --- تخزين الـ Session ---
+        Session.currentUsername = returnedUsername;
+        Session.currentRole = returnedRole;
+        if (token != null && token.isNotEmpty) Session.currentToken = token;
+
+        if (!mounted) return;
+
+        if (status == 'success_offline') {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('تم تسجيل الدخول (بدون اتصال بالإنترنت)'),
+            duration: Duration(seconds: 2),
+          ));
+        }
+
+        // --- التنقل للشاشات حسب الدور ---
+        if (returnedRole == 'admin') {
+          Navigator.pushNamed(context, '/admin', arguments: returnedUsername);
+        } else {
+          Navigator.pushReplacementNamed(
+            context,
+            CashierScreen.routName,
+            arguments: {
+              'username': returnedUsername,
+              'role': returnedRole,
+              'token': Session.currentToken,
+            },
+          );
+        }
       } else {
-        payload = Map<String, dynamic>.from(raw);
-      }
-
-      String returnedUsername = payload['username']?.toString() ?? usernameInput;
-      String returnedRole = payload['role']?.toString() ?? 'cashier';
-      String? token = payload['token']?.toString();
-
-      if (kDebugMode) {
-        print('parsed payload: $payload');
-        print('returnedUsername: $returnedUsername');
-        print('returnedRole: $returnedRole');
-        print('token: $token');
-      }
-
-      // --- تخزين الـ Session ---
-      Session.currentUsername = returnedUsername;
-      Session.currentRole = returnedRole;
-      if (token != null) Session.currentToken = token;
-
-      if (!mounted) return;
-
-      // --- التنقل للشاشات حسب الدور ---
-      if (returnedRole == 'admin') {
-        Navigator.pushNamed(context, '/admin', arguments: returnedUsername);
-      } else {
-        Navigator.pushReplacementNamed(
-          context,
-          CashierScreen.routName,
-          arguments: {
-            'username': returnedUsername,
-            'role': returnedRole,
-            'token': Session.currentToken,
-          },
-        );
+        // حالة فشل
+        setState(() {
+          errorMessage = raw['message']?.toString() ?? 'اسم المستخدم أو كلمة السر غير صحيحة';
+        });
+        return;
       }
     } catch (e, st) {
       if (kDebugMode) {
@@ -425,19 +497,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // إذا ما خلصنا التحقق من حالة الصيانة نظهر شاشة تحميل كاملة
-    if (_initialChecking) {
-      return Scaffold(
-        backgroundColor: AppColorsDark.bgColor,
-        body:  Center(
-          child: SizedBox(
-            width: double.infinity,
-            height: double.infinity,
-            child:LoginLoadingShimmer(),
-          ),
-        ),
-      );
-    }
 
     // غير ذلك نعرض شاشة تسجيل الدخول العادية
     return Scaffold(
@@ -500,15 +559,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 else
                   const SizedBox(height: 18),
                 const SizedBox(height: 8),
-                loading != true ?
                 CustomButton(
-                    text: "تسجيل دخول",
-                    onPressed: (){
-                      _login();
-                      loading = true ;
-                    },
-                    isLoading: loading,
-                ):Container(),
+                  text: "تسجيل دخول",
+                  onPressed: _login,
+                  isLoading: loading,
+                ),
                 const SizedBox(height: 8),
               ],
             ),
