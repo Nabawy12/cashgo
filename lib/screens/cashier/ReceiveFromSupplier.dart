@@ -1,20 +1,19 @@
 // lib/screens/cashier/ReceiveFromSupplier.dart
-import 'dart:convert';
-
 import 'package:cashgo/screens/cashier/cashier_screen.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../../models/login.dart';
+import '../../services/db/db_helper.dart';
 
 class ReceiveFromSupplierScreen extends StatefulWidget {
   const ReceiveFromSupplierScreen({Key? key}) : super(key: key);
 
   @override
-  State<ReceiveFromSupplierScreen> createState() => _ReceiveFromSupplierScreenState();
+  State<ReceiveFromSupplierScreen> createState() =>
+      _ReceiveFromSupplierScreenState();
 }
 
 class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
@@ -106,7 +105,9 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         ? null
         : double.tryParse(rawUnitText.replaceAll(',', ''));
 
-    if (purchasePerUnit != null && purchasePerUnit == 0.0 && purchasePerCarton != null) {
+    if (purchasePerUnit != null &&
+        purchasePerUnit == 0.0 &&
+        purchasePerCarton != null) {
       purchasePerUnit = null;
     }
 
@@ -140,7 +141,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     setState(() {});
   }
 
-  /// Lookup product from server by barcode and autofill form fields
+  /// Lookup product from local SQLite by barcode and autofill form fields
   Future<void> _lookupBarcode() async {
     final barcode = _barcodeCtrl.text.trim();
     if (barcode.isEmpty) {
@@ -150,37 +151,27 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
     setState(() => _loading = true);
     try {
-      final uri = Uri.parse('https://nabawisolution.com/products.php')
-          .replace(queryParameters: {'action': 'get_by_barcode', 'barcode': barcode});
-
-      final res = await http.get(uri, headers: {'Accept': 'application/json'});
-
-      debugPrint('LOOKUP HTTP status: ${res.statusCode}');
-      debugPrint('LOOKUP HTTP body: ${res.body}');
-
-      if (res.statusCode != 200) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
-            textDirection: TextDirection.rtl,
-            child: Text('خطأ من السيرفر: ${res.statusCode}'))));
-        setState(() => _loading = false);
-        return;
-      }
-
-      final Map<String, dynamic> json = jsonDecode(res.body);
-
-      if (json['success'] == true && json['data'] != null) {
-        final Map<String, dynamic> p = Map<String, dynamic>.from(json['data']);
-
+      final p = await DBHelper.instance.getProductByBarcode(barcode);
+      if (p != null) {
         final name = (p['name'] ?? '').toString();
-        final unitsInCarton = (p['units_in_carton'] != null) ? (int.tryParse(p['units_in_carton'].toString()) ?? 1) : 1;
-        final totalUnits = (p['total_units'] != null) ? (int.tryParse(p['total_units'].toString()) ?? 0) : 0;
+        final unitsInCarton = (p['units_in_carton'] != null)
+            ? (int.tryParse(p['units_in_carton'].toString()) ?? 1)
+            : 1;
+        final totalUnits = (p['total_units'] != null)
+            ? (int.tryParse(p['total_units'].toString()) ?? 0)
+            : 0;
 
-        final purchasePrice = (p['purchase_price'] != null) ? double.tryParse(p['purchase_price'].toString()) ?? 0.0 : 0.0;
-        final sellingPrice = (p['selling_price'] != null) ? double.tryParse(p['selling_price'].toString()) ?? 0.0 : 0.0;
+        final purchasePrice = (p['purchase_price'] != null)
+            ? double.tryParse(p['purchase_price'].toString()) ?? 0.0
+            : 0.0;
+        final sellingPrice = (p['selling_price'] != null)
+            ? double.tryParse(p['selling_price'].toString()) ?? 0.0
+            : 0.0;
 
         if (name.isNotEmpty) _nameCtrl.text = name;
 
-        _unitsInCartonCtrl.text = unitsInCarton > 0 ? unitsInCarton.toString() : '1';
+        _unitsInCartonCtrl.text =
+            unitsInCarton > 0 ? unitsInCarton.toString() : '1';
         _existingUnitsCtrl.text = totalUnits.toString();
 
         if (purchasePrice > 0) {
@@ -207,16 +198,17 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         _paidTouched = false;
         _updateComputedPaid();
       } else {
-        final msg = json['message'] ?? 'المنتج غير موجود';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
-            textDirection: TextDirection.rtl,
-            child: Text(msg))));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Directionality(
+                textDirection: TextDirection.rtl,
+                child: Text('المنتج غير موجود'))));
       }
     } catch (e) {
       debugPrint('Barcode lookup error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Text('خطأ أثناء البحث عن المنتج: $e'))));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Directionality(
+              textDirection: TextDirection.rtl,
+              child: Text('خطأ أثناء البحث عن المنتج: $e'))));
     }
     setState(() => _loading = false);
   }
@@ -242,9 +234,12 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         ? null
         : double.tryParse(_sellingPriceIfNewCtrl.text.replaceAll(',', ''));
 
-    final rawPaid = double.tryParse(_paidAmountCtrl.text.replaceAll(',', '')) ?? 0.0;
+    final rawPaid =
+        double.tryParse(_paidAmountCtrl.text.replaceAll(',', '')) ?? 0.0;
 
-    if (purchasePerUnit != null && purchasePerUnit == 0.0 && purchasePerCarton != null) {
+    if (purchasePerUnit != null &&
+        purchasePerUnit == 0.0 &&
+        purchasePerCarton != null) {
       purchasePerUnit = null;
     }
 
@@ -261,7 +256,9 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
       if (purchaseCarton != null) {
         cartonPrice = purchaseCarton;
-        unitPrice = (purchaseUnit != null) ? purchaseUnit : (uic > 0 ? purchaseCarton / uic : 0.0);
+        unitPrice = (purchaseUnit != null)
+            ? purchaseUnit
+            : (uic > 0 ? purchaseCarton / uic : 0.0);
       } else {
         if (purchaseUnit != null) {
           unitPrice = purchaseUnit;
@@ -289,66 +286,57 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
       if (paid > totalCost) paid = totalCost;
 
       // compute credit (what remains to be paid)
-      final double creditAmount = (totalCost - paid) < 0 ? 0.0 : (totalCost - paid);
+      final double creditAmount =
+          (totalCost - paid) < 0 ? 0.0 : (totalCost - paid);
 
-      // prepare payload for server (server expects these keys)
-      final payload = {
-        'product_name': name,
-        'barcode': barcode,
-        'cartons': cartonsInput.toString(),
-        'units': unitsInput.toString(),
-        'units_in_carton': unitsInCartonInput.toString(),
-        'carton_price': purchasePerCarton?.toString() ?? '',
-        'unit_price': purchasePerUnit?.toString() ?? '',
-        'selling_price_if_new': sellingIfNew?.toString() ?? '',
-        'paid_amount': paid.toStringAsFixed(2),
-        'credit_amount': creditAmount.toStringAsFixed(2), // <-- new field
-        'payment_type': _paymentType, // 'cash_or_credit' or 'wallet'
-        'receipt_date': DateTime.now().toIso8601String().split('T')[0],
-        'cashier_name': Session.currentUsername ?? 'unknown',
-      };
-
-      // POST to your server
-      final uri = Uri.parse('https://nabawisolution.com/receive_from_supplier.php');
-      final res = await http.post(uri,
-          headers: {'Content-Type': 'application/json'}, body: jsonEncode(payload));
-
-      // debug prints for diagnosis
-      debugPrint('RECEIVE HTTP status: ${res.statusCode}');
-      debugPrint('RECEIVE HTTP body: ${res.body}');
-
-      if (res.statusCode != 200) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
-            textDirection: TextDirection.rtl,
-            child: Text('خطأ من السيرفر: ${res.statusCode}'))));
-        setState(() => _loading = false);
-        return false;
-      }
-
-      final Map<String, dynamic> data = jsonDecode(res.body);
+      final data = await DBHelper.instance.receiveFromSupplier(
+        barcode: barcode,
+        name: name,
+        cartons: cartonsInput,
+        units: unitsInput,
+        purchasePricePerCarton: purchasePerCarton,
+        purchasePricePerUnit: purchasePerUnit,
+        sellingPricePerUnitIfNew: sellingIfNew,
+        unitsInCartonIfNew: unitsInCartonInput,
+        receivedBy: Session.currentUsername ?? 'unknown',
+        paymentType: creditAmount > 0 ? 'credit' : _paymentType,
+        paidAmount: paid,
+      );
 
       if (data['status'] == 'ok') {
-        final totalCostRes = double.tryParse((data['total_cost'] ?? totalCost).toString()) ?? totalCost;
-        final paidRes = double.tryParse((data['paid'] ?? paid).toString()) ?? paid;
-        final dueRes = double.tryParse((data['due'] ?? (totalCostRes - paidRes)).toString()) ?? (totalCostRes - paidRes);
+        final totalCostRes =
+            double.tryParse((data['total_cost'] ?? totalCost).toString()) ??
+                totalCost;
+        final paidRes =
+            double.tryParse((data['paid_amount'] ?? paid).toString()) ?? paid;
+        final dueRes = double.tryParse(
+                (data['due_amount'] ?? (totalCostRes - paidRes)).toString()) ??
+            (totalCostRes - paidRes);
 
         // try to read server returned credit, fallback to computed dueRes
-        final creditRes = double.tryParse((data['credit_amount_stored'] ?? data['credit_amount'] ?? dueRes).toString()) ?? dueRes;
+        final creditRes = dueRes;
 
         showDialog(
           context: context,
           builder: (_) => AlertDialog(
             backgroundColor: AppColorsDark.bgCardColor,
-            title: Center(child: const Text('تم الاستلام', style: TextStyle(color: Colors.white))),
+            title: Center(
+                child: Text('تم الاستلام',
+                    style: TextStyle(color: AppColorsDark.mainTextDark))),
             content: Text(
               'تم تسجيل الاستلام.\nالإجمالي: ${totalCostRes.toStringAsFixed(2)}\nالمدفوع: ${paidRes.toStringAsFixed(2)}\nالمتبقي/آجل: ${creditRes.toStringAsFixed(2)}.',
-              style: const TextStyle(color: Colors.white),
+              style: TextStyle(color: AppColorsDark.mainTextDark),
             ),
             actions: [
               TextButton(
-                style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                style: TextButton.styleFrom(
+                    backgroundColor: AppColorsDark.bgColor),
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('حسناً', style: TextStyle(color: Colors.white)),
+                child: Text('حسناً',
+                    style: TextStyle(
+                        color: Theme.of(context).brightness == Brightness.light
+                            ? Colors.black
+                            : Colors.white)),
               ),
             ],
           ),
@@ -371,15 +359,16 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         return true;
       } else {
         final message = data['message'] ?? 'حدث خطأ غير متوقع';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
-            textDirection: TextDirection.rtl,
-            child: Text(message))));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Directionality(
+                textDirection: TextDirection.rtl, child: Text(message))));
       }
     } catch (e) {
       debugPrint('Submit error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Text('حدث خطأ أثناء الإرسال: $e'))));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Directionality(
+              textDirection: TextDirection.rtl,
+              child: Text('حدث خطأ أثناء الإرسال: $e'))));
     }
 
     setState(() => _loading = false);
@@ -391,246 +380,277 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     final computedTotal = _computeTotalCost();
 
     return Scaffold(
-      backgroundColor: AppColorsDark.bgColor,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0.0,
         scrolledUnderElevation: 0.0,
-        iconTheme: const IconThemeData(
-          color: Colors.white70,
+        iconTheme: IconThemeData(
+          color: Theme.of(context).iconTheme.color,
         ),
-        title: const Text(
+        title: Text(
           'استلام بضاعة من المورد',
           style: TextStyle(
             fontSize: 20,
-            color: Colors.white,
+            color: AppColorsDark.mainTextDark,
           ),
         ),
       ),
       // ADD: keyboard-aware padding and disable bounce
-      body: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: SingleChildScrollView(
-          physics: const ClampingScrollPhysics(),
-          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          child: Padding(
-            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom + 12.0),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Barcode + lookup button
-                  Row(
-                    children: [
-                      Expanded(
-                        child: CustomFormField(
-                          controller: _barcodeCtrl,
-                          autoFocus: true,
-                          label: true,
-                          hint: 'باركود (اختياري)',
-                          focusNode: _barcodeFocusNode,
-                          textInputAction: TextInputAction.next,
-                          onFieldSubmitted: (_) {
-                            _lookupBarcode();
-                            FocusScope.of(context).requestFocus(_nameFocusNode);
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 10),
-                  CustomFormField(
-                    controller: _nameCtrl,
-                    label: true,
-                    hint: 'اسم المنتج',
-                    focusNode: _nameFocusNode,
-                    textInputAction: TextInputAction.next,
-                    validator: (v) {
-                      if (v == null || v.trim().isEmpty) return 'اسم المنتج مطلوب';
-                      return null;
-                    },
-                    onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_cartonsFocusNode),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: CustomFormField(
-                          controller: _cartonsCtrl,
-                          label: true,
-                          hint: 'عدد الكراتين',
-                          focusNode: _cartonsFocusNode,
-                          textInputAction: TextInputAction.next,
-                          keyboardType: TextInputType.number,
-                          onChanged: (_) => _updateComputedPaid(),
-                          onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_unitsFocusNode),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: CustomFormField(
-                          controller: _unitsCtrl,
-                          label: true,
-                          keyboardType: TextInputType.number,
-                          hint: 'عدد وحدات فردية',
-                          focusNode: _unitsFocusNode,
-                          textInputAction: TextInputAction.next,
-                          onChanged: (_) => _updateComputedPaid(),
-                          onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_unitsInCartonFocusNode),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: CustomFormField(
-                          controller: _unitsInCartonCtrl,
-                          label: true,
-                          keyboardType: TextInputType.number,
-                          hint: 'وحدات في الكرتونة',
-                          focusNode: _unitsInCartonFocusNode,
-                          textInputAction: TextInputAction.next,
-                          onChanged: (_) => _updateComputedPaid(),
-                          onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_purchaseCartonFocusNode),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: CustomFormField(
-                          controller: _purchasePricePerCartonCtrl,
-                          label: true,
-                          keyboardType: TextInputType.numberWithOptions(decimal: true),
-                          hint: 'سعر شراء للكرتونة',
-                          focusNode: _purchaseCartonFocusNode,
-                          textInputAction: TextInputAction.next,
-                          onChanged: (_) => _updateComputedPaid(),
-                          onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_purchaseUnitFocusNode),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  CustomFormField(
-                    controller: _purchasePricePerUnitCtrl,
-                    label: true,
-                    keyboardType: TextInputType.numberWithOptions(decimal: true),
-                    hint: 'سعر شراء للوحدة (اختياري)',
-                    focusNode: _purchaseUnitFocusNode,
-                    textInputAction: TextInputAction.next,
-                    onChanged: (_) => _updateComputedPaid(),
-                    onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_sellingFocusNode),
-                  ),
-                  const SizedBox(height: 10),
-                  CustomFormField(
-                    controller: _sellingPriceIfNewCtrl,
-                    keyboardType: TextInputType.numberWithOptions(decimal: true),
-                    hint: 'سعر بيع للوحدة (إجباري إذا المنتج جديد)',
-                    focusNode: _sellingFocusNode,
-                    textInputAction: TextInputAction.next,
-                    onChanged: (_) => _updateComputedPaid(),
-                    onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_paidFocusNode),
-                  ),
-                  const SizedBox(height: 10),
-
-                  // existing units (informational)
-                  CustomFormField(
-                    controller: _existingUnitsCtrl,
-                    hint: 'الوحدات الحالية (معلومة من المنتج)',
-                    keyboardType: TextInputType.number,
-                  ),
-
-                  const SizedBox(height: 10),
-
-                  // نوع الدفع
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        'نوع الدفع',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Container(
-                        decoration: BoxDecoration(
-                          color: AppColorsDark.bgCardColor,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: AppColorsDark.strokColor),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.1),
-                              blurRadius: 6,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: DropdownButtonFormField<String>(
-                          value: _paymentType,
-                          items: const [
-                            DropdownMenuItem(value: 'cash_or_credit', child: Text('نقدي / آجل', style: TextStyle(color: Colors.white))),
-                            DropdownMenuItem(value: 'wallet', child: Text('محفظة إلكترونية', style: TextStyle(color: Colors.white))),
-                          ],
-                          onChanged: (v) {
-                            setState(() => _paymentType = v ?? 'cash_or_credit');
-                            _updateComputedPaid();
-                          },
-                          dropdownColor: AppColorsDark.bgCardColor,
-                          style: const TextStyle(color: Colors.white, fontSize: 15),
-                          iconEnabledColor: Colors.white70,
-                          decoration: const InputDecoration(
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.symmetric(horizontal: 0, vertical: 6),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: SingleChildScrollView(
+            physics: const ClampingScrollPhysics(),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            child: Padding(
+              padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 56.0),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Barcode + lookup button
+                    Row(
+                      children: [
+                        Expanded(
+                          child: CustomFormField(
+                            controller: _barcodeCtrl,
+                            autoFocus: true,
+                            label: true,
+                            hint: 'باركود (اختياري)',
+                            focusNode: _barcodeFocusNode,
+                            textInputAction: TextInputAction.next,
+                            onFieldSubmitted: (_) {
+                              _lookupBarcode();
+                              FocusScope.of(context)
+                                  .requestFocus(_nameFocusNode);
+                            },
                           ),
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
 
-                  const SizedBox(height: 30),
-                  Text(
-                    'إجمالي التكلفة: ${computedTotal.toStringAsFixed(2)}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 20),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 10),
-                  CustomFormField(
-                    controller: _paidAmountCtrl,
-                    keyboardType: TextInputType.numberWithOptions(decimal: true),
-                    hint: 'المبلغ المدفوع الآن',
-                    focusNode: _paidFocusNode,
-                    textInputAction: TextInputAction.done,
-                    onChanged: (v) {
-                      _paidTouched = true;
-                    },
-                    onFieldSubmitted: (_) async {
-                      await _submit();
-                    },
-                  ),
-                  const SizedBox(height: 20),
-                  CustomButton(
-                    text: 'تسجيل الاستلام',
-                    onPressed: () async {
-                      final ok = await _submit();
-                      if (ok) {
-                        Navigator.pushNamedAndRemoveUntil(
-                          context,
-                          CashierScreen.routName,
-                              (Route<dynamic> route) => false,
-                        );
-                      }
-                    },
-                    isLoading: _loading,
-                  ),
-                  const SizedBox(height: 20),
-                ],
+                    const SizedBox(height: 10),
+                    CustomFormField(
+                      controller: _nameCtrl,
+                      label: true,
+                      hint: 'اسم المنتج',
+                      focusNode: _nameFocusNode,
+                      textInputAction: TextInputAction.next,
+                      validator: (v) {
+                        if (v == null || v.trim().isEmpty)
+                          return 'اسم المنتج مطلوب';
+                        return null;
+                      },
+                      onFieldSubmitted: (_) => FocusScope.of(context)
+                          .requestFocus(_cartonsFocusNode),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: CustomFormField(
+                            controller: _cartonsCtrl,
+                            label: true,
+                            hint: 'عدد الكراتين',
+                            focusNode: _cartonsFocusNode,
+                            textInputAction: TextInputAction.next,
+                            keyboardType: TextInputType.number,
+                            onChanged: (_) => _updateComputedPaid(),
+                            onFieldSubmitted: (_) => FocusScope.of(context)
+                                .requestFocus(_unitsFocusNode),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: CustomFormField(
+                            controller: _unitsCtrl,
+                            label: true,
+                            keyboardType: TextInputType.number,
+                            hint: 'عدد وحدات فردية',
+                            focusNode: _unitsFocusNode,
+                            textInputAction: TextInputAction.next,
+                            onChanged: (_) => _updateComputedPaid(),
+                            onFieldSubmitted: (_) => FocusScope.of(context)
+                                .requestFocus(_unitsInCartonFocusNode),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: CustomFormField(
+                            controller: _unitsInCartonCtrl,
+                            label: true,
+                            keyboardType: TextInputType.number,
+                            hint: 'وحدات في الكرتونة',
+                            focusNode: _unitsInCartonFocusNode,
+                            textInputAction: TextInputAction.next,
+                            onChanged: (_) => _updateComputedPaid(),
+                            onFieldSubmitted: (_) => FocusScope.of(context)
+                                .requestFocus(_purchaseCartonFocusNode),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: CustomFormField(
+                            controller: _purchasePricePerCartonCtrl,
+                            label: true,
+                            keyboardType:
+                                TextInputType.numberWithOptions(decimal: true),
+                            hint: 'سعر شراء للكرتونة',
+                            focusNode: _purchaseCartonFocusNode,
+                            textInputAction: TextInputAction.next,
+                            onChanged: (_) => _updateComputedPaid(),
+                            onFieldSubmitted: (_) => FocusScope.of(context)
+                                .requestFocus(_purchaseUnitFocusNode),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    CustomFormField(
+                      controller: _purchasePricePerUnitCtrl,
+                      label: true,
+                      keyboardType:
+                          TextInputType.numberWithOptions(decimal: true),
+                      hint: 'سعر شراء للوحدة (اختياري)',
+                      focusNode: _purchaseUnitFocusNode,
+                      textInputAction: TextInputAction.next,
+                      onChanged: (_) => _updateComputedPaid(),
+                      onFieldSubmitted: (_) => FocusScope.of(context)
+                          .requestFocus(_sellingFocusNode),
+                    ),
+                    const SizedBox(height: 10),
+                    CustomFormField(
+                      controller: _sellingPriceIfNewCtrl,
+                      keyboardType:
+                          TextInputType.numberWithOptions(decimal: true),
+                      hint: 'سعر بيع للوحدة (إجباري إذا المنتج جديد)',
+                      focusNode: _sellingFocusNode,
+                      textInputAction: TextInputAction.next,
+                      onChanged: (_) => _updateComputedPaid(),
+                      onFieldSubmitted: (_) =>
+                          FocusScope.of(context).requestFocus(_paidFocusNode),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // existing units (informational)
+                    CustomFormField(
+                      controller: _existingUnitsCtrl,
+                      hint: 'الوحدات الحالية (معلومة من المنتج)',
+                      keyboardType: TextInputType.number,
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    // نوع الدفع
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          'نوع الدفع',
+                          style: TextStyle(
+                            color: AppColorsDark.mainTextDark,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: AppColorsDark.bgCardColor,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppColorsDark.strokColor),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 6,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: DropdownButtonFormField<String>(
+                            value: _paymentType,
+                            items: [
+                              DropdownMenuItem(
+                                  value: 'cash_or_credit',
+                                  child: Text('نقدي / آجل',
+                                      style: TextStyle(
+                                          color: AppColorsDark.mainTextDark))),
+                              DropdownMenuItem(
+                                  value: 'wallet',
+                                  child: Text('دفع بالمحفظة',
+                                      style: TextStyle(
+                                          color: AppColorsDark.mainTextDark))),
+                            ],
+                            onChanged: (v) {
+                              setState(
+                                  () => _paymentType = v ?? 'cash_or_credit');
+                              _updateComputedPaid();
+                            },
+                            dropdownColor: AppColorsDark.bgCardColor,
+                            style: TextStyle(
+                                color: AppColorsDark.mainTextDark,
+                                fontSize: 15),
+                            iconEnabledColor: Theme.of(context).iconTheme.color,
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 0, vertical: 6),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 30),
+                    Text(
+                      'إجمالي التكلفة: ${computedTotal.toStringAsFixed(2)}',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: AppColorsDark.mainTextDark,
+                          fontSize: 20),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 10),
+                    CustomFormField(
+                      controller: _paidAmountCtrl,
+                      keyboardType:
+                          TextInputType.numberWithOptions(decimal: true),
+                      hint: 'المبلغ المدفوع الآن',
+                      focusNode: _paidFocusNode,
+                      textInputAction: TextInputAction.done,
+                      onChanged: (v) {
+                        _paidTouched = true;
+                      },
+                      onFieldSubmitted: (_) async {
+                        await _submit();
+                      },
+                    ),
+                    const SizedBox(height: 72),
+                    CustomButton(
+                      text: 'تسجيل الاستلام',
+                      onPressed: () async {
+                        final ok = await _submit();
+                        if (ok) {
+                          Navigator.pushNamedAndRemoveUntil(
+                            context,
+                            CashierScreen.routName,
+                            (Route<dynamic> route) => false,
+                          );
+                        }
+                      },
+                      isLoading: _loading,
+                    ),
+                    const SizedBox(height: 72),
+                  ],
+                ),
               ),
             ),
           ),

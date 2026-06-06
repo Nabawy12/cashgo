@@ -2,6 +2,7 @@
 import 'package:cashgo/utils/colors.dart';
 import 'package:flutter/material.dart';
 import '../../services/db/db_helper.dart';
+import '../../widgets/empty_state_card.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -40,7 +41,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       await DBHelper.instance.ensureExpirySeenColumn();
 
       final low = await DBHelper.instance.getLowStockUnseenProducts();
-      final expiry = await DBHelper.instance.getExpiringUnseenProducts(daysThreshold: expiryThresholdDays);
+      final expiry = await DBHelper.instance
+          .getExpiringUnseenProducts(daysThreshold: expiryThresholdDays);
 
       final normalizedLow = low.map((p) {
         return {
@@ -77,7 +79,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Future<void> _toggleLowStockSeen(int productId, bool currentSeen) async {
     try {
       await DBHelper.instance.setProductLowStockSeen(productId, true);
-      final idx = _lowStockItems.indexWhere((p) => _safeInt(p['id']) == productId);
+      final idx =
+          _lowStockItems.indexWhere((p) => _safeInt(p['id']) == productId);
       if (idx != -1) {
         setState(() => _lowStockItems.removeAt(idx));
       } else {
@@ -102,7 +105,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Future<void> _toggleExpirySeen(int productId, bool currentSeen) async {
     try {
       await DBHelper.instance.setProductExpirySeen(productId, true);
-      final idx = _expiryItems.indexWhere((p) => _safeInt(p['id']) == productId);
+      final idx =
+          _expiryItems.indexWhere((p) => _safeInt(p['id']) == productId);
       if (idx != -1) {
         setState(() => _expiryItems.removeAt(idx));
       } else {
@@ -115,7 +119,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   Future<void> _markAllExpiryRead() async {
     try {
-      await DBHelper.instance.markAllExpirySeen(daysThreshold: expiryThresholdDays);
+      await DBHelper.instance
+          .markAllExpirySeen(daysThreshold: expiryThresholdDays);
       if (!mounted) return;
       setState(() => _expiryItems.clear());
     } catch (e) {
@@ -123,7 +128,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     }
   }
 
-  bool _hasLowUnseen() => _lowStockItems.any((p) => _safeInt(p['quantity']) < 5 && _safeInt(p['low_stock_seen']) == 0);
+  bool _hasLowUnseen() => _lowStockItems.any(
+      (p) => _safeInt(p['quantity']) < 5 && _safeInt(p['low_stock_seen']) == 0);
   bool _hasExpiryUnseen() => _expiryItems.isNotEmpty;
 
   @override
@@ -134,15 +140,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0.0,
         iconTheme: IconThemeData(
-          color: Colors.white,
-          size: 26
+          color: Theme.of(context).iconTheme.color,
+          size: 26,
         ),
-        title: const Text(
-            'الإشعارات',
-          style: TextStyle(
-            fontSize: 20,
-            color: Colors.white
-          ),
+        title: Text(
+          'الإشعارات',
+          style: TextStyle(fontSize: 20, color: AppColorsDark.mainTextDark),
         ),
         actions: [
           if (_tabIndex == 0 && _hasLowUnseen())
@@ -170,104 +173,123 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : Column(
-        children: [
-          // Tabs
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 12),
-            child: Row(
               children: [
-                Expanded(
-                  child: InkWell(
-                      onTap:() => setState(() => _tabIndex = 0),
-                      child: Container(
-                        alignment: Alignment.center,
-                        height: 40,
-                        decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: _tabIndex == 1 ? AppColorsDark.bgCardColor : AppColorsDark.mainColor,
-                              width: 2,
-                            )
-                        ),
-                        child: Padding(
-                          padding: EdgeInsetsGeometry.symmetric(horizontal: 20,vertical: 1),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(
-                                  Icons.inventory_2_outlined,
-                                size: 23,
-                                color: Colors.white,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                'النواقص (${_lowStockItems.length})',
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 18
+                // Tabs
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 8.0, horizontal: 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: InkWell(
+                            onTap: () => setState(() => _tabIndex = 0),
+                            child: Container(
+                              alignment: Alignment.center,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: _tabIndex == 1
+                                        ? AppColorsDark.bgCardColor
+                                        : AppColorsDark.mainColor,
+                                    width: 2,
+                                  )),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 20, vertical: 1),
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.center,
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        Icons.inventory_2_outlined,
+                                        size: 23,
+                                        color:
+                                            Theme.of(context).iconTheme.color,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'النواقص (${_lowStockItems.length})',
+                                        style: TextStyle(
+                                            color: AppColorsDark.mainTextDark,
+                                            fontSize: 18),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ],
-                          ),
-                        ),
-                      )
+                            )),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: InkWell(
+                            onTap: () => setState(() => _tabIndex = 1),
+                            child: Container(
+                              alignment: Alignment.center,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: _tabIndex == 0
+                                        ? AppColorsDark.bgCardColor
+                                        : AppColorsDark.mainColor,
+                                    width: 2,
+                                  )),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 20, vertical: 1),
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.center,
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        Icons.access_time_outlined,
+                                        size: 23,
+                                        color:
+                                            Theme.of(context).iconTheme.color,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'قريب للانتهاء (${_expiryItems.length})',
+                                        style: TextStyle(
+                                            color: AppColorsDark.mainTextDark,
+                                            fontSize: 18),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            )),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 8),
+
+                // Content
                 Expanded(
-                  child: InkWell(
-                      onTap:() => setState(() => _tabIndex = 1),
-                      child: Container(
-                        alignment: Alignment.center,
-                        height: 40,
-                        decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: _tabIndex == 0 ? AppColorsDark.bgCardColor : AppColorsDark.mainColor,
-                              width: 2,
-                            )
-                        ),
-                        child: Padding(
-                          padding: EdgeInsetsGeometry.symmetric(horizontal: 20,vertical: 1),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(
-                                Icons.access_time_outlined,
-                                size: 23,
-                                color: Colors.white,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                'قريب للانتهاء (${_expiryItems.length})',
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 18
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      )
-                  ),
+                  child: _tabIndex == 0
+                      ? _buildLowStockList()
+                      : _buildExpiryList(),
                 ),
               ],
             ),
-          ),
-
-          // Content
-          Expanded(
-            child: _tabIndex == 0 ? _buildLowStockList() : _buildExpiryList(),
-          ),
-        ],
-      ),
     );
   }
 
   Widget _buildLowStockList() {
-    if (_lowStockItems.isEmpty) return const Center(child: Text('لا توجد إشعارات نواقص'));
+    if (_lowStockItems.isEmpty) {
+      return const EmptyStateCard(
+        icon: Icons.inventory_2_outlined,
+        title: 'لا توجد نواقص',
+        message: 'كل المنتجات حالياً أعلى من حد التنبيه.',
+      );
+    }
     return ListView.separated(
       itemCount: _lowStockItems.length,
       separatorBuilder: (_, __) => const Divider(height: 1),
@@ -277,14 +299,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         if (quantity >= 5) return const SizedBox.shrink();
         final seen = _safeInt(item['low_stock_seen']) == 1;
         return Container(
-          margin: EdgeInsets.symmetric(vertical: 15,horizontal: 12),
+          margin: EdgeInsets.symmetric(vertical: 15, horizontal: 12),
           padding: EdgeInsets.all(5),
           decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color:AppColorsDark.mainColor.withOpacity(0.6),
-                width: 2,
-              ),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: AppColorsDark.mainColor.withOpacity(0.6),
+              width: 2,
+            ),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withOpacity(0.1),
@@ -295,27 +317,28 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             ],
           ),
           child: ListTile(
-            leading: Icon(
-                Icons.inventory,
-                color: quantity == 0 ? Colors.red : Colors.white70),
+            leading: Icon(Icons.inventory,
+                color: quantity == 0
+                    ? Colors.red
+                    : Theme.of(context).iconTheme.color),
             title: Text(
-                item['name'] ?? 'بدون اسم',
+              item['name'] ?? 'بدون اسم',
               style: TextStyle(
-                  fontSize: 15,
-                  color: Colors.white70,
+                fontSize: 15,
+                color: AppColorsDark.mainTextLight,
               ),
             ),
             subtitle: Text(
-                'الكمية المتبقية: $quantity',
+              'الكمية المتبقية: $quantity',
               style: TextStyle(
-                fontSize: 17,
-                color: Colors.white,
-                fontWeight: FontWeight.w500
-
-              ),
+                  fontSize: 17,
+                  color: AppColorsDark.mainTextDark,
+                  fontWeight: FontWeight.w500),
             ),
             trailing: IconButton(
-              icon: Icon(Icons.mark_email_read, color: seen ? Colors.green : Colors.white),
+              icon: Icon(Icons.mark_email_read,
+                  color:
+                      seen ? Colors.green : Theme.of(context).iconTheme.color),
               onPressed: () => _toggleLowStockSeen(_safeInt(item['id']), seen),
             ),
             tileColor: seen ? Colors.black12 : null,
@@ -326,15 +349,24 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildExpiryList() {
-    if (_expiryItems.isEmpty) return const Center(child: Text('لا توجد إشعارات قرب الانتهاء'));
+    if (_expiryItems.isEmpty) {
+      return const EmptyStateCard(
+        icon: Icons.event_available,
+        title: 'لا توجد منتجات قرب الانتهاء',
+        message: 'لا توجد تواريخ صلاحية تحتاج انتباهك الآن.',
+      );
+    }
     return ListView.separated(
       itemCount: _expiryItems.length,
       separatorBuilder: (_, __) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final item = _expiryItems[index];
         final expiryStr = (item['expiry_date'] ?? '').toString();
-        final expiryDate = expiryStr.isNotEmpty ? DateTime.tryParse(expiryStr) : null;
-        final daysLeft = expiryDate != null ? expiryDate.difference(DateTime.now()).inDays : null;
+        final expiryDate =
+            expiryStr.isNotEmpty ? DateTime.tryParse(expiryStr) : null;
+        final daysLeft = expiryDate != null
+            ? expiryDate.difference(DateTime.now()).inDays
+            : null;
         final seen = _safeInt(item['expiry_seen']) == 1;
 
         String subtitle;
@@ -347,14 +379,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         }
 
         return Container(
-          margin: EdgeInsets.symmetric(vertical: 15,horizontal: 12),
+          margin: EdgeInsets.symmetric(vertical: 15, horizontal: 12),
           padding: EdgeInsets.all(5),
           decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color:AppColorsDark.mainColor.withOpacity(0.6),
-                width: 2,
-              ),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: AppColorsDark.mainColor.withOpacity(0.6),
+              width: 2,
+            ),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withOpacity(0.1),
@@ -365,29 +397,30 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             ],
           ),
           child: ListTile(
-            leading: Icon(
-                Icons.timer,
-                color: (daysLeft != null && daysLeft <= 0) ? Colors.red : Colors.grey.withOpacity(0.5)),
+            leading: Icon(Icons.timer,
+                color: (daysLeft != null && daysLeft <= 0)
+                    ? Colors.red
+                    : Colors.grey.withOpacity(0.5)),
             title: Text(
-                item['name'] ?? 'بدون اسم',
-              style: TextStyle(
-                fontSize: 15,
-                color: Colors.white70
-              ),
+              item['name'] ?? 'بدون اسم',
+              style:
+                  TextStyle(fontSize: 15, color: AppColorsDark.mainTextLight),
             ),
             subtitle: Text(
-                '$expiryStr — $subtitle',
+              '$expiryStr — $subtitle',
               style: TextStyle(
-                fontSize: 17,
-                color: Colors.white,
-                fontWeight: FontWeight.w500
-              ),
+                  fontSize: 17,
+                  color: AppColorsDark.mainTextDark,
+                  fontWeight: FontWeight.w500),
             ),
             trailing: IconButton(
-              icon: Icon(Icons.mark_email_read, color: seen ? Colors.green : Colors.white70),
+              icon: Icon(Icons.mark_email_read,
+                  color:
+                      seen ? Colors.green : Theme.of(context).iconTheme.color),
               onPressed: () => _toggleExpirySeen(_safeInt(item['id']), seen),
             ),
-            tileColor: seen ? Colors.white70 : null,
+            tileColor:
+                seen ? AppColorsDark.mainColor.withValues(alpha: 0.08) : null,
           ),
         );
       },

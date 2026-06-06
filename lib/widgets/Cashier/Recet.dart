@@ -60,7 +60,7 @@
 //               Text(
 //                 'التاريخ: ${_shortDate()}',
 //                 textAlign: TextAlign.center,
-//                 style: const TextStyle(fontSize: 13, color: Colors.grey),
+//                 style: TextStyle(fontSize: 13, color: Colors.grey),
 //               ),
 //               const SizedBox(height: 12),
 //               const Divider(color: Colors.black, thickness: 1),
@@ -80,7 +80,7 @@
 //                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
 //                 children: [
 //                   const Text('المجموع الفرعي:', style: TextStyle(fontSize: 15)),
-//                   Text(_subtotal.toStringAsFixed(2), style: const TextStyle(fontSize: 15)),
+//                   Text(_subtotal.toStringAsFixed(2), style: TextStyle(fontSize: 15)),
 //                 ],
 //               ),
 //               const SizedBox(height: 6),
@@ -88,7 +88,7 @@
 //                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
 //                 children: [
 //                   const Text('ضريبة القيمة المضافة (15%):', style: TextStyle(fontSize: 15)),
-//                   Text(_tax.toStringAsFixed(2), style: const TextStyle(fontSize: 15)),
+//                   Text(_tax.toStringAsFixed(2), style: TextStyle(fontSize: 15)),
 //                 ],
 //               ),
 //               const SizedBox(height: 12),
@@ -96,7 +96,7 @@
 //                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
 //                 children: [
 //                   const Text('المجموع الكلي:', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-//                   Text(_total.toStringAsFixed(2), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+//                   Text(_total.toStringAsFixed(2), style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
 //                 ],
 //               ),
 //               const SizedBox(height: 14),
@@ -134,14 +134,14 @@
 //               Expanded(
 //                 child: Text(
 //                   name,
-//                   style: const TextStyle(fontSize: 14),
+//                   style: TextStyle(fontSize: 14),
 //                   overflow: TextOverflow.ellipsis,
 //                 ),
 //               ),
 //               const SizedBox(width: 8),
-//               Text('$qty × ${price.toStringAsFixed(2)}', style: const TextStyle(fontSize: 13)),
+//               Text('$qty × ${price.toStringAsFixed(2)}', style: TextStyle(fontSize: 13)),
 //               const SizedBox(width: 8),
-//               Text(lineTotal.toStringAsFixed(2), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+//               Text(lineTotal.toStringAsFixed(2), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
 //             ],
 //           ),
 //         ],

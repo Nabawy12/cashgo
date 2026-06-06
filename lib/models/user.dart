@@ -4,7 +4,11 @@ class User {
   final String password;
   final String role; // 'admin' or 'cashier'
 
-  User({this.id, required this.username, required this.password, required this.role});
+  User(
+      {this.id,
+      required this.username,
+      required this.password,
+      required this.role});
 
   Map<String, dynamic> toMap() {
     return {

@@ -1,5 +1,6 @@
 // lib/widgets/Cashier/payment_controller.dart
 import 'package:cashgo/models/login.dart';
+import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
@@ -31,9 +32,10 @@ class PaymentControls extends StatefulWidget {
 }
 
 class _PaymentControlsState extends State<PaymentControls> {
-  double _parsePaid() => double.tryParse(widget.paidController.text.replaceAll(',', '')) ?? 0.0;
+  double _parsePaid() =>
+      double.tryParse(widget.paidController.text.replaceAll(',', '')) ?? 0.0;
 
-  // possible values: "cash", "wallet" (was "credit"), "delayed"
+  // possible values: "cash", "wallet", "delayed"
   String? savingButton;
 
   @override
@@ -43,104 +45,155 @@ class _PaymentControlsState extends State<PaymentControls> {
       builder: (context, _) {
         final paid = _parsePaid();
         final canPayFully = paid >= widget.total && widget.total > 0;
-        final remaining = (paid >= widget.total) ? (paid - widget.total) : (widget.total - paid);
+        final remaining = (paid >= widget.total)
+            ? (paid - widget.total)
+            : (widget.total - paid);
+        final isLight = Theme.of(context).brightness == Brightness.light;
+        final cardColor =
+            isLight ? Theme.of(context).cardColor : AppColorsDark.bgCardColor;
+        final borderColor =
+            isLight ? Colors.grey.shade300 : AppColorsDark.strokColor;
+        final textColor = Theme.of(context).textTheme.bodyMedium?.color ??
+            (isLight ? Colors.black : Colors.white);
 
-        return Column(children: [
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Text('الإجمالي: ${widget.total.toStringAsFixed(2)}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            // لو حابب تعرض عدد القطع هنا ضيف باراميتر لتمريره
-          ]),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: CustomFormField(
-                  hint: 'المبلغ المدفوع',
-                  controller: widget.paidController,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                ),
+        return Container(
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+          decoration: BoxDecoration(
+            color: cardColor,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: borderColor),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: isLight ? 0.06 : 0.18),
+                blurRadius: 18,
+                offset: const Offset(0, 8),
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              // ✅ الجزء بتاع النصوص (الباقي/المتبقي) ياخد مساحة على اليسار
-              paid >= widget.total
-                  ? Text(
-                'الباقي: ${remaining.toStringAsFixed(2)}',
-                style: const TextStyle(
-                  fontSize: 20,
-                  color: Colors.green,
-                  fontWeight: FontWeight.bold,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Row(
+              children: [
+                _SummaryPill(
+                  label: 'الإجمالي',
+                  value: widget.total.toStringAsFixed(2),
+                  color: textColor,
                 ),
-              )
-                  : Text(
-                'المتبقي: ${remaining.toStringAsFixed(2)}',
-                style: const TextStyle(
-                  fontSize: 17,
-                  color: Colors.red,
-                  fontWeight: FontWeight.bold,
+                const SizedBox(width: 12),
+                _SummaryPill(
+                  label: paid >= widget.total ? 'الباقي' : 'المتبقي',
+                  value: remaining.toStringAsFixed(2),
+                  color: paid >= widget.total ? Colors.green : Colors.red,
                 ),
-              ),
-
-              Expanded(
-                child: Align(
-                  alignment: Alignment.center,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      CustomButton(
-                        text: 'دفع نقدي',
-                        onPressed: canPayFully && savingButton == null
-                            ? () {
+              ],
+            ),
+            const SizedBox(height: 12),
+            CustomFormField(
+              hint: 'المبلغ المدفوع',
+              controller: widget.paidController,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12,
+              runSpacing: 10,
+              children: [
+                CustomButton(
+                  text: 'دفع نقدي',
+                  onPressed: canPayFully && savingButton == null
+                      ? () {
                           setState(() => savingButton = "cash");
                           widget.onPayAndSave();
                           setState(() => savingButton = null);
                         }
-                            : null,
-                        isLoading: savingButton == "cash",
-                        infinity: false,
-                      ),
-                      SizedBox(width: 10),
-                      CustomButton(
-                        // changed label to reflect wallet behaviour
-                        text: 'دفع بالمحفظة',
-                        onPressed: widget.total > 0 && savingButton == null
-                            ? () {
-                          setState(() => savingButton = "wallet"); // use "wallet" key
-                          widget.onSaveAsCard(); // caller should pass wallet behavior
+                      : null,
+                  isLoading: savingButton == "cash",
+                  infinity: false,
+                ),
+                CustomButton(
+                  text: 'دفع بالمحفظة',
+                  onPressed: widget.total > 0 && savingButton == null
+                      ? () {
+                          setState(() => savingButton = "wallet");
+                          widget.onSaveAsCard();
                           setState(() => savingButton = null);
                         }
-                            : null,
-                        isLoading: savingButton == "wallet",
-                        infinity: false,
-                      ),
-                      SizedBox(width: 10),
-                      Visibility(
-                        visible: Session.pay_credit,
-                        child: CustomButton(
-                          text: 'حفظ كآجل',
-                          onPressed: widget.total > 0 && savingButton == null
-                              ? () {
+                      : null,
+                  isLoading: savingButton == "wallet",
+                  infinity: false,
+                ),
+                Visibility(
+                  visible: Session.pay_credit,
+                  child: CustomButton(
+                    text: 'حفظ كآجل',
+                    onPressed: widget.total > 0 && savingButton == null
+                        ? () {
                             setState(() => savingButton = "delayed");
                             widget.onSaveAsLater();
                             setState(() => savingButton = null);
                           }
-                              : null,
-                          isLoading: savingButton == "delayed",
-                          infinity: false,
-                        ),
-                      ),
-                    ],
+                        : null,
+                    isLoading: savingButton == "delayed",
+                    infinity: false,
                   ),
                 ),
-              ),
-            ],
-          )
-        ]);
+              ],
+            ),
+          ]),
+        );
       },
+    );
+  }
+}
+
+class _SummaryPill extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _SummaryPill({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isLight = Theme.of(context).brightness == Brightness.light;
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: isLight
+              ? Colors.grey.shade100
+              : AppColorsDark.bgColor.withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: Theme.of(context).textTheme.bodyMedium?.color,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              style: TextStyle(
+                color: color,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

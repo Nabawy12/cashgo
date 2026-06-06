@@ -1,236 +1,144 @@
-import 'package:cashgo/utils/colors.dart';
-import 'package:flutter/material.dart';
-import 'package:fl_chart/fl_chart.dart';
-import '../../services/db/db_helper.dart';
+import 'dart:io';
 
-class TopProductsChartPage extends StatefulWidget {
-  const TopProductsChartPage({super.key});
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:intl/intl.dart' hide TextDirection;
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+
+import '../../services/db/db_helper.dart';
+import '../../utils/colors.dart';
+import '../../widgets/empty_state_card.dart';
+
+class ProfitReportScreen extends StatefulWidget {
+  const ProfitReportScreen({super.key});
 
   @override
-  State<TopProductsChartPage> createState() => _TopProductsChartPageState();
+  State<ProfitReportScreen> createState() => _ProfitReportScreenState();
 }
 
-class _TopProductsChartPageState extends State<TopProductsChartPage> {
-  String _period = 'day';
-  int _limit = 20; // 👈 عدد أكبر لأن الشارت هيتحرك أفقياً
+class _ProfitReportScreenState extends State<ProfitReportScreen> {
+  final _money = NumberFormat.currency(locale: 'ar', symbol: 'EGP ');
+  DateTime _from = DateTime.now();
+  DateTime _to = DateTime.now();
+  bool _loading = true;
+  List<Map<String, dynamic>> _rows = [];
 
-  Future<List<Map<String, dynamic>>> _loadData() async {
-    return await DBHelper.instance.getTopSellingProducts(period: _period, limit: _limit);
+  double get _totalProfit => _rows.fold<double>(
+      0, (sum, row) => sum + ((row['profit'] as num?)?.toDouble() ?? 0));
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
   }
 
-  void _changePeriod(String p) {
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final rows =
+          await DBHelper.instance.getProfitReport(from: _from, to: _to);
+      if (mounted) setState(() => _rows = rows);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _pickDate({required bool isFrom}) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: isFrom ? _from : _to,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked == null) return;
     setState(() {
-      _period = p;
+      if (isFrom) {
+        _from = picked;
+        if (_from.isAfter(_to)) _to = _from;
+      } else {
+        _to = picked;
+        if (_to.isBefore(_from)) _from = _to;
+      }
     });
+    await _load();
   }
 
-  Widget _periodButton(String val, String label) {
-    final active = _period == val;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4.0),
-      child: Theme(
-        data: Theme.of(context).copyWith(
-          chipTheme: Theme.of(context).chipTheme.copyWith(
-            checkmarkColor: AppColorsDark.mainColor,
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.only(bottom:30.0),
-          child: ChoiceChip(
-            disabledColor: AppColorsDark.bgColor,
-            backgroundColor: AppColorsDark.bgColor,
-            selectedColor: AppColorsDark.bgColor,
+  Future<void> _exportPdf() async {
+    final fontData = await rootBundle.load('assets/fonts/Cairo-Regular.ttf');
+    final font = pw.Font.ttf(fontData);
+    final doc = pw.Document();
+    final dateLabel =
+        '${DateFormat('yyyy-MM-dd').format(_from)} - ${DateFormat('yyyy-MM-dd').format(_to)}';
 
-            side: BorderSide(color: AppColorsDark.mainColor),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(15),
-            ),
-            label: Text(label),
-            selected: active,
-            onSelected: (_) => _changePeriod(val),
-            labelStyle: TextStyle(
-              color: active ? Colors.white : Colors.white70,
-            ),
+    doc.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        theme: pw.ThemeData.withFont(base: font, bold: font),
+        textDirection: pw.TextDirection.rtl,
+        build: (_) => [
+          pw.Text('تقرير الأرباح',
+              style:
+                  pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
+          pw.SizedBox(height: 6),
+          pw.Text('الفترة: $dateLabel'),
+          pw.SizedBox(height: 12),
+          pw.Text('إجمالي الربح: ${_totalProfit.toStringAsFixed(2)}'),
+          pw.SizedBox(height: 12),
+          pw.Table.fromTextArray(
+            headers: const [
+              'المنتج',
+              'الكمية',
+              'سعر البيع',
+              'تكلفة الوحدة',
+              'الإيراد',
+              'الربح',
+            ],
+            data: _rows.map((r) {
+              final unitsInCarton =
+                  ((r['units_in_carton'] as num?)?.toDouble() ?? 1);
+              final purchase = ((r['purchase_price'] as num?)?.toDouble() ?? 0);
+              final unitCost =
+                  unitsInCarton > 0 ? purchase / unitsInCarton : purchase;
+              return [
+                (r['product_name'] ?? '').toString(),
+                '${(r['quantity_sold'] as num?)?.toInt() ?? 0}',
+                ((r['selling_price'] as num?)?.toDouble() ?? 0)
+                    .toStringAsFixed(2),
+                unitCost.toStringAsFixed(2),
+                ((r['revenue'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+                ((r['profit'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+              ];
+            }).toList(),
           ),
-        ),
+        ],
       ),
     );
+
+    final downloads = Directory('${Platform.environment['HOME']}/Downloads');
+    if (!downloads.existsSync()) downloads.createSync(recursive: true);
+    final file = File(
+        '${downloads.path}/cashgo_profit_report_${DateTime.now().millisecondsSinceEpoch}.pdf');
+    await file.writeAsBytes(await doc.save());
+    _showSnack('تم حفظ التقرير في Downloads');
   }
 
-  BarChartGroupData _makeGroup(int x, double value, Color color) {
-    return BarChartGroupData(
-      x: x,
-      barRods: [
-        BarChartRodData(
-          toY: value,
-          width: 20,
-          color: color,
-          borderRadius: BorderRadius.circular(4),
-        ),
-      ],
-    );
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Directionality(
+        textDirection: TextDirection.rtl,
+        child: Text(message),
+      ),
+    ));
   }
 
-  Widget _buildBarChart(List<Map<String, dynamic>> rows) {
-    if (rows.isEmpty) return const Center(child: Text('لا توجد بيانات لعرضها'));
-
-    final colors = [
-      Colors.blue,
-      Colors.green,
-      Colors.orange,
-      Colors.purple,
-      Colors.red,
-      Colors.teal,
-      Colors.indigo,
-      Colors.brown,
-    ];
-
-    final maxUnits = rows.map((r) => (r['units_sold'] as int)).fold<int>(0, (p, e) => e > p ? e : p);
-    final groups = <BarChartGroupData>[];
-    final labels = <String>[];
-
-    for (var i = 0; i < rows.length; i++) {
-      final r = rows[i];
-      final units = (r['units_sold'] as int).toDouble();
-      groups.add(_makeGroup(i, units, colors[i % colors.length]));
-      final name = (r['product_name'] as String?) ?? '';
-      labels.add(name.length > 12 ? name.substring(0, 11) + '…' : name);
-    }
-
-    final double maxY = (maxUnits > 0) ? (maxUnits * 1.2) : 1.0;
-
-    // 👇 العرض الكلي للشارت بناءً على عدد الأعمدة
-    final chartWidth = groups.length * 60.0;
-
-    return Column(
-      children: [
-        SizedBox(
-          height: 280,
-          child: Card(
-            color: AppColorsDark.bgColor,
-            elevation: 3,
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: AppColorsDark.mainColor)
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: SizedBox(
-                  width: 1400,
-                  child: BarChart(
-                    BarChartData(
-                      maxY: maxY,
-                      barGroups: groups,
-                      gridData: FlGridData(show: true),
-                      titlesData: FlTitlesData(
-                        leftTitles: AxisTitles(
-                          sideTitles: SideTitles(
-                            showTitles: true,
-                            reservedSize: 0,
-                            getTitlesWidget: (double value, TitleMeta meta) {
-                              final intVal = value.toInt();
-                              return SideTitleWidget(
-                                meta: meta,
-                                child: Text(intVal.toString(), style: const TextStyle(fontSize: 11,color: Colors.white)),
-                              );
-                            },
-                          ),
-                        ),
-                        bottomTitles: AxisTitles(
-                          sideTitles: SideTitles(
-                            showTitles: true,
-                            getTitlesWidget: (double value, TitleMeta meta) {
-                              final idx = value.toInt();
-                              if (idx < 0 || idx >= labels.length) return const SizedBox.shrink();
-                              return SideTitleWidget(
-                                meta: meta,
-                                space: 6.0,
-                                child: Text(
-                                  labels[idx],
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(fontSize: 11,color: Colors.white),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                        rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      ),
-                      borderData: FlBorderData(show: false),
-                      barTouchData: BarTouchData(
-                        enabled: true,
-                        touchTooltipData: BarTouchTooltipData(
-                          getTooltipColor: (group) => Colors.white,
-                          tooltipBorderRadius: BorderRadius.circular(6),
-                          tooltipPadding: const EdgeInsets.all(8),
-                          getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                            final r = rows[groupIndex];
-                            return BarTooltipItem(
-                              '${r['product_name']}\n${r['units_sold']} وحدة\n${(r['revenue'] as double).toStringAsFixed(2)} ج.م',
-                              const TextStyle(color: Colors.white70),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 30),
-        Expanded(
-          child: ListView.builder(
-            itemCount: rows.length,
-            itemBuilder: (ctx, i) {
-              final r = rows[i];
-              return Padding(
-                padding: EdgeInsetsGeometry.directional(bottom: 10),
-                child: Card(
-                  color: AppColorsDark.bgCardColor,
-                  margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  child: Directionality(
-                    textDirection: TextDirection.rtl,
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: colors[i % colors.length],
-                        child: Text('${i + 1}', style: const TextStyle(color: Colors.white)),
-                      ),
-                      title: Text(r['product_name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold,color: Colors.white)),
-                      subtitle: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8.0),
-                        child: Text('${r['units_sold']} وحدة مباعة',style: TextStyle(color: Colors.white70,fontSize: 10),),
-                      ),
-                      trailing: Text(
-                        '${(r['revenue'] as double).toStringAsFixed(2)} ج.م',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13,color: Colors.white70),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPeriodSelector() {
-    return Wrap(
-      alignment: WrapAlignment.center,
-      spacing: 8,
-      children: [
-        _periodButton('day', 'اليوم'),
-        _periodButton('week', 'الأسبوع'),
-        _periodButton('month', 'الشهر'),
-        _periodButton('year', 'السنة'),
-      ],
+  Widget _dateButton(String label, DateTime date, VoidCallback onTap) {
+    return OutlinedButton.icon(
+      onPressed: onTap,
+      icon:
+          Icon(Icons.calendar_today, color: Theme.of(context).iconTheme.color),
+      label: Text('$label: ${DateFormat('yyyy-MM-dd').format(date)}',
+          style: TextStyle(color: AppColorsDark.mainTextDark)),
     );
   }
 
@@ -239,42 +147,104 @@ class _TopProductsChartPageState extends State<TopProductsChartPage> {
     return Scaffold(
       backgroundColor: AppColorsDark.bgColor,
       appBar: AppBar(
-          title:Text(
-              'أكثر المنتجات مبيعًا',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 27,
-            ),
-          ),
-        elevation: 0.0,
         backgroundColor: Colors.transparent,
-        centerTitle: true,
-        scrolledUnderElevation: 0.0,
-        iconTheme: IconThemeData(
-          color: Colors.white70
-        ),
-      ),
-      body: Column(
-        children: [
-          const SizedBox(height: 10),
-          _buildPeriodSelector(),
-          Expanded(
-            child: FutureBuilder<List<Map<String, dynamic>>>(
-              future: _loadData(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snapshot.hasError) {
-                  return Center(child: Text('حدث خطأ: ${snapshot.error}'));
-                }
-                final rows = snapshot.data ?? [];
-                return _buildBarChart(rows);
-              },
-            ),
+        iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
+        title: Text('تقرير الأرباح',
+            style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 24)),
+        actions: [
+          IconButton(
+            tooltip: 'تصدير PDF',
+            onPressed: _rows.isEmpty ? null : _exportPdf,
+            icon: Icon(Icons.picture_as_pdf,
+                color: Theme.of(context).iconTheme.color),
           ),
         ],
       ),
+      body: Directionality(
+        textDirection: TextDirection.rtl,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                children: [
+                  _dateButton('من', _from, () => _pickDate(isFrom: true)),
+                  _dateButton('إلى', _to, () => _pickDate(isFrom: false)),
+                  ElevatedButton.icon(
+                    onPressed: _load,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('تحديث'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Card(
+                color: AppColorsDark.bgCardColor,
+                child: ListTile(
+                  title: Text('إجمالي الربح',
+                      style: TextStyle(color: AppColorsDark.mainTextLight)),
+                  trailing: Text(_money.format(_totalProfit),
+                      style: TextStyle(
+                          color: Colors.greenAccent,
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: _loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _rows.isEmpty
+                        ? const EmptyStateCard(
+                            icon: Icons.trending_up,
+                            title: 'لا توجد مبيعات',
+                            message:
+                                'غيّر الفترة الزمنية أو أضف مبيعات لعرض تقرير الأرباح.',
+                          )
+                        : ListView.separated(
+                            itemCount: _rows.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 8),
+                            itemBuilder: (_, i) {
+                              final r = _rows[i];
+                              final qty =
+                                  (r['quantity_sold'] as num?)?.toInt() ?? 0;
+                              final profit =
+                                  (r['profit'] as num?)?.toDouble() ?? 0;
+                              final revenue =
+                                  (r['revenue'] as num?)?.toDouble() ?? 0;
+                              return Card(
+                                color: AppColorsDark.bgCardColor,
+                                child: ListTile(
+                                  title: Text(
+                                      (r['product_name'] ?? '').toString(),
+                                      style: TextStyle(
+                                          color: AppColorsDark.mainTextDark)),
+                                  subtitle: Text(
+                                      'الكمية: $qty | الإيراد: ${_money.format(revenue)}',
+                                      style: TextStyle(
+                                          color: AppColorsDark.mainTextLight)),
+                                  trailing: Text(_money.format(profit),
+                                      style: TextStyle(
+                                          color: profit >= 0
+                                              ? Colors.greenAccent
+                                              : Colors.redAccent,
+                                          fontWeight: FontWeight.bold)),
+                                ),
+                              );
+                            },
+                          ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
+}
+
+class TopProductsChartPage extends ProfitReportScreen {
+  const TopProductsChartPage({super.key});
 }

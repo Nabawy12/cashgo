@@ -21,8 +21,7 @@ class Session {
 
   static bool invoice_log = false;
   static bool receive_from_suppliers = false;
-  static bool wallet_tx = false;
   static bool pay_credit = false;
   static bool discount = false;
-
+  static bool canViewCredit = false;
 }

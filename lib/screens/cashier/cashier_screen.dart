@@ -3,43 +3,47 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:cashgo/models/login.dart';
 import 'package:cashgo/services/cashier/close_shieft.dart';
-import 'package:cashgo/services/cashier/profit_api.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:hive/hive.dart';
-import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart' hide TextDirection ;
-import 'package:shimmer/shimmer.dart';
 import 'package:uuid/uuid.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../models/cart.dart';
-import '../../models/cashier/profit.dart';
 import '../../models/product.dart';
 import '../../services/Api/Admin/Products.dart';
 import '../../services/Api/Admin/financle.dart';
-import '../../services/cashier/deposit.dart';
 import '../../services/cashier/print.dart';
 import '../../services/db/db_helper.dart';
 import '../../widgets/Cashier/cartlist.dart';
-import '../../widgets/Cashier/close_shieft.dart';
+import '../../widgets/Cashier/network.dart';
 import '../../widgets/Cashier/payment_controller.dart';
 import '../../widgets/Cashier/receipt_widget.dart';
 import '../../widgets/Loading/cashier/cart.dart';
+import '../admin/stock_screen.dart';
 import '../shared/login_screen.dart';
 import 'ReceiveFromSupplier.dart';
 import 'histroy.dart';
 
 // ضع هذه التعاريف أعلى الملف (قبل CashierScreen)
-class ArrowDownIntent extends Intent { const ArrowDownIntent(); }
-class ArrowUpIntent extends Intent { const ArrowUpIntent(); }
-class EnterIntent extends Intent { const EnterIntent(); }
-class EscapeIntent extends Intent { const EscapeIntent(); }
+class ArrowDownIntent extends Intent {
+  const ArrowDownIntent();
+}
 
+class ArrowUpIntent extends Intent {
+  const ArrowUpIntent();
+}
+
+class EnterIntent extends Intent {
+  const EnterIntent();
+}
+
+class EscapeIntent extends Intent {
+  const EscapeIntent();
+}
 
 class CashierScreen extends StatefulWidget {
   static const routName = "/Cashier";
@@ -56,25 +60,62 @@ class _CashierScreenState extends State<CashierScreen> {
   final Map<int, CartItem> _cart = {};
   bool _saving = false;
 
+  int _productIdFromMap(Map<String, dynamic> product) {
+    return (product['id'] as num?)?.toInt() ??
+        int.tryParse((product['id'] ?? '').toString()) ??
+        -1;
+  }
+
+  int _totalUnitsFromMap(Map<String, dynamic> product) {
+    final explicit = (product['total_units'] as num?)?.toInt();
+    if (explicit != null) return explicit;
+
+    final cartons = (product['quantity'] as num?)?.toInt() ?? 0;
+    final unitsInCarton = (product['units_in_carton'] as num?)?.toInt() ?? 0;
+    final remainder = (product['units_remainder'] as num?)?.toInt() ?? 0;
+    return cartons * unitsInCarton + remainder;
+  }
+
+  int _quantityInCartForProduct({
+    int? productId,
+    String? barcode,
+  }) {
+    if (productId != null && productId > 0 && _cart.containsKey(productId)) {
+      return _cart[productId]!.quantity;
+    }
+
+    final normalizedBarcode = (barcode ?? '').trim();
+    if (normalizedBarcode.isEmpty) return 0;
+
+    return _cart.values
+        .where((item) => item.product.barcode.trim() == normalizedBarcode)
+        .fold<int>(0, (sum, item) => sum + item.quantity);
+  }
+
+  int _availableUnitsForProductMap(Map<String, dynamic> product) {
+    final totalUnits = _totalUnitsFromMap(product);
+    final inCart = _quantityInCartForProduct(
+      productId: _productIdFromMap(product),
+      barcode: product['barcode']?.toString(),
+    );
+    return (totalUnits - inCart).clamp(0, totalUnits);
+  }
+
+  int _availableUnitsForProduct(Product product) {
+    final inCart = _quantityInCartForProduct(
+      productId: product.id,
+      barcode: product.barcode,
+    );
+    return (product.totalUnits - inCart).clamp(0, product.totalUnits);
+  }
+
   final GlobalKey _receiptKey = GlobalKey();
 
   String? _currentUsername; // اسم الكاشير الحقيقي المأخوذ من DB
 
-  // --- card/wallet totals to show to cashier ---
-  double _walletAmount = 0.0;        // latest card_wallet amount
-  double _cardReceived = 0.0;       // untransferred card payments from sales
-  double _cardTotalAvailable = 0.0; // wallet + untransferred
-  double Drawer = 0.0; // wallet + untransferred
-  ////////////////////////////
   double _startingAmount = 0.0;
-  double _cashInWallet = 0.0;
-  double? _totalCash;
-  double? _totalWallet;
-  double? _cash_with_credit;
-  double? _purchases_paid;
-  double? _purchases_credit;
-  double? _wallet_received;
-  double? _cash_received;
+  double? _drawerBalance;
+  bool _drawerBalanceLoaded = false;
   bool _isExchange = false;
   bool _loading = false;
   String? _error;
@@ -82,14 +123,14 @@ class _CashierScreenState extends State<CashierScreen> {
   bool _dialogOpening = false;
   final nameFocus = FocusNode();
 
-
-
   // --------- Discount state ----------
   // design: percent-only discount (as requested), from 0% to 50% step 5
   String _discountType = 'percent'; // 'percent' أو 'amount'
   double _discountValue = 0.0; // e.g. 5.0 means 5%
   List<Map<String, dynamic>> _inlineSearchResults = [];
   bool _inlineLoading = false;
+  bool _inlineSearchPending = false;
+  bool _selectFirstWhenInlineReady = false;
   Timer? _inlineDebounce;
   int _inlineSelectedIndex = -1;
   // user-specific starting + net sales (to show in AppBar)
@@ -100,17 +141,14 @@ class _CashierScreenState extends State<CashierScreen> {
   final ScrollController _inlineScrollController = ScrollController();
   final FocusNode _inlineKeyboardNode = FocusNode();
 
-
-
-
   Future<void> _scrollInlineToIndex(int index) async {
     if (!_inlineScrollController.hasClients) return;
     final itemHeight = 72.0; // تقريب ارتفاع ListTile؛ عدِّل لو كان مختلف
-    final offset = (index * itemHeight).clamp(0.0, _inlineScrollController.position.maxScrollExtent);
-    await _inlineScrollController.animateTo(offset, duration: const Duration(milliseconds: 200), curve: Curves.easeInOut);
+    final offset = (index * itemHeight)
+        .clamp(0.0, _inlineScrollController.position.maxScrollExtent);
+    await _inlineScrollController.animateTo(offset,
+        duration: const Duration(milliseconds: 200), curve: Curves.easeInOut);
   }
-
-
 
   void _scheduleInlineSearch(String q) {
     _inlineDebounce?.cancel();
@@ -118,18 +156,26 @@ class _CashierScreenState extends State<CashierScreen> {
       setState(() {
         _inlineSearchResults = [];
         _inlineLoading = false;
+        _inlineSearchPending = false;
+        _selectFirstWhenInlineReady = false;
       });
       return;
     }
-    _inlineDebounce = Timer(const Duration(milliseconds: 300), () => _runInlineSearch(q));
+    setState(() {
+      _inlineSearchPending = true;
+    });
+    _inlineDebounce =
+        Timer(const Duration(milliseconds: 300), () => _runInlineSearch(q));
   }
 
   Future<void> _runInlineSearch(String q) async {
     setState(() {
       _inlineLoading = true;
+      _inlineSearchPending = false;
     });
+    var rows = <Map<String, dynamic>>[];
     try {
-      final rows = await _searchProductsByNameApi(q, limit: 50);
+      rows = await _searchProductsByNameApi(q, limit: 50);
       setState(() {
         _inlineSearchResults = rows;
       });
@@ -139,7 +185,34 @@ class _CashierScreenState extends State<CashierScreen> {
         _inlineSearchResults = [];
       });
     } finally {
-      if (mounted) setState(() => _inlineLoading = false);
+      if (!mounted) return;
+      final shouldSelectFirst = _selectFirstWhenInlineReady && rows.isNotEmpty;
+      setState(() {
+        _inlineLoading = false;
+        _inlineSearchPending = false;
+        _selectFirstWhenInlineReady = false;
+      });
+      if (shouldSelectFirst) {
+        await _openInlineSearchProduct(rows.first);
+      }
+    }
+  }
+
+  Future<void> _openInlineSearchProduct(Map<String, dynamic> product) async {
+    if (_dialogOpening) return;
+    _dialogOpening = true;
+    try {
+      await _showProductDetailDialog(product);
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _inlineSearchResults = [];
+        _inlineLoading = false;
+        _inlineSearchPending = false;
+        _selectFirstWhenInlineReady = false;
+        _inlineSelectedIndex = -1;
+        _dialogOpening = false;
+      });
     }
   }
 
@@ -148,98 +221,395 @@ class _CashierScreenState extends State<CashierScreen> {
   StreamSubscription? _finBoxSub; // استماع لصندوق financial_accounts
   Box? _financialBox; // cache للصندوق المحلي
 
+  // داخل _CashierScreenState
+
+  /// استدعاء مركزي يعيد تشغيل كل الـ inits اللي في initState لديك.
+  /// صالح لأن يتحوّل إلى زر Refresh أو يُستدعى عند استعادة الاتصال.
+  bool _restartingInit = false;
+
+  Future<void> _restartInitialLoad() async {
+    if (_restartingInit) {
+      debugPrint('[UI] _restartInitialLoad already running -> skip');
+      return;
+    }
+    _restartingInit = true;
+    debugPrint('[UI] _restartInitialLoad starting');
+
+    try {
+      // 1) تأكد من إيقاف أي مستمع لصندوق financial قبل إعادة ربطه
+      try {
+        await _finBoxSub?.cancel();
+        _finBoxSub = null;
+        debugPrint('[UI] cancelled old _finBoxSub (if any)');
+      } catch (e) {
+        debugPrint('[UI] failed cancel old finBoxSub: $e');
+      }
+
+      // 2) load current user (دالتك async)
+      try {
+        await _loadCurrentUser();
+        debugPrint('[UI] _loadCurrentUser done');
+      } catch (e) {
+        debugPrint('[UI] _loadCurrentUser failed: $e');
+      }
+
+      // 3) wakelock: إعادة التمكين آمنة (idempotent)
+      try {
+        await WakelockPlus.enable();
+        debugPrint('[UI] WakelockPlus.enable done');
+      } catch (e) {
+        debugPrint('[UI] Wakelock enable failed: $e');
+      }
+
+      // 4) re-init financials listener (يفتح الصندوق ويضع listener جديد)
+      try {
+        await _initFinancialsListener();
+        debugPrint('[UI] _initFinancialsListener done');
+      } catch (e) {
+        debugPrint('[UI] _initFinancialsListener failed: $e');
+      }
+
+      // 5) load financials (يحاول السيرفر ثم fallback محلي)
+      try {
+        await _loadFinancials();
+        debugPrint('[UI] _loadFinancials done');
+      } catch (e) {
+        debugPrint('[UI] _loadFinancials failed: $e');
+      }
+
+      // 6) reload local financials then re-try online load (كما في initState)
+      try {
+        await _loadFinancialsFromLocal();
+        await _loadFinancials();
+        debugPrint('[UI] _loadFinancialsFromLocal + _loadFinancials done');
+      } catch (e) {
+        debugPrint('[UI] _loadFinancialsFromLocal/_loadFinancials failed: $e');
+      }
+
+      // 8) أخيراً حدث الواجهة
+      if (mounted) setState(() {});
+      debugPrint('[UI] _restartInitialLoad finished');
+    } finally {
+      // نسمح بإعادة التشغيل بعد فترة قصيرة لو احتجنا
+      Future.delayed(
+          const Duration(milliseconds: 200), () => _restartingInit = false);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       FocusScope.of(context).requestFocus(_barcodeFocus);
     });
-    _loadCurrentUser();
+    _loadCurrentUser().then((_) async {
+      await _loadFinancialsFromLocal();
+      await _loadFinancials();
+      await _loadDrawerBalance();
+    });
     WakelockPlus.enable();
 
     // استمع لـ Hive local financials + حاول جلب من السيرفر
     _initFinancialsListener();
-    _loadFinancials(); // محفوظة لديك — ممكن تبقى مُحدّثة لعمل sync عند online
-
-    _loadTotalProfit();
-    _loadFinancialsFromLocal().then((_) => _loadFinancials()); // _loadFinancials يحاول السيرفر بعد المحلي
     Session.updateDateTime();
 
-    // موجود بالفعل: _connSub subscription...
-    _connSub = Connectivity().onConnectivityChanged.listen((event) async {
-      if (event != ConnectivityResult.none) {
-        // الشبكه رجعت — نعمل مزامنة للسجلات المالية من السيرفر لو متوفر
-        try {
-          await _fetchAndSyncFinancialsFromServer();
-        } catch (e, st) {
-          debugPrint('[UI] fetchAndSyncFinancialsFromServer failed: $e');
-        }
-        // بقية الشيفرة الموجودة...
-        final metaBox = await Hive.openBox('meta');
-        await metaBox.put('lastOfflineSale', 0.0);
-        debugPrint('[UI] cleared lastOfflineSale due to connectivity regained');
-        final v = await _getLastOfflineSale();
-        if (!mounted) return;
-        setState(() => _lastOfflineSale = v);
-      }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scaffoldReady = true;
+    });
+
+    // init network checker (io/web implementations موجودة عندك)
+    _networkCheck = NetworkCheck();
+
+    // فحص أولي لحالة الإنترنت الحقيقية (ما نعرضش سناك بار أثناء التهيئة)
+    _checkInitial();
+
+    // استمع لتغيّر واجهة الشبكة (لاحظ أن onConnectivityChanged الآن يعيد List<ConnectivityResult>)
+    // فنحوّله إلى عنصر واحد منطقي (أو ConnectivityResult.none لو فاضية)
+    _connectivitySub = Connectivity()
+        .onConnectivityChanged
+        .map((list) => (list is List<ConnectivityResult> && list.isNotEmpty)
+            ? list.first
+            : ConnectivityResult.none)
+        .listen((ConnectivityResult result) {
+      // لو بدك تحدد سلوك حسب النوع: result == ConnectivityResult.wifi || ethernet ...
+      // هنا نعيد فحص الاتصال الحقيقي (socket / http probe) بعد أي تغيير في الواجهة
+      _onInterfaceChanged();
+    });
+
+    // استمع لبث حالة الإنترنت الحقيقية من NetworkCheck (stream of bool)
+    _internetStatusSub = _networkCheck.onStatusChange.listen((connected) {
+      _handleConnectionChanged(connected);
     });
   }
 
+  final GlobalKey<ScaffoldMessengerState> _scaffoldMessengerKey =
+      GlobalKey<ScaffoldMessengerState>();
+
+  late final NetworkCheck _networkCheck;
+
+  // نعمل Subscription على عنصر واحد بعد تحويل القائمة
+  StreamSubscription<ConnectivityResult>? _connectivitySub;
+  StreamSubscription<bool>? _internetStatusSub;
+
+  bool _hasInternet = true;
+  bool _initialChecked = false;
+  bool _isOnline = false;
+
+// لمنع تكرار استدعاءات _onNetworkBack عند تقلبات سريعة
+  bool _hasHandledNetworkBack = false;
+  // ننتظر أول frame عشان نتأكد إن ScaffoldMessenger جاهز لعرض SnackBars
+  bool _scaffoldReady = false;
+
+  Future<void> _checkInitial() async {
+    final connected = await _networkCheck.hasConnection();
+    _initialChecked = true;
+    // لا نعرض SnackBar عند البداية — فقط نحدّث الحالة الداخلية
+    _handleConnectionChanged(connected, showSnack: false);
+  }
+
+  Future<void> _onInterfaceChanged() async {
+    // بعد تغيير الواجهة نعيد الفحص الحقيقي
+    final connected = await _networkCheck.hasConnection();
+    _handleConnectionChanged(connected);
+  }
+
+  void _handleConnectionChanged(bool connected, {bool showSnack = true}) {
+    if (!mounted) return;
+
+    // تحديث الـ state المرئي
+    if (connected == _hasInternet && showSnack) {
+      // لا تغيير مرئي — لكن نحتاج في بعض الأحيان تحديث _isOnline أيضاً
+      _isOnline = connected;
+      return;
+    }
+
+    final wasOnline = _isOnline;
+    _isOnline = connected; // <-- هذه القيمة تستخدم لاحقاً في اللوجيك
+    setState(() => _hasInternet = connected);
+
+    if (!showSnack) return;
+
+    // تأجيل عرض الـ SnackBar إذا الـ ScaffoldMessenger مش جاهز
+    if (!_scaffoldReady) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _showSnack(connected);
+      });
+    } else {
+      _showSnack(connected);
+    }
+
+    // --- إذا النت رجع الآن (وكان offline قبل كده) نفّذ مهام المزامنة بأمان ---
+    if (connected && !wasOnline) {
+      if (!_hasHandledNetworkBack) {
+        _hasHandledNetworkBack = true;
+
+        // نأجل شوية عشان نتجنب ارتدادات سريعة
+        Future.delayed(const Duration(milliseconds: 300), () async {
+          try {
+            debugPrint('[networkBack] detected online -> running sync tasks');
+
+            // 1) نفحّص وندفع أي ops معلق (لو عندك SyncManager)
+            try {
+              await SyncManager.flushOnce();
+              debugPrint('[networkBack] SyncManager.flushOnce succeeded');
+            } catch (e, st) {
+              debugPrint('[networkBack] SyncManager.flushOnce failed: $e\n$st');
+            }
+
+            // 2) جلب و مزامنة الـ financials من السيرفر (لو عندك دالة جاهزة)
+            try {
+              await _fetchAndSyncFinancialsFromServer();
+              debugPrint('[networkBack] fetched financials from server');
+            } catch (e, st) {
+              debugPrint('[networkBack] fetch financials failed: $e\n$st');
+            }
+
+            // 3) إعادة تشغيل الـ inits أو إعادة تحميل كل البيانات الحساسية
+            try {
+              await _restartInitialLoad();
+              debugPrint('[networkBack] _restartInitialLoad completed');
+            } catch (e, st) {
+              debugPrint('[networkBack] _restartInitialLoad failed: $e\n$st');
+            }
+
+            // 4) مسح أي مجاميع اوفلاين مخزنة (اختياري حسب منطقك)
+            try {
+              final meta = await Hive.openBox('meta');
+              await meta.put('lastOfflineSale', 0.0);
+              await meta.put('lastOfflineSale_cash', 0.0);
+              await meta.put('lastOfflineSale_credit', 0.0);
+
+              if (mounted) {
+                setState(() {
+                  saleOffline_cash = 0.0;
+                  saleOffline_credit = 0.0;
+                  _lastOfflineSale = 0.0;
+                });
+              }
+              debugPrint('[networkBack] cleared offline meta totals');
+            } catch (e, st) {
+              debugPrint('[networkBack] clearing offline meta failed: $e\n$st');
+            }
+          } catch (e, st) {
+            debugPrint('[networkBack] unexpected error: $e\n$st');
+          } finally {
+            // اسمح بإعادة المعالجة بعد ثانيتين لو تقلب النت تاني
+            Future.delayed(const Duration(seconds: 2), () {
+              _hasHandledNetworkBack = false;
+            });
+          }
+        });
+      }
+    }
+  }
+
+  void _showSnack(bool connected) {
+    final messenger = _scaffoldMessengerKey.currentState;
+    // إغلاق أي SnackBar سابق
+    messenger?.hideCurrentSnackBar();
+    if (connected) {
+      // استمع لـ Hive local financials + حاول جلب من السيرفر
+      _initFinancialsListener();
+      _loadFinancials(); // محفوظة لديك — ممكن تبقى مُحدّثة لعمل sync عند online
+
+      _loadFinancialsFromLocal().then((_) => _loadFinancials());
+      messenger?.showSnackBar(
+        SnackBar(
+          content: const Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('الإنترنت رجع ✅'),
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } else {
+      // استمع لـ Hive local financials + حاول جلب من السيرفر
+      _initFinancialsListener();
+      _loadFinancials(); // محفوظة لديك — ممكن تبقى مُحدّثة لعمل sync عند online
+
+      _loadFinancialsFromLocal().then((_) => _loadFinancials());
+      messenger?.showSnackBar(
+        SnackBar(
+          content: const Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('لا يوجد اتصال بالإنترنت ⚠️'),
+          ),
+          // نتركه ظاهراً لفترة طويلة (سنخفيه تلقائياً عندما يعود)
+          duration: const Duration(days: 1),
+          action: SnackBarAction(
+            label: 'إعادة فحص',
+            onPressed: () async {
+              final connected = await _networkCheck.hasConnection();
+              _handleConnectionChanged(connected);
+            },
+          ),
+        ),
+      );
+    }
+  }
+
+// ====================== _initFinancialsListener ======================
   Future<void> _initFinancialsListener() async {
     try {
       _financialBox = await Hive.openBox('financial_accounts');
-      // load once
+      // load once immediately (حتى لو الفلتر لاحقاً)
       await _applyLatestFinancialFromBox();
-      // listen for changes
-      _finBoxSub?.cancel();
+
+      // ألغِ أي مستمع قديم قبل إنشاء واحد جديد
+      await _finBoxSub?.cancel();
+
+      // نراقب التغييرات على الـ box ونطبّق آخر بيانات متاحة
       _finBoxSub = _financialBox!.watch().listen((event) {
-        // كل مرة يتغير الصندوق نقرأ اخر سجل
+        // event قد يحتوي deleted/key/value حسب تغيّر الـ box
+        // نقرأ آخر سجل احتياطيًا بدل الاعتماد على event.value مباشرة
         _applyLatestFinancialFromBox();
       });
+      debugPrint('[Financials] initFinancialsListener attached');
     } catch (e, st) {
       debugPrint('[Financials] _initFinancialsListener error: $e\n$st');
     }
   }
 
-  Future<void> _attachFinancialsHiveListener() async {
-    try {
-      final box = await Hive.openBox('financial_accounts');
-      // استماع لتغييرات الصندوق
-      box.watch().listen((event) {
-        // event.key, event.value
-        if (!mounted) return;
-        _loadFinancialsFromLocal(); // كل ما اتغير صندوق نعيد تحميل القيم المحلية
-      });
-    } catch (e) {
-      debugPrint('Failed to attach financials listener: $e');
-    }
-  }
-
+// ====================== _loadFinancialsFromLocal ======================
   Future<void> _loadFinancialsFromLocal() async {
     try {
       final box = await Hive.openBox('financial_accounts');
       if (box.isEmpty) {
-        setState(() {
-          _startingAmount = 0.0;
-          _cashInWallet = 0.0;
-          _financialsLoaded = true;
-        });
+        if (mounted) {
+          setState(() {
+            _startingAmount = 0.0;
+            _financialsLoaded = true;
+          });
+        }
         return;
       }
-      // خذ آخر سجل (أو اختَر حسب منطقك)
-      final lastKey = box.keys.toList().last;
-      final raw = Map<String, dynamic>.from(box.get(lastKey) as Map);
-      final localStart = double.tryParse((raw['starting_amount'] ?? raw['startingAmount'] ?? '0').toString().replaceAll(',', '')) ?? 0.0;
-      final localWallet = double.tryParse((raw['cash_in_wallet'] ?? raw['cashInWallet'] ?? '0').toString().replaceAll(',', '')) ?? 0.0;
+
+      // اختر آخر key بطريقة آمنة (قد لا تكون مرتبة تصاعدياً دائماً لذلك نرتب keys حسب نوعها)
+      final keys = box.keys.toList();
+      if (keys.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _startingAmount = 0.0;
+            _financialsLoaded = true;
+          });
+        }
+        return;
+      }
+
+      final lastKey = keys.last;
+      final raw = box.get(lastKey);
+
+      // مرونة في التعامل مع أشكال البيانات المختلفة (Map أو JSON string أو كائن)
+      Map<String, dynamic> row = {};
+      try {
+        if (raw is Map) {
+          row = Map<String, dynamic>.from(raw);
+        } else if (raw is String) {
+          final decoded = jsonDecode(raw);
+          if (decoded is Map) row = Map<String, dynamic>.from(decoded);
+        } else {
+          // لو الكائن له toJson أو toMap
+          try {
+            final candidate = (raw as dynamic).toJson();
+            if (candidate is Map) row = Map<String, dynamic>.from(candidate);
+          } catch (_) {
+            // فشل التحويل — نترك row فارغًا
+          }
+        }
+      } catch (e) {
+        debugPrint(
+            '[Financials] _loadFinancialsFromLocal parsing raw failed: $e');
+      }
+
+      double pickVal(List<String> candidates) {
+        for (final k in candidates) {
+          if (row.containsKey(k) && row[k] != null) {
+            final v = row[k];
+            if (v is num) return v.toDouble();
+            if (v is String) {
+              final s = v.replaceAll(',', '').trim();
+              final d = double.tryParse(s);
+              if (d != null) return d;
+            }
+          }
+        }
+        return 0.0;
+      }
+
+      final localStart = pickVal(
+          ['starting_amount', 'startingAmount', 'start', 'start_amount']);
 
       if (!mounted) return;
       setState(() {
         _startingAmount = localStart;
-        _cashInWallet = localWallet;
         _financialsLoaded = true;
       });
-    } catch (e) {
-      debugPrint('Failed to load local financials: $e');
+      await DBHelper.instance.setFixedShiftOpeningBalance(localStart);
+      await _loadDrawerBalance();
+      debugPrint('[Financials] loaded local financials start=$localStart');
+    } catch (e, st) {
+      debugPrint('Failed to load local financials: $e\n$st');
     }
   }
 
@@ -251,9 +621,6 @@ class _CashierScreenState extends State<CashierScreen> {
       if (_financialBox == null || _financialBox!.isEmpty) {
         setState(() {
           _startingAmount = 0.0;
-          _cashInWallet = 0.0;
-          _totalCash = 0.0;
-          _totalWallet = 0.0;
           _financialsLoaded = true; // حتى لو فاضي، نوقف الـ loading
         });
         return;
@@ -263,9 +630,6 @@ class _CashierScreenState extends State<CashierScreen> {
       if (keys.isEmpty) {
         setState(() {
           _startingAmount = 0.0;
-          _cashInWallet = 0.0;
-          _totalCash = 0.0;
-          _totalWallet = 0.0;
           _financialsLoaded = true;
         });
         return;
@@ -290,46 +654,26 @@ class _CashierScreenState extends State<CashierScreen> {
         return 0.0;
       }
 
-      final localStart = pickVal(['starting_amount', 'startingAmount', 'start', 'start_amount']);
-      final localWallet = pickVal(['cash_in_wallet', 'cashInWallet', 'wallet', 'wallet_amount']);
-
-      // لو عندك قيم إجماعية (totalCash/totalWallet) المعرفة في recs سابقًا ضعها هنا
-      final localTotalCash = pickVal(['total_in_drawer', 'totalCash', 'total_cash']);
-      final localTotalWallet = pickVal(['total_in_wallet', 'totalWallet', 'total_wallet']);
+      final localStart = pickVal(
+          ['starting_amount', 'startingAmount', 'start', 'start_amount']);
 
       setState(() {
         _startingAmount = localStart;
-        _cashInWallet = localWallet;
-        _totalCash = localTotalCash;    // غير null => _moneyOrShimmer يظهر القيمة
-        _totalWallet = localTotalWallet; // غير null => يظهر القيمة
         _financialsLoaded = true;
       });
+      await DBHelper.instance.setFixedShiftOpeningBalance(localStart);
+      await _loadDrawerBalance();
     } catch (e, st) {
       debugPrint('[Financials] _applyLatestFinancialFromBox error: $e\n$st');
-      // لو فشل، على الأقل نوقف الـ shimmer و نعرض صفر
+      // لو فشل، على الأقل نعرض صفر
       if (mounted) {
         setState(() {
           _startingAmount = 0.0;
-          _cashInWallet = 0.0;
-          _totalCash = 0.0;
-          _totalWallet = 0.0;
           _financialsLoaded = true;
         });
       }
     }
   }
-
-  Widget _moneyOrShimmerWithFlag({double? value, bool withSign = false, bool asInt = true}) {
-    if (!_financialsLoaded) {
-      // عرض shimmer أثناء انتظار أول قراءة (أونلاين أو أوفلاين)
-      return _shimmerMoney(width: 64, height: 16);
-    }
-    // لو جاهز لكن القيمة لا تزال null (نعتبرها صفر)
-    final v = value ?? 0.0;
-    final text = withSign ? _formatWithSign(v) : NumberFormat("#,###").format(asInt ? v.toInt() : v);
-    return Text(text, style: const TextStyle(color: Colors.white70, fontSize: 14));
-  }
-
 
   Map<String, dynamic> _toMapFlexible(dynamic raw) {
     if (raw == null) return {};
@@ -354,25 +698,27 @@ class _CashierScreenState extends State<CashierScreen> {
   Future<void> _fetchAndSyncFinancialsFromServer() async {
     try {
       // استخدم نفس خدمة InsertFinancialAccountService.getLatest() الموجودة عندك
-      final list = await _service.getLatest(limit: 5); // جيب آخر 5 أو 1 حسب رغبتك
+      final list =
+          await _service.getLatest(limit: 5); // جيب آخر 5 أو 1 حسب رغبتك
       if (list.isEmpty) return;
 
       // نحول كل FinancialAccount إلى Map ونخزنهم في صندوق financial_accounts
       final box = await Hive.openBox('financial_accounts');
       for (final rec in list) {
-        final key = rec.id?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString();
+        final key = rec.id?.toString() ??
+            DateTime.now().millisecondsSinceEpoch.toString();
         await box.put(key, rec.toJsonFull());
       }
 
       // بعد التخزين حدّث الحالة من الصندوق (ستلتقطه الـ listener تلقائيًا لكن نضرب تحميل احتياطي)
       await _applyLatestFinancialFromBox();
-      debugPrint('[Financials] synced ${list.length} financial records locally');
+      debugPrint(
+          '[Financials] synced ${list.length} financial records locally');
     } catch (e, st) {
-      debugPrint('[Financials] _fetchAndSyncFinancialsFromServer error: $e\n$st');
+      debugPrint(
+          '[Financials] _fetchAndSyncFinancialsFromServer error: $e\n$st');
     }
   }
-
-
 
   Future<void> _loadCurrentUser() async {
     try {
@@ -383,6 +729,15 @@ class _CashierScreenState extends State<CashierScreen> {
         });
         Session.currentUsername = _currentUsername;
         Session.currentRole = (cur['role'] ?? Session.currentRole) as String?;
+        Session.canViewCredit = cur['can_view_credit'] == 1 ||
+            cur['can_view_credit'] == true ||
+            cur['can_view_credit']?.toString() == '1' ||
+            (cur['permissions'] is Map &&
+                ((cur['permissions'] as Map)['can_view_credit'] == true ||
+                    (cur['permissions'] as Map)['can_view_credit'] == 1 ||
+                    (cur['permissions'] as Map)['can_view_credit']
+                            ?.toString() ==
+                        '1'));
         // تحميل بداية الدرج وصافي المبيعات الخاص بالمستخدم الآن بعد معرفة اسمه
       } else {
         // fallback to widget prop if DB has no current user
@@ -398,40 +753,52 @@ class _CashierScreenState extends State<CashierScreen> {
       });
     }
   }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _loadTotalProfit();
     final args = ModalRoute.of(context)?.settings.arguments;
 
     String usernameFromArgs = '';
     String roleFromArgs = '';
+    bool? canViewCreditFromArgs;
 
     if (args is Map) {
       usernameFromArgs = (args['username'] ?? '').toString();
       roleFromArgs = (args['role'] ?? '').toString();
+      canViewCreditFromArgs = args['can_view_credit'] == true ||
+          args['can_view_credit'] == 1 ||
+          args['can_view_credit']?.toString() == '1';
     }
 
     // أفضلية: args > Session > widget prop > ''
     final resolvedUsername = usernameFromArgs.isNotEmpty
         ? usernameFromArgs
-        : (Session.currentUsername!.isNotEmpty? Session.currentUsername : (widget.cashierUsername ?? ''));
+        : ((Session.currentUsername ?? '').isNotEmpty
+            ? Session.currentUsername
+            : (widget.cashierUsername ?? ''));
 
     final resolvedRole = roleFromArgs.isNotEmpty
         ? roleFromArgs
-        : (Session.currentRole!.isNotEmpty ? Session.currentRole : '');
+        : ((Session.currentRole ?? '').isNotEmpty ? Session.currentRole : '');
 
     setState(() {
       _currentUsername = resolvedUsername;
     });
+    if ((resolvedUsername ?? '').isNotEmpty) {
+      Session.currentUsername = resolvedUsername;
+      unawaited(_loadDrawerBalance());
+    }
 
     // ضع Session صراحةً لو احتجت
     Session.currentUsername = resolvedUsername;
     if (resolvedRole!.isNotEmpty) Session.currentRole = resolvedRole;
+    if (canViewCreditFromArgs != null) {
+      Session.canViewCredit = canViewCreditFromArgs;
+    }
 
     // متابعة تحميل البيانات
   }
-
 
   @override
   void dispose() {
@@ -451,7 +818,6 @@ class _CashierScreenState extends State<CashierScreen> {
 
   bool _isLoading = false;
 
-
   Future<void> _onBarcodeSubmitted(String code) async {
     final barcode = code.trim();
     if (barcode.isEmpty) return;
@@ -466,39 +832,18 @@ class _CashierScreenState extends State<CashierScreen> {
       if (apiProduct == null) {
         // لم يتم العثور على المنتج عبر الـ API
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(
-                  'المنتج بالباركود $barcode غير موجود',
-                textDirection: TextDirection.rtl,
-              )
-          ),
-        );
+        _showSnackSafe('المنتج غير موجود');
         return;
       }
 
       // تحويل إلى نموذج المنتج والتعامل كالسابق
       final product = Product.fromMap(apiProduct);
-      final available = product.totalUnits;
+      final available = _availableUnitsForProduct(product);
       final pid = product.id!;
-      final alreadyInCart = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
 
       if (available <= 0) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-            'الكمية نفدت',
-          textDirection: TextDirection.rtl,
-
-        )));
-        return;
-      }
-      if (alreadyInCart + 1 > available) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-            'لا يمكن إضافة أكثر من المتاح',
-          textDirection: TextDirection.rtl,
-
-        )));
+        _showSnackSafe('المنتج نفذ من المخزن');
         return;
       }
 
@@ -512,11 +857,7 @@ class _CashierScreenState extends State<CashierScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-          'حدث خطأ أثناء التحميل',
-        textDirection: TextDirection.rtl,
-
-      )));
+      _showSnackSafe('حدث خطأ أثناء التحميل');
     } finally {
       // مهم: تأكد أن الـ widget ما اتلف قبل التحديث
       if (!mounted) return;
@@ -530,9 +871,9 @@ class _CashierScreenState extends State<CashierScreen> {
 
   /// Dialog يعرِض أسماء المنتجات فقط، ويُرجع خريطة المنتج المختار أو null عند الإلغاء.
   Future<Map<String, dynamic>?> showProductChoiceDialog(
-      BuildContext context,
-      List<Map<String, dynamic>> products,
-      ) {
+    BuildContext context,
+    List<Map<String, dynamic>> products,
+  ) {
     return showDialog<Map<String, dynamic>>(
       context: context,
       barrierDismissible: false,
@@ -541,7 +882,9 @@ class _CashierScreenState extends State<CashierScreen> {
           textDirection: TextDirection.rtl,
           child: AlertDialog(
             backgroundColor: AppColorsDark.bgColor,
-            title: Center(child: const Text('اختر المنتج', style: TextStyle(color: Colors.white))),
+            title: Center(
+                child: Text('اختر المنتج',
+                    style: TextStyle(color: AppColorsDark.mainTextDark))),
             content: SizedBox(
               width: double.maxFinite,
               child: ListView.separated(
@@ -551,7 +894,9 @@ class _CashierScreenState extends State<CashierScreen> {
                 itemBuilder: (context, i) {
                   final name = (products[i]['name'] ?? '').toString();
                   return ListTile(
-                    title: Text(name, style: TextStyle(color: Colors.white, fontSize: 20)),
+                    title: Text(name,
+                        style: TextStyle(
+                            color: AppColorsDark.mainTextDark, fontSize: 20)),
                     onTap: () {
                       Navigator.of(context).pop(products[i]);
                     },
@@ -565,7 +910,14 @@ class _CashierScreenState extends State<CashierScreen> {
                   backgroundColor: AppColorsDark.bgCardColor,
                 ),
                 onPressed: () => Navigator.of(ctx).pop(null),
-                child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
+                child: Text(
+                  'إلغاء',
+                  style: TextStyle(
+                    color: Theme.of(context).brightness == Brightness.light
+                        ? Colors.black
+                        : Colors.white,
+                  ),
+                ),
               ),
             ],
           ),
@@ -575,7 +927,8 @@ class _CashierScreenState extends State<CashierScreen> {
   }
 
   double get _total => computeTotal(_cart);
-  double get _paid => double.tryParse(_paidController.text.replaceAll(',', '')) ?? 0.0;
+  double get _paid =>
+      double.tryParse(_paidController.text.replaceAll(',', '')) ?? 0.0;
 
   // effective total after applying invoice-level discount
   double get _effectiveTotal {
@@ -590,7 +943,6 @@ class _CashierScreenState extends State<CashierScreen> {
 
     return subtotal;
   }
-
 
   void _addQuickPaid(double amount) {
     final current = _paid;
@@ -607,12 +959,15 @@ class _CashierScreenState extends State<CashierScreen> {
   /// ===== API-based product helpers =====
 
   /// جلب كل المنتجات من الـ API ثم فلترة حسب الباركود (لأن قد يكون عندك أكثر من منتج بنفس الباركود)
-  Future<List<Map<String, dynamic>>> _getProductsByBarcodeListFromApi(String barcode) async {
+  Future<List<Map<String, dynamic>>> _getProductsByBarcodeListFromApi(
+      String barcode) async {
     try {
       final all = await ProductApi.getAllProducts();
       final code = barcode.trim();
       if (code.isEmpty) return [];
-      final matches = all.where((p) => (p['barcode']?.toString() ?? '').trim() == code).toList();
+      final matches = all
+          .where((p) => (p['barcode']?.toString() ?? '').trim() == code)
+          .toList();
       return matches;
     } catch (e) {
       debugPrint('API barcode list error: $e');
@@ -621,7 +976,8 @@ class _CashierScreenState extends State<CashierScreen> {
   }
 
   /// جلب منتج واحد من الـ API بالباركود (ترجع null لو مفيش)
-  Future<Map<String, dynamic>?> _getProductByBarcodeFromApi(String barcode) async {
+  Future<Map<String, dynamic>?> _getProductByBarcodeFromApi(
+      String barcode) async {
     try {
       return await ProductApi.getProductByBarcode(barcode.trim());
     } catch (e) {
@@ -632,15 +988,19 @@ class _CashierScreenState extends State<CashierScreen> {
 
   /// بحث بالاسم عبر الـ API:
   /// ملاحظة: لو الـ API يدعم بحث سيرفر-side من الأفضل استدعاؤه مباشرة — هنا نعمل جلب لكل المنتجات ثم نفلتر محلياً.
-  Future<List<Map<String, dynamic>>> _searchProductsByNameApi(String q, {int limit = 50}) async {
+  Future<List<Map<String, dynamic>>> _searchProductsByNameApi(String q,
+      {int limit = 50}) async {
     try {
       final all = await ProductApi.getAllProducts();
       final needle = q.trim().toLowerCase();
       if (needle.isEmpty) return [];
-      final results = all.where((p) {
-        final name = (p['name'] ?? '').toString().toLowerCase();
-        return name.contains(needle);
-      }).take(limit).toList();
+      final results = all
+          .where((p) {
+            final name = (p['name'] ?? '').toString().toLowerCase();
+            return name.contains(needle);
+          })
+          .take(limit)
+          .toList();
       return results;
     } catch (e) {
       debugPrint('API search by name error: $e');
@@ -648,21 +1008,18 @@ class _CashierScreenState extends State<CashierScreen> {
     }
   }
 
-
   void _changeQuantity(int productId, int newQty) async {
     if (!_cart.containsKey(productId)) return;
-    final productMap = await ProductApi.getProductByBarcode((_cart[productId]!.product.barcode));
+    final productMap = await ProductApi.getProductByBarcode(
+        (_cart[productId]!.product.barcode));
     if (productMap == null) return;
     final product = Product.fromMap(productMap);
-    final available = product.totalUnits;
+    final currentQty = _cart[productId]!.quantity;
+    final available = _availableUnitsForProduct(product) + currentQty;
     if (newQty <= 0) {
       setState(() => _cart.remove(productId));
     } else if (newQty > available) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-          'لا توجد كمية كافية',
-        textDirection: TextDirection.rtl,
-
-      )));
+      _showSnackSafe('المنتج نفذ من المخزن');
     } else {
       setState(() => _cart[productId]!.quantity = newQty);
     }
@@ -675,11 +1032,58 @@ class _CashierScreenState extends State<CashierScreen> {
     final res = await showDialog<int?>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('تعديل الكمية'),
-        content: TextField(controller: controller, keyboardType: TextInputType.number, decoration: const InputDecoration(hintText: 'ادخل الكمية (قطع)')),
+        backgroundColor: AppColorsDark.bgCardColor,
+        title: Text(
+          'تعديل الكمية',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: AppColorsDark.mainTextDark),
+        ),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          textDirection: TextDirection.rtl,
+          textAlign: TextAlign.right,
+          style: TextStyle(color: AppColorsDark.mainTextDark),
+          cursorColor: AppColorsDark.mainColor,
+          decoration: InputDecoration(
+            hintText: 'ادخل الكمية (قطع)',
+            hintTextDirection: TextDirection.rtl,
+            hintStyle:
+                TextStyle(color: AppColorsDark.mainTextDark.withAlpha(150)),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide(color: AppColorsDark.strokColor),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide(color: AppColorsDark.mainColor),
+            ),
+          ),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('إلغاء')),
-          ElevatedButton(onPressed: () { final v = int.tryParse(controller.text) ?? current; Navigator.of(ctx).pop(v); }, child: const Text('موافق')),
+          TextButton(
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).brightness == Brightness.light
+                  ? Colors.black
+                  : Colors.white,
+              backgroundColor: AppColorsDark.bgColor,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColorsDark.mainColor,
+              foregroundColor: Theme.of(context).brightness == Brightness.light
+                  ? Colors.black
+                  : Colors.white,
+            ),
+            onPressed: () {
+              final v = int.tryParse(controller.text) ?? current;
+              Navigator.of(ctx).pop(v);
+            },
+            child: const Text('موافق'),
+          ),
         ],
       ),
     );
@@ -697,16 +1101,26 @@ class _CashierScreenState extends State<CashierScreen> {
         height: 50,
         child: AlertDialog(
           backgroundColor: AppColorsDark.bgCardColor,
-          title: Center(child: const Text('اسم العميل للفاتورة الآجلة', style: TextStyle(color: Colors.white))),
+          title: Center(
+              child: Text('اسم العميل للفاتورة الآجلة',
+                  style: TextStyle(color: AppColorsDark.mainTextDark))),
           content: CustomFormField(
             controller: controller,
             hint: 'اكتب اسم العميل أو الجهة',
           ),
           actions: [
             TextButton(
-              style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+              style:
+                  TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
               onPressed: () => Navigator.of(ctx).pop(null),
-              child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
+              child: Text(
+                'إلغاء',
+                style: TextStyle(
+                  color: Theme.of(context).brightness == Brightness.light
+                      ? Colors.black
+                      : Colors.white,
+                ),
+              ),
             ),
             CustomButton(
               infinity: false,
@@ -720,168 +1134,32 @@ class _CashierScreenState extends State<CashierScreen> {
     return res;
   }
 
-  // ===================================================================
-  // === Functions to show and maintain combined card/wallet totals ====
-  // ===================================================================
-
-  /// Safely compute the true untransferred card amount.
-  /// Works across DB versions (supports card_transferred_amount or card_transferred flag if present).
-  final NumberFormat _moneyFmt = NumberFormat.currency(locale: 'ar', symbol: '', decimalDigits: 0);
-  final NumberFormat _moneyFmtNoDecimal = NumberFormat.currency(locale: 'ar', symbol: '', decimalDigits: 0);
-  String _formatMoney(double value) {
-    const eps = 0.000001;
-    final isWhole = (value - value.truncate()).abs() < eps;
-    // Fixed: avoid recursive call. Use decimal format when needed.
-    return isWhole ? _moneyFmtNoDecimal.format(value) : _moneyFmt.format(value);
-  }
-  String _formatWithSign(double value) {
-    if (value < 0) {
-      return '-${_formatMoney(value.abs())}';
+  Future<void> _loadDrawerBalance() async {
+    final username =
+        Session.currentUsername ?? _currentUsername ?? widget.cashierUsername;
+    try {
+      final balance =
+          await DBHelper.instance.computeCurrentShiftDrawerBalance(username);
+      if (!mounted) return;
+      setState(() {
+        _drawerBalance = balance;
+        _drawerBalanceLoaded = true;
+      });
+    } catch (e, st) {
+      debugPrint('Failed to load drawer balance: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _drawerBalance = 0.0;
+        _drawerBalanceLoaded = true;
+      });
     }
-    return _formatMoney(value);
   }
 
-
-  Future<void> _openCardWalletDialog() async {
-    final username = _currentUsername ?? widget.cashierUsername;
-    bool isDeposit = true;
-    final controller = TextEditingController();
-
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        bool isProcessing = false;
-        String? errorMessage; // 🔴 هنا الرسالة
-
-        return StatefulBuilder(builder: (ctx2, setState2) {
-          return Directionality(
-            textDirection: TextDirection.rtl,
-            child: AlertDialog(
-              backgroundColor: AppColorsDark.bgCardColor,
-              title: const Center(
-                child: Text('المحفظة الالكترونيه', style: TextStyle(color: Colors.white)),
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    isDeposit
-                        ? 'الرصيد الحالي للمحفظة: ${((_totalWallet ?? 0) + (_cashInWallet ?? 0)).toStringAsFixed(0)}'
-                        : 'الرصيد الحالي للدرج: ${((_totalCash ?? 0) + (_startingAmount ?? 0)).toStringAsFixed(0)}',
-                    style: const TextStyle(color: Colors.white, fontSize: 18),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: isDeposit ? Colors.green : AppColorsDark.bgColor),
-                          onPressed: isProcessing ? null : () => setState2(() {
-                            isDeposit = true;
-                            errorMessage = null;
-                          }),
-                          child: const Text('إيداع', style: TextStyle(color: Colors.white)),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                              backgroundColor: !isDeposit ? Colors.red : AppColorsDark.bgColor),
-                          onPressed: isProcessing ? null : () => setState2(() {
-                            isDeposit = false;
-                            errorMessage = null;
-                          }),
-                          child: const Text('سحب', style: TextStyle(color: Colors.white)),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  CustomFormField(
-                    controller: controller,
-                    hint: 'ادخل المبلغ',
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  ),
-                  if (errorMessage != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      errorMessage!,
-                      style: const TextStyle(color: Colors.red, fontSize: 17),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ],
-              ),
-              actions: [
-                TextButton(
-                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
-                  onPressed: isProcessing ? null : () => Navigator.of(ctx).pop(),
-                  child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
-                ),
-                CustomButton(
-                  infinity: false,
-                  text: 'تنفيذ',
-                  onPressed: isProcessing
-                      ? null
-                      : () async {
-                    final raw = controller.text.trim();
-                    final value = double.tryParse(raw.replaceAll(',', '')) ?? 0.0;
-
-                    if (value <= 0) {
-                      setState2(() => errorMessage = 'أدخل مبلغًا صحيحًا');
-                      return;
-                    }
-
-                    // ✅ التحقق من الرصيد
-                    final availableWallet = (_totalWallet ?? 0) + (_cashInWallet ?? 0);
-                    final availableCash = (_totalCash ?? 0) + (_startingAmount ?? 0);
-
-                    if (isDeposit && value > availableWallet) {
-                      setState2(() => errorMessage = 'المبلغ أكبر من الرصيد الحالي بالمحفظة');
-                      return;
-                    }
-                    if (!isDeposit && value > availableCash) {
-                      setState2(() => errorMessage = 'المبلغ أكبر من الرصيد الحالي بالدرج');
-                      return;
-                    }
-
-                    // مفيش خطأ = نكمل العملية
-                    setState2(() {
-                      isProcessing = true;
-                      errorMessage = null;
-                    });
-
-                    try {
-                      final api = ProfitApi();
-                      final resp = await api.send(
-                        cashierName: username,
-                        depositFromCashToWallet: isDeposit ? 0.0 : value,
-                        depositFromWalletToCash: isDeposit ? value : 0.0,
-                      );
-
-                      Navigator.of(ctx).pop();
-                      // تقدر تعرض SnackBar هنا لو عايز نجاح العملية
-                    } catch (e) {
-                      setState2(() => errorMessage = 'فشل تنفيذ العملية');
-                    } finally {
-                      setState2(() => isProcessing = false);
-                    }
-                  },
-                ),
-              ],
-            ),
-          );
-        });
-      },
-    );
+  String _formatSimpleMoney(double value) {
+    return value.toStringAsFixed(value.truncateToDouble() == value ? 0 : 2);
   }
-
 
   // ------------- Discount dialog -------------
-
 
   Future<void> _openNameSearchDialog({String initialQuery = ''}) async {
     await showDialog<void>(
@@ -903,14 +1181,18 @@ class _CashierScreenState extends State<CashierScreen> {
             Future<void> runSearch(String q) async {
               setState2(() => loading = true);
               try {
-                final rows = await DBHelper.instance.searchProductsByName(q, limit: 50);
+                final rows =
+                    await DBHelper.instance.searchProductsByName(q, limit: 50);
                 setState2(() {
                   results = rows;
                   selectedIndex = results.isNotEmpty ? 0 : -1;
                 });
               } catch (e) {
                 debugPrint('searchProductsByName error: $e');
-                setState2(() { results = []; selectedIndex = -1; });
+                setState2(() {
+                  results = [];
+                  selectedIndex = -1;
+                });
               } finally {
                 setState2(() => loading = false);
               }
@@ -919,21 +1201,31 @@ class _CashierScreenState extends State<CashierScreen> {
             void scheduleSearch(String q) {
               debounce?.cancel();
               debounce = Timer(const Duration(milliseconds: 300), () {
-                if (q.trim().isNotEmpty) runSearch(q);
-                else setState2(() { results = []; selectedIndex = -1; });
+                if (q.trim().isNotEmpty)
+                  runSearch(q);
+                else
+                  setState2(() {
+                    results = [];
+                    selectedIndex = -1;
+                  });
               });
             }
 
             void ensureSelectedVisible() {
               if (!scrollController.hasClients || selectedIndex < 0) return;
               const itemHeight = 72.0;
-              final offset = (selectedIndex * itemHeight).clamp(0.0, scrollController.position.maxScrollExtent);
-              scrollController.animateTo(offset, duration: const Duration(milliseconds: 150), curve: Curves.easeInOut);
+              final offset = (selectedIndex * itemHeight)
+                  .clamp(0.0, scrollController.position.maxScrollExtent);
+              scrollController.animateTo(offset,
+                  duration: const Duration(milliseconds: 150),
+                  curve: Curves.easeInOut);
             }
 
             void _ensureKeyFocusAndUnfocusTextIfNeeded() {
               if (textFocus.hasFocus) {
-                try { textFocus.unfocus(); } catch (_) {}
+                try {
+                  textFocus.unfocus();
+                } catch (_) {}
               }
               if (!keyFocus.hasFocus) {
                 FocusScope.of(ctx2).requestFocus(keyFocus);
@@ -949,31 +1241,41 @@ class _CashierScreenState extends State<CashierScreen> {
               return GestureDetector(
                 onTap: () {
                   // اطلب الفوكس لكي نلتقط مفاتيح الكيبورد عبر RawKeyboardListener
-                  if (!textFocus.hasFocus) FocusScope.of(ctx2).requestFocus(textFocus);
+                  if (!textFocus.hasFocus)
+                    FocusScope.of(ctx2).requestFocus(textFocus);
                 },
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
                     color: AppColorsDark.bgColor,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.white10),
+                    border: Border.all(color: AppColorsDark.strokColor),
                   ),
                   child: Row(
                     children: [
                       Expanded(
                         child: Text(
-                          customInputText.isEmpty ? 'اكتب اسم المنتج...' : customInputText,
+                          customInputText.isEmpty
+                              ? 'اكتب اسم المنتج...'
+                              : customInputText,
                           style: TextStyle(
-                            color: customInputText.isEmpty ? Colors.white38 : Colors.white,
+                            color: customInputText.isEmpty
+                                ? AppColorsDark.mainTextLight
+                                : AppColorsDark.mainTextDark,
                             fontSize: 16,
                           ),
                         ),
                       ),
                       if (loading)
-                        const SizedBox(width: 12, height: 12, child: CircularProgressIndicator())
+                        const SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator())
                       else if (customInputText.isNotEmpty)
                         IconButton(
-                          icon: const Icon(Icons.close, color: Colors.white70),
+                          icon: Icon(Icons.close,
+                              color: Theme.of(context).iconTheme.color),
                           onPressed: () {
                             setState2(() {
                               customInputText = '';
@@ -991,63 +1293,56 @@ class _CashierScreenState extends State<CashierScreen> {
 
             return Shortcuts(
               shortcuts: <LogicalKeySet, Intent>{
-                LogicalKeySet(LogicalKeyboardKey.arrowDown): const ArrowDownIntent(),
-                LogicalKeySet(LogicalKeyboardKey.arrowUp): const ArrowUpIntent(),
+                LogicalKeySet(LogicalKeyboardKey.arrowDown):
+                    const ArrowDownIntent(),
+                LogicalKeySet(LogicalKeyboardKey.arrowUp):
+                    const ArrowUpIntent(),
                 LogicalKeySet(LogicalKeyboardKey.enter): const EnterIntent(),
-                LogicalKeySet(LogicalKeyboardKey.numpadEnter): const EnterIntent(),
+                LogicalKeySet(LogicalKeyboardKey.numpadEnter):
+                    const EnterIntent(),
                 LogicalKeySet(LogicalKeyboardKey.escape): const EscapeIntent(),
               },
               child: Actions(
                 actions: <Type, Action<Intent>>{
-                  ArrowDownIntent: CallbackAction<ArrowDownIntent>(onInvoke: (intent) {
+                  ArrowDownIntent:
+                      CallbackAction<ArrowDownIntent>(onInvoke: (intent) {
                     _ensureKeyFocusAndUnfocusTextIfNeeded();
                     if (results.isNotEmpty) {
                       setState2(() {
-                        selectedIndex = (selectedIndex + 1).clamp(0, results.length - 1);
+                        selectedIndex =
+                            (selectedIndex + 1).clamp(0, results.length - 1);
                       });
-                      WidgetsBinding.instance.addPostFrameCallback((_) => ensureSelectedVisible());
+                      WidgetsBinding.instance
+                          .addPostFrameCallback((_) => ensureSelectedVisible());
                     }
                     return null;
                   }),
-                  ArrowUpIntent: CallbackAction<ArrowUpIntent>(onInvoke: (intent) {
+                  ArrowUpIntent:
+                      CallbackAction<ArrowUpIntent>(onInvoke: (intent) {
                     _ensureKeyFocusAndUnfocusTextIfNeeded();
                     if (results.isNotEmpty) {
                       setState2(() {
-                        selectedIndex = (selectedIndex - 1).clamp(0, results.length - 1);
+                        selectedIndex =
+                            (selectedIndex - 1).clamp(0, results.length - 1);
                       });
-                      WidgetsBinding.instance.addPostFrameCallback((_) => ensureSelectedVisible());
+                      WidgetsBinding.instance
+                          .addPostFrameCallback((_) => ensureSelectedVisible());
                     }
                     return null;
                   }),
                   EnterIntent: CallbackAction<EnterIntent>(onInvoke: (intent) {
                     if (selectedIndex >= 0 && selectedIndex < results.length) {
                       final item = results[selectedIndex];
-                      if (_dialogOpening) return null;
-                      _dialogOpening = true;
-                      Future.microtask(() async {
-                        try {
-                          await _showProductDetailDialog(item);
-                        } finally {
-                          if (!mounted) return;
-                          setState(() {
-                            _inlineSearchResults = [];
-                            _inlineLoading = false;
-                            _inlineSelectedIndex = -1;
-                            _dialogOpening = false;
-                          });
-                        }
-                      });
-                    } else {
-                      if (controller.text.trim().isNotEmpty) runSearch(controller.text.trim());
+                      Future.microtask(() => _openInlineSearchProduct(item));
                     }
                     return null;
                   }),
-                  EscapeIntent: CallbackAction<EscapeIntent>(onInvoke: (intent) {
+                  EscapeIntent:
+                      CallbackAction<EscapeIntent>(onInvoke: (intent) {
                     Navigator.of(ctx2).pop();
                     return null;
                   }),
                 },
-
                 child: RawKeyboardListener(
                   focusNode: textFocus,
                   onKey: (RawKeyEvent event) {
@@ -1056,7 +1351,10 @@ class _CashierScreenState extends State<CashierScreen> {
 
                       // handle printable characters (event.character may be null on some platforms, but often works on macOS)
                       final char = (event.character ?? '');
-                      if (char.isNotEmpty && char.codeUnitAt(0) != 10 && !event.isControlPressed && !event.isMetaPressed) {
+                      if (char.isNotEmpty &&
+                          char.codeUnitAt(0) != 10 &&
+                          !event.isControlPressed &&
+                          !event.isMetaPressed) {
                         // append printable character
                         setState2(() {
                           customInputText += char;
@@ -1069,7 +1367,8 @@ class _CashierScreenState extends State<CashierScreen> {
                       if (key == LogicalKeyboardKey.backspace) {
                         setState2(() {
                           if (customInputText.isNotEmpty) {
-                            customInputText = customInputText.substring(0, customInputText.length - 1);
+                            customInputText = customInputText.substring(
+                                0, customInputText.length - 1);
                             controller.text = customInputText;
                             if (customInputText.trim().isEmpty) {
                               results = [];
@@ -1082,27 +1381,13 @@ class _CashierScreenState extends State<CashierScreen> {
                         return;
                       }
 
-                      if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
-                        // نفّذ بحث نهائي أو افتح العنصر المختار
-                        if (customInputText.trim().isNotEmpty && results.isEmpty) {
-                          runSearch(customInputText.trim());
-                        } else if (selectedIndex >= 0 && selectedIndex < results.length) {
+                      if (key == LogicalKeyboardKey.enter ||
+                          key == LogicalKeyboardKey.numpadEnter) {
+                        if (selectedIndex >= 0 &&
+                            selectedIndex < results.length) {
                           final item = results[selectedIndex];
-                          if (_dialogOpening) return;
-                          _dialogOpening = true;
-                          Future.microtask(() async {
-                            try {
-                              await _showProductDetailDialog(item);
-                            } finally {
-                              if (!mounted) return;
-                              setState(() {
-                                _inlineSearchResults = [];
-                                _inlineLoading = false;
-                                _inlineSelectedIndex = -1;
-                                _dialogOpening = false;
-                              });
-                            }
-                          });
+                          Future.microtask(
+                              () => _openInlineSearchProduct(item));
                         }
                         return;
                       }
@@ -1113,25 +1398,34 @@ class _CashierScreenState extends State<CashierScreen> {
                       }
 
                       // arrows: نحول الفوكس إلى keyFocus لأننا نريد أنها تستخدم لتنقّل النتائج
-                      if (key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.arrowUp) {
+                      if (key == LogicalKeyboardKey.arrowDown ||
+                          key == LogicalKeyboardKey.arrowUp) {
                         // ننقل الفوكس لالتقاط الأسهم في المكان اللي يتعامل مع التنقّل (keyFocus موجود في الـ dialog)
-                        if (!keyFocus.hasFocus) FocusScope.of(ctx2).requestFocus(keyFocus);
+                        if (!keyFocus.hasFocus)
+                          FocusScope.of(ctx2).requestFocus(keyFocus);
 
                         // وإذا أردتي يمكن هنا أيضًا التحكم المباشر بتغيير selectedIndex
                         if (results.isNotEmpty) {
                           setState2(() {
                             if (key == LogicalKeyboardKey.arrowDown) {
-                              selectedIndex = (selectedIndex + 1).clamp(0, results.length - 1);
+                              selectedIndex = (selectedIndex + 1)
+                                  .clamp(0, results.length - 1);
                             } else {
-                              selectedIndex = (selectedIndex - 1).clamp(0, results.length - 1);
+                              selectedIndex = (selectedIndex - 1)
+                                  .clamp(0, results.length - 1);
                             }
                           });
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             // scroll to selected
                             const itemHeight = 72.0;
-                            if (scrollController.hasClients && selectedIndex >= 0) {
-                              final offset = (selectedIndex * itemHeight).clamp(0.0, scrollController.position.maxScrollExtent);
-                              scrollController.animateTo(offset, duration: const Duration(milliseconds: 150), curve: Curves.easeInOut);
+                            if (scrollController.hasClients &&
+                                selectedIndex >= 0) {
+                              final offset = (selectedIndex * itemHeight).clamp(
+                                  0.0,
+                                  scrollController.position.maxScrollExtent);
+                              scrollController.animateTo(offset,
+                                  duration: const Duration(milliseconds: 150),
+                                  curve: Curves.easeInOut);
                             }
                           });
                         }
@@ -1148,6 +1442,7 @@ class _CashierScreenState extends State<CashierScreen> {
       },
     );
   }
+
   Future<void> _showProductDetailDialog(Map<String, dynamic> product) async {
     if (!product.containsKey('total_units')) {
       final cartons = (product['quantity'] as num?)?.toInt() ?? 0;
@@ -1166,34 +1461,27 @@ class _CashierScreenState extends State<CashierScreen> {
       barrierDismissible: true,
       builder: (ctx) {
         int qty = 1;
-        final available = (product['total_units'] as num?)?.toInt() ?? 0;
+        final available = _availableUnitsForProductMap(product);
 
         return Directionality(
           textDirection: TextDirection.rtl,
           child: StatefulBuilder(builder: (ctx2, setState2) {
             final name = (product['name'] ?? '').toString();
-            final price = (product['selling_price'] ?? product['sellingPrice'] ?? 0.0);
+            final price =
+                (product['selling_price'] ?? product['sellingPrice'] ?? 0.0);
             final desc = (product['description'] ?? '').toString();
 
             // extracted add-to-cart logic so we can call it from button and onSubmitted
             Future<void> addRequested() async {
               final pid = (product['id'] as num?)?.toInt();
               if (pid == null) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-                    'المنتج غير صالح',
-                  textDirection: TextDirection.rtl,
-
-                )));
+                if (mounted) _showSnackSafe('المنتج غير صالح');
                 return;
               }
-              final already = _cart.containsKey(pid) ? _cart[pid]!.quantity : 0;
-              final requested = qty <= 0 ? 1 : qty; // default 1 if empty or zero
-              if (already + requested > available) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-                    'لا توجد كمية كافية',
-                  textDirection: TextDirection.rtl,
-
-                )));
+              final requested =
+                  qty <= 0 ? 1 : qty; // default 1 if empty or zero
+              if (requested > available) {
+                if (mounted) _showSnackSafe('المنتج نفذ من المخزن');
                 return;
               }
 
@@ -1204,7 +1492,8 @@ class _CashierScreenState extends State<CashierScreen> {
                     _cart[pid]!.quantity += requested;
                   } else {
                     final prodModel = Product.fromMap(product);
-                    _cart[pid] = CartItem(product: prodModel, quantity: requested);
+                    _cart[pid] =
+                        CartItem(product: prodModel, quantity: requested);
                   }
                 });
               }
@@ -1212,11 +1501,8 @@ class _CashierScreenState extends State<CashierScreen> {
               // close dialog and give feedback
               Navigator.of(ctx2).pop();
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-                    'تمت إضافة $requested قطعة من ${product['name']}',
-                  textDirection: TextDirection.rtl,
-
-                )));
+                _showSnackSafe(
+                    'تمت إضافة $requested قطعة من ${product['name']}');
                 _barcodeController.clear();
                 FocusScope.of(context).requestFocus(_barcodeFocus);
               }
@@ -1224,8 +1510,10 @@ class _CashierScreenState extends State<CashierScreen> {
 
             return AlertDialog(
               backgroundColor: AppColorsDark.bgCardColor,
-              title: Text(name, style: const TextStyle(color: Colors.white)),
-              content: SingleChildScrollView( // prevents overflow when keyboard opens
+              title: Text(name,
+                  style: TextStyle(color: AppColorsDark.mainTextDark)),
+              content: SingleChildScrollView(
+                // prevents overflow when keyboard opens
                 child: SizedBox(
                   width: 320,
                   child: Column(
@@ -1234,14 +1522,21 @@ class _CashierScreenState extends State<CashierScreen> {
                       if (desc.isNotEmpty)
                         Align(
                           alignment: Alignment.centerRight,
-                          child: Text(desc, style: const TextStyle(color: Colors.white70), textAlign: TextAlign.right),
+                          child: Text(desc,
+                              style:
+                                  TextStyle(color: AppColorsDark.mainTextLight),
+                              textAlign: TextAlign.right),
                         ),
                       const SizedBox(height: 8),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text('السعر: ${price.toString()}', style: const TextStyle(color: Colors.white70)),
-                          Text('متاح: $available', style: const TextStyle(color: Colors.white70)),
+                          Text('السعر: ${price.toString()}',
+                              style: TextStyle(
+                                  color: AppColorsDark.mainTextLight)),
+                          Text('متاح: $available',
+                              style: TextStyle(
+                                  color: AppColorsDark.mainTextLight)),
                         ],
                       ),
                       const SizedBox(height: 12),
@@ -1251,21 +1546,24 @@ class _CashierScreenState extends State<CashierScreen> {
                           IconButton(
                             onPressed: qty > 1
                                 ? () {
-                              setState2(() {
-                                qty = (qty - 1).clamp(0, available);
-                                qtyController.value = TextEditingValue(
-                                  text: qty.toString(),
-                                  selection: TextSelection.collapsed(offset: qty.toString().length),
-                                );
-                              });
-                            }
+                                    setState2(() {
+                                      qty = (qty - 1).clamp(0, available);
+                                      qtyController.value = TextEditingValue(
+                                        text: qty.toString(),
+                                        selection: TextSelection.collapsed(
+                                            offset: qty.toString().length),
+                                      );
+                                    });
+                                  }
                                 : null,
-                            icon: const Icon(Icons.remove_circle_outline, color: Colors.white),
+                            icon: Icon(Icons.remove_circle_outline,
+                                color: Theme.of(context).iconTheme.color),
                           ),
                           const SizedBox(width: 8),
                           Container(
                             width: 100,
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 4),
                             decoration: BoxDecoration(
                               color: AppColorsDark.bgColor,
                               borderRadius: BorderRadius.circular(6),
@@ -1275,8 +1573,13 @@ class _CashierScreenState extends State<CashierScreen> {
                               autofocus: true,
                               keyboardType: TextInputType.number,
                               textAlign: TextAlign.center,
-                              style: const TextStyle(color: Colors.white, fontSize: 18),
-                              decoration: const InputDecoration(border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.zero),
+                              style: TextStyle(
+                                  color: AppColorsDark.mainTextDark,
+                                  fontSize: 18),
+                              decoration: const InputDecoration(
+                                  border: InputBorder.none,
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.zero),
                               onChanged: (v) {
                                 setState2(() {
                                   final trimmed = v.trim();
@@ -1289,7 +1592,8 @@ class _CashierScreenState extends State<CashierScreen> {
                                       qty = available;
                                       qtyController.value = TextEditingValue(
                                         text: qty.toString(),
-                                        selection: TextSelection.collapsed(offset: qty.toString().length),
+                                        selection: TextSelection.collapsed(
+                                            offset: qty.toString().length),
                                       );
                                     }
                                   }
@@ -1312,16 +1616,18 @@ class _CashierScreenState extends State<CashierScreen> {
                           IconButton(
                             onPressed: qty < available
                                 ? () {
-                              setState2(() {
-                                qty = (qty + 1).clamp(0, available);
-                                qtyController.value = TextEditingValue(
-                                  text: qty.toString(),
-                                  selection: TextSelection.collapsed(offset: qty.toString().length),
-                                );
-                              });
-                            }
+                                    setState2(() {
+                                      qty = (qty + 1).clamp(0, available);
+                                      qtyController.value = TextEditingValue(
+                                        text: qty.toString(),
+                                        selection: TextSelection.collapsed(
+                                            offset: qty.toString().length),
+                                      );
+                                    });
+                                  }
                                 : null,
-                            icon: const Icon(Icons.add_circle_outline, color: Colors.white),
+                            icon: Icon(Icons.add_circle_outline,
+                                color: Theme.of(context).iconTheme.color),
                           ),
                         ],
                       ),
@@ -1331,7 +1637,8 @@ class _CashierScreenState extends State<CashierScreen> {
               ),
               actions: [
                 TextButton(
-                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                  style: TextButton.styleFrom(
+                      backgroundColor: AppColorsDark.bgColor),
                   onPressed: () {
                     Navigator.of(ctx2).pop();
                     Future.microtask(() {
@@ -1339,7 +1646,14 @@ class _CashierScreenState extends State<CashierScreen> {
                       FocusScope.of(context).requestFocus(_barcodeFocus);
                     });
                   },
-                  child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
+                  child: Text(
+                    'إلغاء',
+                    style: TextStyle(
+                      color: Theme.of(context).brightness == Brightness.light
+                          ? Colors.black
+                          : Colors.white,
+                    ),
+                  ),
                 ),
                 ElevatedButton(
                   onPressed: () async {
@@ -1366,15 +1680,15 @@ class _CashierScreenState extends State<CashierScreen> {
     // If you prefer, you can schedule a dispose later:
     // Future.delayed(Duration(seconds: 5), () { qtyController.dispose(); });
   }
-///////////////////////////////////////////////////////////////////////////////
-  final InsertFinancialAccountService _service = InsertFinancialAccountService();
 
+///////////////////////////////////////////////////////////////////////////////
+  final InsertFinancialAccountService _service =
+      InsertFinancialAccountService();
 
 // UUID للـ sales ops
   final _uuidForSale = Uuid();
 
-  double _lastOfflineSale = 0.0;   // <-- ضيف هذا السطر هنا جنب _totalCash
-
+  double _lastOfflineSale = 0.0; // <-- ضيف هذا السطر هنا جنب _totalCash
 
   Future<double> _getLastOfflineSale() async {
     final box = await Hive.openBox('meta');
@@ -1395,65 +1709,70 @@ class _CashierScreenState extends State<CashierScreen> {
     await box.put('lastOfflineSale', 0.0);
   }
 
+  double saleOffline_cash = 0.0;
+  double saleOffline_credit = 0.0;
 
-
-  Future<void> _saveSale({required bool requireFullPayment, String paymentMethod = 'cash'}) async {
+  Future<void> _saveSale(
+      {required bool requireFullPayment, String paymentMethod = 'cash'}) async {
     if (_cart.isEmpty) return;
 
-    // إجمالي قبل الخصم
-    final subtotal = _total;
-
-    // طَبّع نوع الخصم ليطابق ReceiptWidget ('percent' أو 'fixed')
-    final normalizedDiscountType = (_discountType == 'amount') ? 'fixed' : _discountType;
-
-    // حساب قيمة الخصم والتسمية
-    double discountAmount = 0.0;
-    String discountLabel = '';
-    if (normalizedDiscountType == 'percent' && _discountValue > 0) {
-      final pct = _discountValue.clamp(0.0, 100.0);
-      discountAmount = subtotal * (pct / 100.0);
-      discountLabel = '${pct.toStringAsFixed(0)}%';
-    } else if (normalizedDiscountType == 'fixed' && _discountValue > 0) {
-      discountAmount = _discountValue > subtotal ? subtotal : _discountValue;
-      discountLabel = discountAmount.toStringAsFixed(2);
+    Future<void> recordSaleTotals(double amount, String pm) async {
+      final meta = await Hive.openBox('meta');
+      double cash = (meta.get('lastOfflineSale_cash') as num? ?? 0).toDouble();
+      double credit =
+          (meta.get('lastOfflineSale_credit') as num? ?? 0).toDouble();
+      final p = pm.toLowerCase();
+      if (p == 'cash')
+        cash += amount;
+      else if (p == 'credit')
+        credit += amount;
+      else if (p != 'wallet' && p != 'card') cash += amount;
+      await meta.put('lastOfflineSale_cash', cash);
+      await meta.put('lastOfflineSale_credit', credit);
+      await meta.put('lastOfflineSale', cash);
+      if (mounted) {
+        setState(() {
+          saleOffline_cash = cash;
+          saleOffline_credit = credit;
+          _lastOfflineSale = cash;
+        });
+      }
     }
 
-    // الإجمالي بعد الخصم
+    final subtotal = _total;
+    final normalizedDiscountType =
+        (_discountType == 'amount') ? 'fixed' : _discountType;
+    double discountAmount = 0.0;
+    if (normalizedDiscountType == 'percent' && _discountValue > 0) {
+      discountAmount = subtotal * (_discountValue.clamp(0.0, 100.0) / 100.0);
+    } else if (normalizedDiscountType == 'fixed' && _discountValue > 0) {
+      discountAmount = _discountValue > subtotal ? subtotal : _discountValue;
+    }
     final total = (subtotal - discountAmount).clamp(0.0, double.infinity);
 
     String? customerName;
     if (paymentMethod == 'credit') {
       customerName = await _askForCustomerName();
       if (customerName == null || customerName.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text(
-            'تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة',
-            textDirection: TextDirection.rtl,
-          )),
-        );
+        _showSnackSafe(
+            'تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة');
         return;
       }
     }
 
-    final paid = (paymentMethod == 'card' || paymentMethod == 'wallet') ? total : _paid;
-
+    final paid =
+        (paymentMethod == 'card' || paymentMethod == 'wallet') ? total : _paid;
     if (requireFullPayment && paid < total) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text(
-          'العميل لم يدفع كامل المبلغ',
-          textDirection: TextDirection.rtl,
-        )),
-      );
+      _showSnackSafe('العميل لم يدفع كامل المبلغ');
       return;
     }
 
-    setState(() => _saving = true);
+    if (mounted) setState(() => _saving = true);
 
     try {
-      final cashierNameToUse = Session.currentUsername ?? widget.cashierUsername;
-      final changeAmount = (paid >= total) ? (paid - total) : 0.0;
-
-      final List<Map<String, dynamic>> cartPayload = [];
+      final cashierNameToUse =
+          Session.currentUsername ?? widget.cashierUsername;
+      final cartPayload = <Map<String, dynamic>>[];
       _cart.forEach((productId, cartItem) {
         cartPayload.add({
           'product_id': productId,
@@ -1464,289 +1783,201 @@ class _CashierScreenState extends State<CashierScreen> {
         });
       });
 
-      final apiUrl = Uri.parse('https://nabawisolution.com/invoice_reciept.php');
+      final saleId = await DBHelper.instance.createSaleWithItems(
+        items: cartPayload,
+        subtotal: subtotal,
+        total: total,
+        paid: paid,
+        cashierUsername: cashierNameToUse,
+        paymentMethod: paymentMethod,
+        requireFullPayment: requireFullPayment,
+        customerName: customerName,
+        discountType: normalizedDiscountType,
+        discountValue: _discountValue,
+      );
+      debugPrint('[saveSale] saved locally with saleId=$saleId');
 
-      final payload = {
-        'cart': cartPayload,
-        'subtotal': subtotal,
-        'total': total,
-        'paid': paid,
-        'requireFullPayment': requireFullPayment,
-        'paymentMethod': paymentMethod,
-        'cashierUsername': cashierNameToUse,
-        'discountType': normalizedDiscountType,
-        'discountValue': _discountValue,
-        'subtotal_before_discount': subtotal,
-        'discount_amount': discountAmount,
-        'discount_label': discountLabel,
-        'total_after_discount': total,
-        'customerName': customerName,
-      };
-
-      // حاول ترسل للسيرفر أولًا
-      bool serverSaved = false;
-      Map<String, dynamic>? serverResponseBody;
-      try {
-        final resp = await http.post(
-          apiUrl,
-          headers: {'Content-Type': 'application/json; charset=utf-8'},
-          body: jsonEncode(payload),
-        ).timeout(const Duration(seconds: 12));
-
-        if (resp.statusCode == 200) {
-          final body = jsonDecode(resp.body);
-          if (body is Map && body['success'] == true) {
-            serverSaved = true;
-            serverResponseBody = Map<String, dynamic>.from(body);
-          } else {
-            final serverMsg = (body != null && body['error'] != null) ? body['error'] : 'Server returned failure';
-            throw Exception(serverMsg);
-          }
-        } else {
-          throw Exception('HTTP ${resp.statusCode}');
-        }
-      } catch (e) {
-        serverSaved = false;
-        debugPrint('[saveSale] server save failed: $e');
+      if (paymentMethod == 'credit') {
+        _showSnackSafe(
+            'تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${(total - paid).toStringAsFixed(2)}');
+      } else if (paymentMethod == 'card') {
+        _showSnackSafe('تم الحفظ — تم الدفع بالكارت بالكامل');
+      } else if (paymentMethod == 'wallet') {
+        _showSnackSafe('تم الحفظ محلياً');
+      } else {
+        _showSnackSafe(
+            'تم الحفظ — الإجمالي قبل الخصم: ${subtotal.toStringAsFixed(2)}  — بعد الخصم: ${total.toStringAsFixed(2)}  — الباقي: ${(paid - total).toStringAsFixed(2)}');
       }
 
-      // لو السيرفر حفظ: نفس السلوك القديم (تنبيه، طباعة، تنظيف)
-      if (serverSaved) {
-        final serverMessage = (serverResponseBody?['message'] ?? 'تم الحفظ بنجاح').toString();
+      await recordSaleTotals(total, paymentMethod);
+      await _loadDrawerBalance();
+      final printedCart = Map<int, CartItem>.from(_cart);
+      unawaited(_printReceiptInBackground(
+        printedCart: printedCart,
+        paid: paid,
+        cashierName: cashierNameToUse,
+        discountType: normalizedDiscountType,
+        discountValue: _discountValue,
+      ));
 
-        if (paymentMethod == 'credit') {
-          final remaining = total - paid;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(
-              'تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${remaining.toStringAsFixed(2)}',
-              textDirection: TextDirection.rtl,
-            )),
-          );
-        } else if (paymentMethod == 'card') {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text(
-              'تم الحفظ — تم الدفع بالكارت بالكامل',
-              textDirection: TextDirection.rtl,
-            )),
-          );
-        } else if (paymentMethod == 'wallet') {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(
-              serverMessage,
-              textDirection: TextDirection.rtl,
-            )),
-          );
-        } else {
-          final beforeStr = subtotal.toStringAsFixed(2);
-          final afterStr = total.toStringAsFixed(2);
-          final change = (paid - total).toStringAsFixed(2);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(
-              'تم الحفظ — الإجمالي قبل الخصم: $beforeStr  — بعد الخصم: $afterStr  — الباقي: $change',
-              textDirection: TextDirection.rtl,
-            )),
-          );
-        }
-
-        // طباعة الإيصال كما كان
-        bool printSuccess = false;
-        try {
-          await Future.delayed(const Duration(milliseconds: 250));
-          final printedCart = Map<int, CartItem>.from(_cart);
-
-          final receiptWidget = ReceiptWidget(
-            cart: printedCart,
-            paid: paid,
-            cashierUsername: cashierNameToUse,
-            width: 220,
-            useCairo: true,
-            discountType: normalizedDiscountType,
-            discountValue: _discountValue,
-          );
-
-          await PrintService.printWidgetUsingOverlay(context, receiptWidget, width: 220, pixelRatio: 2.0);
-          printSuccess = true;
-          debugPrint('Print succeeded (overlay method).');
-        } catch (e, st) {
-          debugPrint('Print failed (overlay method): $e\n$st');
-        }
-
-        if (!printSuccess) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text(
-              'فشل الطباعة. يمكنك المحاولة لاحقًا من صفحة الطباعة.',
-              textDirection: TextDirection.rtl,
-            )),
-          );
-        }
-
+      if (mounted) {
         setState(() {
           _cart.clear();
           _paidController.clear();
           _discountValue = 0.0;
           _discountType = 'percent';
-          debugPrint("Cart cleared, items = ${_cart.length}");
         });
-
-        await _loadTotalProfit();
-      } else {
-        // OFFLINE: خزّن الفاتورة محليًا في sales + ops (كما كنا) + خزن قيمة آخر عملية اوفلاين
-        try {
-          final opsBox = await Hive.openBox('ops');
-          final salesBox = await Hive.openBox('sales');
-          final localSaleId = -DateTime.now().millisecondsSinceEpoch;
-
-          final saleRecord = <String, dynamic>{
-            'local_id': localSaleId,
-            'cart': cartPayload,
-            'subtotal': subtotal,
-            'total': total,
-            'paid': paid,
-            'requireFullPayment': requireFullPayment,
-            'paymentMethod': paymentMethod,
-            'cashierUsername': cashierNameToUse,
-            'discountType': normalizedDiscountType,
-            'discountValue': _discountValue,
-            'discount_amount': discountAmount,
-            'discount_label': discountLabel,
-            'total_after_discount': total,
-            'customerName': customerName,
-            'created_at': DateTime.now().toUtc().toIso8601String(),
-            'sync_state': 'pending',
-            'counted_locally': true, // ضع هاش علشان SyncManager يعرف يعالجه لاحقًا
-          };
-
-          await salesBox.put(localSaleId.toString(), saleRecord);
-
-          final op = {
-            'opId': _uuidForSale.v4(),
-            'entity': 'sale',
-            'entityId': localSaleId,
-            'type': 'create',
-            'payload': saleRecord,
-            'timestamp': DateTime.now().toUtc().toIso8601String(),
-            'state': 'pending',
-            'retries': 0,
-          };
-          await opsBox.put(op['opId'] as String, op);
-
-          // ---- خزن قيمة آخر عملية اوفلاين هنا ----
-          await _setLastOfflineSale(total);
-          setState(() => _lastOfflineSale = total);
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text(
-              'لا يوجد اتصال — تم حفظ الفاتورة محليًا وسيتم رفعها عند استعادة الاتصال.',
-              textDirection: TextDirection.rtl,
-            )),
-          );
-
-          // محاولة الطباعة كما سابقًا
-          bool printSuccess = false;
-          try {
-            await Future.delayed(const Duration(milliseconds: 250));
-            final printedCart = Map<int, CartItem>.from(_cart);
-
-            final receiptWidget = ReceiptWidget(
-              cart: printedCart,
-              paid: paid,
-              cashierUsername: cashierNameToUse,
-              width: 220,
-              useCairo: true,
-              discountType: normalizedDiscountType,
-              discountValue: _discountValue,
-            );
-
-            await PrintService.printWidgetUsingOverlay(context, receiptWidget, width: 220, pixelRatio: 2.0);
-            printSuccess = true;
-            debugPrint('Print succeeded (overlay method) [offline save].');
-          } catch (e, st) {
-            debugPrint('Print failed (overlay method) [offline save]: $e\n$st');
-          }
-
-          if (!printSuccess) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text(
-                'تم الحفظ محليًا لكن فشلت الطباعة. يمكنك المحاولة لاحقًا.',
-                textDirection: TextDirection.rtl,
-              )),
-            );
-          }
-
-          setState(() {
-            _cart.clear();
-            _paidController.clear();
-            _discountValue = 0.0;
-            _discountType = 'percent';
-            debugPrint("Cart cleared (saved offline), items = ${_cart.length}");
-          });
-
-          await _loadTotalProfit();
-        } catch (e, st) {
-          debugPrint('Failed to save sale locally: $e\n$st');
-          throw Exception('فشل التخزين المحلي للفاتورة: $e');
-        }
       }
     } catch (e, st) {
-      debugPrint('Failed to save sale (client) — error: $e\nstack:\n$st');
-
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('خطأ أثناء حفظ الفاتورة'),
-          content: Text(e.toString()),
-          actions: [TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('حسناً'))],
-        ),
-      );
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(
-          'فشل حفظ الفاتورة: $e',
-          textDirection: TextDirection.rtl,
-        )),
-      );
+      debugPrint('Failed to save sale locally: $e\n$st');
+      if (mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('خطأ أثناء حفظ الفاتورة'),
+            content: Text(e.toString()),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('حسناً'))
+            ],
+          ),
+        );
+      }
+      _showSnackSafe('فشل حفظ الفاتورة: $e');
     } finally {
-      setState(() => _saving = false);
+      if (mounted) setState(() => _saving = false);
       FocusScope.of(context).requestFocus(_barcodeFocus);
     }
   }
 
+  Future<void> _printReceiptInBackground({
+    required Map<int, CartItem> printedCart,
+    required double paid,
+    required String cashierName,
+    required String discountType,
+    required double discountValue,
+  }) async {
+    try {
+      await Future.delayed(const Duration(milliseconds: 100));
+      if (!mounted) return;
+      await PrintService.printThermalReceipt(
+        cart: printedCart,
+        paid: paid,
+        cashierUsername: cashierName,
+        discountType: discountType,
+        discountValue: discountValue,
+      );
+      debugPrint('Receipt print completed.');
+    } catch (e, st) {
+      debugPrint('Receipt print failed/background timeout: $e\n$st');
+      _showSnackSafe('تم حفظ الفاتورة، لكن الطباعة لم تكتمل. يمكنك المتابعة.');
+    }
+  }
 
+  void _showSnackSafe(String message,
+      {Duration duration = const Duration(seconds: 3),
+      SnackBarAction? action}) {
+    _showSnackBarSafe(SnackBar(
+      content: Directionality(
+        textDirection: TextDirection.rtl,
+        child: Text(message),
+      ),
+      duration: duration,
+      action: action,
+    ));
+  }
+
+  void _showSnackBarSafe(SnackBar snack) {
+    // نؤجّل العرض لآخر frame عشان نتأكد إن الـ Scaffold مسجّل فعلاً
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final messenger = _scaffoldMessengerKey.currentState;
+      if (messenger != null) {
+        messenger
+          ..hideCurrentSnackBar()
+          ..showSnackBar(snack);
+        return;
+      }
+      debugPrint(
+          '[showSnackSafe] cannot show snack: ScaffoldMessenger not ready');
+    });
+  }
 
   bool _closingShift = false;
-  final ApiServiceClose_shieft _apiService = ApiServiceClose_shieft(baseUrl: 'https://nabawisolution.com');
-  Future<void> _loadFinancials() async {
+  final ApiServiceClose_shieft _apiService = ApiServiceClose_shieft();
+// ====================== _loadFinancials ======================
+  Future<void> _loadFinancials({bool forceOnlineCheck = false}) async {
     if (!mounted) return;
     setState(() => _loading = true);
-    try {
-      // محاولة online أولًا
-      final conn = await Connectivity().checkConnectivity();
-      final online = conn != ConnectivityResult.none;
 
+    try {
+      // 1) قرار سريع: نثق أولاً في الحالة المركزية _isOnline
+      bool online = _isOnline;
+
+      // 2) إذا لم نكن واثقين أو طُلب فحص إجباري، نتحقق سريعاً:
+      if (!online || forceOnlineCheck) {
+        // فحص واجهة الشبكة (WiFi/ethernet/mobile) أولاً — أسرع من probe
+        final conn = await Connectivity().checkConnectivity();
+        if (conn != ConnectivityResult.none) {
+          // نفعل probe حقيقي لكن لا ننتظر أكثر من ثانيتين لتقليل الـ UX delay
+          try {
+            online = await _networkCheck
+                .hasConnection()
+                .timeout(const Duration(seconds: 2));
+          } catch (_) {
+            online = false;
+          }
+        } else {
+          online = false;
+        }
+        debugPrint(
+            '[Financials] connectivity check -> conn=$conn, probeOnline=$online');
+      }
+
+      // 3) لو عندنا إنترنت حقيقي، حاول تجيب من السيرفر أولاً
       if (online) {
         try {
-          final list = await _service.getLatest(limit: 1);
+          // timeout معقول للـ API
+          final list = await _service
+              .getLatest(limit: 1)
+              .timeout(const Duration(seconds: 8));
           if (list.isNotEmpty) {
             final rec = list.first;
-            // حدّث الواجهة فوراً
+            // خزّن/حدّث الـ Hive بحذر ثم عمل setState
+            try {
+              final box = await Hive.openBox('financial_accounts');
+              final key = rec.id?.toString() ??
+                  DateTime.now().millisecondsSinceEpoch.toString();
+              await box.put(key, rec.toJsonFull());
+              debugPrint('[Financials] saved server record to Hive key=$key');
+            } catch (e, st) {
+              debugPrint(
+                  '[Financials] failed to save server record to Hive: $e\n$st');
+            }
+
             if (!mounted) return;
             setState(() {
               _startingAmount = rec.startingAmount;
-              _cashInWallet = rec.cashInWallet;
+              _financialsLoaded = true;
             });
-            // خزّن محليًا للاستعمال وقت الأوفلاين
-            final box = await Hive.openBox('financial_accounts');
-            final key = rec.id?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString();
-            await box.put(key, rec.toJsonFull());
+            await DBHelper.instance
+                .setFixedShiftOpeningBalance(rec.startingAmount);
+            await _loadDrawerBalance();
             return;
+          } else {
+            debugPrint('[Financials] server returned empty list');
           }
-        } catch (e) {
-          debugPrint('[Financials] online fetch failed, will fallback to local: $e');
+        } catch (e, st) {
+          debugPrint(
+              '[Financials] online fetch failed despite online=true: $e\n$st');
           // fallthrough to local
         }
+      } else {
+        debugPrint('[Financials] not online -> fallback to local');
       }
 
-      // OFFLINE fallback: اقرأ من الـ Hive (listener يحدّث الحالة تلقائياً لكن نقرأ الآن احتياطي)
+      // 4) OFFLINE fallback: اقرأ من الـ Hive (listener يتابع التغييرات)
       await _applyLatestFinancialFromBox();
     } catch (e, st) {
       debugPrint('Failed to load financials: $e\n$st');
@@ -1754,6 +1985,7 @@ class _CashierScreenState extends State<CashierScreen> {
       if (mounted) setState(() => _loading = false);
     }
   }
+
   Future<void> _confirm_CloseShift() async {
     final shouldExit = await showDialog<bool>(
       context: context,
@@ -1761,19 +1993,35 @@ class _CashierScreenState extends State<CashierScreen> {
         textDirection: TextDirection.rtl,
         child: AlertDialog(
           backgroundColor: AppColorsDark.bgCardColor,
-          title: const Text('تأكيد عمليه تقفيله الشيفت', style: TextStyle(color: Colors.white)),
-          content: const Text('هل أنت متأكد من تاكيد هذه العمليه؟', style: TextStyle(color: Colors.white70)),
+          title: Text('تأكيد عمليه تقفيله الشيفت',
+              style: TextStyle(color: AppColorsDark.mainTextDark)),
+          content: Text('هل أنت متأكد من تاكيد هذه العمليه؟',
+              style: TextStyle(color: AppColorsDark.mainTextLight)),
           actions: [
             TextButton(
               onPressed: () {
                 Navigator.of(context).pop(true);
                 Session.updateDateTime_end();
               },
-              child: const Text('تأكيد', style: TextStyle(color: Colors.white)),
+              child: Text(
+                'تأكيد',
+                style: TextStyle(
+                  color: Theme.of(context).brightness == Brightness.light
+                      ? Colors.black
+                      : Colors.white,
+                ),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('إلغاء', style: TextStyle(color: Colors.white70)),
+              child: Text(
+                'إلغاء',
+                style: TextStyle(
+                  color: Theme.of(context).brightness == Brightness.light
+                      ? Colors.black
+                      : Colors.white,
+                ),
+              ),
             ),
           ],
         ),
@@ -1782,63 +2030,15 @@ class _CashierScreenState extends State<CashierScreen> {
 
     if (shouldExit == true && mounted) {
       await _closeShift(); // الآن ننفّذ الإغلاق فعليًا بعد غلق الدايالوج
+      if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (_) => const LoginScreen()),
-            (route) => false,
+        (route) => false,
       );
     }
   }
-  Future<void> _loadTotalProfit() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
 
-    try {
-      final profits = await ApiServiceProfit.instance
-          .fetchProfitsByCashier(Session.currentUsername?? widget.cashierUsername);
-
-      double sumCash = 0;
-      double sumWallet = 0;
-      double sumCredit = 0;
-      double sumPurchases_paid = 0;
-      double sumPurchases_credit = 0;
-      double sumWallet_received = 0;
-      double sumCash_received = 0;
-
-      for (final p in profits) {
-        sumCash += p.total_in_drawer;
-        sumWallet += p.total_in_wallet;
-        sumCredit += p.cash_with_credit;
-        sumPurchases_paid += p.purchases_paid;
-        sumPurchases_credit += p.purchases_credit;
-        sumWallet_received += p.wallet_received;
-        sumCash_received += p.cash_received;
-      }
-
-      if (!mounted) return;
-      setState(() {
-        _totalCash = sumCash;
-        _totalWallet = sumWallet;
-        _cash_with_credit = sumCredit ;
-        _purchases_paid = sumPurchases_paid ;
-        _purchases_credit = sumPurchases_credit ;
-        _wallet_received = sumWallet_received ;
-        _cash_received = sumCash_received ;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-      });
-    } finally {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-      });
-    }
-  }
   Future<void> _confirmExit() async {
     final shouldExit = await showDialog<bool>(
       context: context,
@@ -1846,19 +2046,37 @@ class _CashierScreenState extends State<CashierScreen> {
         textDirection: TextDirection.rtl,
         child: AlertDialog(
           backgroundColor: AppColorsDark.bgCardColor,
-          title: const Text('تأكيد الخروج',style: TextStyle(color: Colors.white),),
-          content: const Text('هل أنت متأكد من الخروج؟',style: TextStyle(color: Colors.white70),),
+          title: Text(
+            'تأكيد الخروج',
+            style: TextStyle(color: AppColorsDark.mainTextDark),
+          ),
+          content: Text(
+            'هل أنت متأكد من الخروج؟',
+            style: TextStyle(color: AppColorsDark.mainTextLight),
+          ),
           actions: [
             TextButton(
-
               onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('تأكيد',style: TextStyle(color: Colors.white),),
+              child: Text(
+                'تأكيد',
+                style: TextStyle(
+                  color: Theme.of(context).brightness == Brightness.light
+                      ? Colors.black
+                      : Colors.white,
+                ),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('إلغاء',style: TextStyle(color: Colors.white70),),
+              child: Text(
+                'إلغاء',
+                style: TextStyle(
+                  color: Theme.of(context).brightness == Brightness.light
+                      ? Colors.black
+                      : Colors.white,
+                ),
+              ),
             ),
-
           ],
         ),
       ),
@@ -1869,110 +2087,75 @@ class _CashierScreenState extends State<CashierScreen> {
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (_) => const LoginScreen()),
-            (route) => false,
+        (route) => false,
       );
     }
   }
+
   Future<void> _closeShift() async {
     setState(() => _closingShift = true);
     try {
-      final now = DateTime.now();
-      final startOfDay = DateTime(now.year, now.month, now.day);
-      final fromDateStr = startOfDay.toIso8601String().split('T').first;
+      if (Session.currentDateTime == null) {
+        Session.updateDateTime();
+      }
+      if (Session.endDateTime == null) {
+        Session.updateDateTime_end();
+      }
 
-      // قيم افتراضية بديلة بدل null لتجنّب Null check operator crash
-      final totalCashSafe = _totalCash ?? 0.0;
-      final cashReceivedSafe = _cash_received ?? 0.0;
-      final walletReceivedSafe = _wallet_received ?? 0.0;
-      final purchasesPaidSafe = _purchases_paid ?? 0.0;
-      final userStartingSafe = _startingAmount;
-      final userNetSalesSafe = _totalCash ?? 0.0;
-      final drawerForCashierSafe = _totalWallet ?? 0.0;
-      final cardForCashierSafe = (_cashInWallet ?? 0.0) + (_totalWallet ?? 0.0);
-      final creditOutstandingSafe = _cash_with_credit ?? 0.0;
-      final purchasesCreditSafe = _purchases_credit ?? 0.0;
+      final cashierName = Session.currentUsername ?? '';
+      if (cashierName.trim().isEmpty) {
+        throw 'لا يوجد كاشير مسجل للدخول';
+      }
 
-      // تشخيص سريع: لو البيانات كلها صفر قد يعني أن التحميل فشل
-      final anyLoaded = (totalCashSafe + cashReceivedSafe + walletReceivedSafe + userStartingSafe) != 0.0;
-      if (!anyLoaded) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-          'لا توجد بيانات كافية لإجراء تقفيل الشيفت — تأكد من تحميل البيانات أو المحاولة بعد التحديث.',
-          textDirection: TextDirection.rtl,
-        )));
+      final dynamic startTimeValue = Session.currentDateTime!;
+      final dynamic endTimeValue = Session.endDateTime!;
+      final apiResp = await _apiService.closeShift(
+        cashierName: cashierName,
+        startTimeParam: startTimeValue,
+        endTime: endTimeValue,
+      );
+
+      debugPrint(
+          'closeShift local response: success=${apiResp.success}, message=${apiResp.message}, id=${apiResp.insertId}');
+
+      if (!apiResp.success && !apiResp.queued) {
+        _showSnackBarSafe(SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('فشل حفظ تقفيل الشيفت: ${apiResp.message}'),
+          ),
+          backgroundColor: Colors.red[700],
+        ));
         return;
       }
 
-      final reportWidget = ShiftReportWidget(
-        cashierUsername: Session.currentUsername!,
-        fromDate: fromDateStr,
-        toDate: Session.currentDateTime!,
-        totals: {
-          'sales_total': totalCashSafe,
-          'sales_paid_cash': cashReceivedSafe,
-          'sales_paid_card': walletReceivedSafe,
-          'purchases_paid': purchasesPaidSafe,
-          'user_starting': userStartingSafe,
-          'user_net_sales': userNetSalesSafe,
-          'drawer_for_cashier': drawerForCashierSafe,
-        },
-        width: 300,
-        drawerCurrent: totalCashSafe,
-        cardForCashier: cardForCashierSafe,
-        creditOutstandingForCashier: creditOutstandingSafe,
-        purchaseReceiptsOutstandingForUser: purchasesCreditSafe,
-      );
-
-      // 1) محاولة طباعة التقرير
-      try {
-        await PrintService.printWidgetUsingOverlay(context, reportWidget, width: 280, pixelRatio: 2.0);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-          'تم طباعة تقرير الشفت لليوم',
-          textDirection: TextDirection.rtl,
-        )));
-      } catch (e, st) {
-        debugPrint('Shift print failed: $e\n$st');
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-          'فشل طباعة تقرير الشفت',
-          textDirection: TextDirection.rtl,
-        )));
+      if (mounted) {
+        setState(() {
+          _startingAmount = apiResp.openingBalance;
+          _drawerBalance = apiResp.openingBalance;
+          _drawerBalanceLoaded = true;
+        });
       }
 
-      // 2) إرسال start_time إلى السيرفر أو وضعها في الـ queue لو اوفلاين
-      try {
-        final dynamic startTimeValue = Session.currentDateTime!;
-        final dynamic endTimeValue = Session.endDateTime!;
-        debugPrint('Sending start_time to server: $startTimeValue');
-
-        final apiResp = await _apiService.closeShift(
-          cashierName: Session.currentUsername!,
-          startTimeParam: startTimeValue,
-          endTime: endTimeValue,
-        );
-
-        debugPrint('closeShift API response: success=${apiResp.success}, queued=${apiResp.queued}, message=${apiResp.message}, id=${apiResp.insertId}');
-
-        if (apiResp.success || apiResp.queued) {
-          final msg = apiResp.queued
-              ? 'تم حفظ تقفيل الشيفت محليًا وسيتم رفعه عند استعادة الاتصال'
-              : 'تم حفظ الشفت على السيرفر بنجاح';
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg, textDirection: TextDirection.rtl)));
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('فشل حفظ الشفت على السيرفر: ${apiResp.message}', textDirection: TextDirection.rtl),
-            backgroundColor: Colors.red[700],
-          ));
-        }
-      } catch (e, st) {
-        debugPrint('API closeShift failed: $e\n$st');
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ أثناء حفظ الشفت: $e', textDirection: TextDirection.rtl)));
-      }
+      _showSnackBarSafe(const SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('تم حفظ تقفيل الشيفت محليًا'),
+        ),
+      ));
     } catch (e, st) {
       debugPrint('Error while closing shift: $e\n$st');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تقفيل الشفت: $e', textDirection: TextDirection.rtl)));
+      _showSnackBarSafe(SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('فشل تقفيل الشفت: $e'),
+        ),
+      ));
     } finally {
-      setState(() => _closingShift = false);
+      if (mounted) setState(() => _closingShift = false);
     }
   }
+
   Future<void> _showDiscountDialog() async {
     final options = List.generate(11, (i) => i * 5); // 0,5,10,...,50
     int selected = _discountValue.toInt();
@@ -1988,8 +2171,9 @@ class _CashierScreenState extends State<CashierScreen> {
           child: StatefulBuilder(builder: (ctx2, setState2) {
             return AlertDialog(
               backgroundColor: AppColorsDark.bgCardColor,
-              title: const Center(
-                child: Text('اختر نوع الخصم', style: TextStyle(color: Colors.white)),
+              title: Center(
+                child: Text('اختر نوع الخصم',
+                    style: TextStyle(color: AppColorsDark.mainTextDark)),
               ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1999,12 +2183,11 @@ class _CashierScreenState extends State<CashierScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       ChoiceChip(
-
-                          label:Text(
+                          label: Text(
                             "نسبة %",
                             style: TextStyle(
                               fontSize: 17,
-                              color: Colors.white,
+                              color: AppColorsDark.mainTextDark,
                             ),
                           ),
                           selected: discountMode == 'percent',
@@ -2017,18 +2200,17 @@ class _CashierScreenState extends State<CashierScreen> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                             side: BorderSide(
-                              color:AppColorsDark.bgColor,
+                              color: AppColorsDark.bgColor,
                               width: 2,
                             ),
-                          )
-                      ),
+                          )),
                       const SizedBox(width: 8),
                       ChoiceChip(
-                          label:Text(
+                          label: Text(
                             "مبلغ ثابت",
                             style: TextStyle(
                               fontSize: 17,
-                              color: Colors.white,
+                              color: AppColorsDark.mainTextDark,
                             ),
                           ),
                           selected: discountMode == 'amount',
@@ -2041,11 +2223,10 @@ class _CashierScreenState extends State<CashierScreen> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                             side: BorderSide(
-                              color: AppColorsDark.bgColor ,
+                              color: AppColorsDark.bgColor,
                               width: 2,
                             ),
-                          )
-                      ),
+                          )),
                     ],
                   ),
                   const SizedBox(height: 16),
@@ -2060,7 +2241,8 @@ class _CashierScreenState extends State<CashierScreen> {
                           selected: isSelected,
                           backgroundColor: AppColorsDark.bgColor,
                           selectedColor: Colors.green,
-                          labelStyle: const TextStyle(color: Colors.white),
+                          labelStyle:
+                              TextStyle(color: AppColorsDark.mainTextDark),
                           onSelected: (_) {
                             setState2(() => selected = v);
                           },
@@ -2071,7 +2253,6 @@ class _CashierScreenState extends State<CashierScreen> {
                     CustomFormField(
                       controller: valueController,
                       hint: "ادخل قيمة الخصم",
-
                     )
                 ],
               ),
@@ -2084,15 +2265,26 @@ class _CashierScreenState extends State<CashierScreen> {
                       final val = double.tryParse(valueController.text) ?? 0.0;
                       Navigator.of(ctx2).pop({"type": "amount", "value": val});
                     } else {
-                      Navigator.of(ctx2).pop({"type": "percent", "value": selected.toDouble()});
+                      Navigator.of(ctx2).pop(
+                          {"type": "percent", "value": selected.toDouble()});
                     }
                   },
                 ),
-                SizedBox(width: 10,),
+                SizedBox(
+                  width: 10,
+                ),
                 TextButton(
-                  style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+                  style: TextButton.styleFrom(
+                      backgroundColor: AppColorsDark.bgColor),
                   onPressed: () => Navigator.of(ctx2).pop(null),
-                  child: const Text('إلغاء', style: TextStyle(color: Colors.white)),
+                  child: Text(
+                    'إلغاء',
+                    style: TextStyle(
+                      color: Theme.of(context).brightness == Brightness.light
+                          ? Colors.black
+                          : Colors.white,
+                    ),
+                  ),
                 ),
               ],
             );
@@ -2108,432 +2300,495 @@ class _CashierScreenState extends State<CashierScreen> {
         // لو عندك متغيرات لحسابات الضريبة أو خصومات إضافية - حدثها هنا أيضاً
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            _discountType == "percent"
-                ? 'تم تطبيق خصم ${_discountValue.toStringAsFixed(0)}% — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}'
-                : 'تم تطبيق خصم بقيمة ${_discountValue.toStringAsFixed(2)} — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}',
-            textDirection: TextDirection.rtl,
-
-          ),
-        ),
+      _showSnackSafe(
+        _discountType == "percent"
+            ? 'تم تطبيق خصم ${_discountValue.toStringAsFixed(0)}% — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}'
+            : 'تم تطبيق خصم بقيمة ${_discountValue.toStringAsFixed(2)} — الإجمالي الآن: ${_effectiveTotal.toStringAsFixed(2)}',
       );
-
     }
-  }
-  Widget _shimmerMoney({double width = 56, double height = 16, BorderRadius? radius}) {
-    return Shimmer.fromColors(
-      baseColor: Colors.white10,
-      highlightColor: Colors.white24,
-      child: Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          color: Colors.white10,
-          borderRadius: radius ?? BorderRadius.circular(4),
-        ),
-      ),
-    );
-  }
-
-  Widget _moneyOrShimmer({double? value, bool withSign = false, bool asInt = true}) {
-    if (value == null) {
-      return _shimmerMoney(width: 64, height: 16);
-    }
-    final text = withSign
-        ? _formatWithSign(value)
-        : NumberFormat("#,###").format(asInt ? value.toInt() : value);
-    return Text(text, style: const TextStyle(color: Colors.white70, fontSize: 14));
   }
 
   @override
   Widget build(BuildContext context) {
     final receiptWidth = 380.0;
-    return Scaffold(
-      backgroundColor: AppColorsDark.bgColor,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0.0,
-        scrolledUnderElevation: 0.0,
-        centerTitle: true,
-        iconTheme: const IconThemeData(color: Colors.white70),
-
-        leadingWidth: 250,
-        toolbarHeight: 65,
-        leading: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white70),
-              onPressed: () => _confirmExit(),
-            ),
-            SizedBox(width: 20,),
-            InkWell(
-              child: Column(
+    return ScaffoldMessenger(
+      key: _scaffoldMessengerKey,
+      child: Scaffold(
+        backgroundColor: AppColorsDark.bgColor,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0.0,
+          scrolledUnderElevation: 0.0,
+          centerTitle: true,
+          iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
+          leadingWidth: 190,
+          toolbarHeight: 65,
+          leading: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(width: 8),
+              IconButton(
+                icon: Icon(Icons.arrow_back_ios_new,
+                    color: Theme.of(context).iconTheme.color),
+                onPressed: () => _confirmExit(),
+              ),
+              const SizedBox(width: 12),
+              Column(
                 mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  SizedBox(height: 5,),
-                  IconButton(
-                    tooltip: "المحفظه الالكترونية",
-                    icon: const Icon(Icons.account_balance_wallet,color: Colors.white70,),
-                    onPressed: Session.wallet_tx == true ? _openCardWalletDialog:null,
+                  Icon(
+                    Icons.point_of_sale,
+                    color: Theme.of(context).iconTheme.color,
+                    size: 24,
                   ),
-                  _moneyOrShimmerWithFlag(value: (_totalWallet ?? 0.0) + (_cashInWallet ?? 0.0))
-
+                  const SizedBox(height: 4),
+                  Text(
+                    _drawerBalanceLoaded
+                        ? _formatSimpleMoney(_drawerBalance ?? 0.0)
+                        : '...',
+                    style: TextStyle(
+                      color: AppColorsDark.mainTextLight,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          title: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'الكاشير',
+                style:
+                    TextStyle(color: AppColorsDark.mainTextDark, fontSize: 27),
+              ),
+              Text(
+                _currentUsername ?? widget.cashierUsername,
+                style: TextStyle(
+                  color: AppColorsDark.mainTextLight,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            Padding(
+              padding: const EdgeInsetsDirectional.only(end: 12),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Visibility(
+                    visible: Session.invoice_log,
+                    child: IconButton(
+                      tooltip: 'الفواتير السابقة',
+                      icon: const Icon(Icons.history),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => PreviousSalesScreen(
+                              cashierUsername:
+                                  _currentUsername ?? widget.cashierUsername,
+                              canViewCreditInvoices: Session.canViewCredit,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  Visibility(
+                    visible: Session.canViewCredit,
+                    child: IconButton(
+                      tooltip: 'الفواتير الآجلة',
+                      icon: const Icon(Icons.receipt_long),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const CreditsScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  Visibility(
+                    visible: Session.receive_from_suppliers,
+                    child: IconButton(
+                      tooltip: 'استلام بضاعه',
+                      icon: const Icon(Icons.category),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  const ReceiveFromSupplierScreen()),
+                        );
+                      },
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'تقفيل الشفت',
+                    icon: const Icon(Icons.lock_clock),
+                    onPressed: () =>
+                        _closingShift ? null : _confirm_CloseShift(),
+                  ),
                 ],
               ),
             ),
-            SizedBox(width: 20,),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                SizedBox(height: 10,),
-
-                Tooltip(
-                  message: "المبلغ الموجود في الدرج",
-                  child: SvgPicture.asset(
-                    "assets/icons/drawer.svg",
-                    color: Colors.white70,
-                    width: 25,
-                    height: 25,
-                  ),
-                ),
-                SizedBox(height: 10,),
-                _moneyOrShimmerWithFlag(value: (_totalCash ?? 0.0) + (_startingAmount ?? 0.0) + _lastOfflineSale, withSign: true)
-              ],
-            ),
           ],
         ),
-
-        title: Text(
-          '${_currentUsername ?? widget.cashierUsername}',
-          style: const TextStyle(color: Colors.white, fontSize: 27),
-        ),
-
-        actions: [
-          Visibility(
-            visible: Session.invoice_log,
-            child: IconButton(
-              tooltip: 'الفواتير السابقة',
-              icon: const Icon(Icons.history),
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => PreviousSalesScreen(
-                      cashierUsername: _currentUsername ?? widget.cashierUsername,
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          Visibility(
-            visible: Session.receive_from_suppliers,
-            child: IconButton(
-              tooltip: 'استلام بضاعه',
-              icon: const Icon(Icons.category),
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const ReceiveFromSupplierScreen()),
-                );
-              },
-            ),
-          ),
-          IconButton(
-            tooltip: 'تقفيل الشفت',
-            icon: const Icon(Icons.lock_clock),
-            onPressed:()=> _closingShift ? null : _confirm_CloseShift(),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Expanded(
-                  child: Focus(
-                    focusNode: _inlineKeyboardNode,
-                    onKey: (FocusNode node, RawKeyEvent event) {
-                      if (event is RawKeyDownEvent) {
-                        final key = event.logicalKey;
-                        if (key == LogicalKeyboardKey.arrowDown) {
-                          setState(() {
-                            _inlineSelectedIndex = (_inlineSelectedIndex + 1).clamp(0, _inlineSearchResults.length - 1);
-                          });
-                          _scrollInlineToIndex(_inlineSelectedIndex);
-                          return KeyEventResult.handled;
-                        } else if (key == LogicalKeyboardKey.arrowUp) {
-                          setState(() {
-                            _inlineSelectedIndex = (_inlineSelectedIndex - 1).clamp(0, _inlineSearchResults.length - 1);
-                          });
-                          _scrollInlineToIndex(_inlineSelectedIndex);
-                          return KeyEventResult.handled;
-                        } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
-                          // <-- التغيير: نتعامل مع Enter فقط لو في نتائج للبحث بالكلمة
-                          if (_inlineSearchResults.isNotEmpty) {
-                            final idx = _inlineSelectedIndex >= 0 ? _inlineSelectedIndex : 0;
-                            if (_dialogOpening) return KeyEventResult.handled;
-                            _dialogOpening = true;
-                            Future.microtask(() async {
-                              try {
-                                await _showProductDetailDialog(_inlineSearchResults[idx]);
-                              } finally {
-                                if (!mounted) return;
-                                setState(() {
-                                  _inlineSearchResults = [];
-                                  _inlineLoading = false;
-                                  _inlineSelectedIndex = -1;
-                                  _dialogOpening = false;
-                                });
-                              }
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Column(children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Focus(
+                      focusNode: _inlineKeyboardNode,
+                      onKey: (FocusNode node, RawKeyEvent event) {
+                        if (event is RawKeyDownEvent) {
+                          final key = event.logicalKey;
+                          if (key == LogicalKeyboardKey.arrowDown) {
+                            setState(() {
+                              _inlineSelectedIndex = (_inlineSelectedIndex + 1)
+                                  .clamp(0, _inlineSearchResults.length - 1);
                             });
+                            _scrollInlineToIndex(_inlineSelectedIndex);
                             return KeyEventResult.handled;
-                          }
-                          // لو مفيش نتائج، متقبّضش على Enter هنا علشان يسمح بعمل onSubmitted (الباركود)
-                          return KeyEventResult.ignored;
-                        } else if (key == LogicalKeyboardKey.escape) {
-                          setState(() {
-                            _inlineSearchResults = [];
-                            _inlineLoading = false;
-                            _inlineSelectedIndex = -1;
-                          });
-                          return KeyEventResult.handled;
-                        }
-                      }
-                      return KeyEventResult.ignored;
-                    },
-                    child: Directionality(
-                      textDirection: TextDirection.rtl,
-                      child: CustomFormField(
-                        controller: _barcodeController,
-                        hint: "امسح الباركود أو اكتب اسم المنتج ثم اضغط Enter",
-                        focusNode: _barcodeFocus,
-                        onTap: () {
-                          // تأكد إن node الخاص بالكيبورد يستلم الفوكس أيضاً عند الضغط في الحقل
-                          if (!_inlineKeyboardNode.hasFocus) FocusScope.of(context).requestFocus(_inlineKeyboardNode);
-                        },
-                        onChanged: (v) {
-                          final trimmed = v.trim();
-                          final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
-                          if (containsLetters) {
-                            _scheduleInlineSearch(trimmed);
-                          } else {
-                            _inlineDebounce?.cancel();
+                          } else if (key == LogicalKeyboardKey.arrowUp) {
+                            setState(() {
+                              _inlineSelectedIndex = (_inlineSelectedIndex - 1)
+                                  .clamp(0, _inlineSearchResults.length - 1);
+                            });
+                            _scrollInlineToIndex(_inlineSelectedIndex);
+                            return KeyEventResult.handled;
+                          } else if (key == LogicalKeyboardKey.enter ||
+                              key == LogicalKeyboardKey.numpadEnter) {
+                            if (_inlineLoading || _inlineSearchPending) {
+                              setState(() {
+                                _selectFirstWhenInlineReady = true;
+                              });
+                              return KeyEventResult.handled;
+                            }
+
+                            if (_inlineSearchResults.isNotEmpty) {
+                              final idx = _inlineSelectedIndex >= 0
+                                  ? _inlineSelectedIndex
+                                  : 0;
+                              Future.microtask(() => _openInlineSearchProduct(
+                                  _inlineSearchResults[idx]));
+                              return KeyEventResult.handled;
+                            }
+
+                            final trimmed = _barcodeController.text.trim();
+                            final containsLetters =
+                                RegExp(r'[A-Za-z\u0621-\u064A]')
+                                    .hasMatch(trimmed);
+                            if (containsLetters) {
+                              return KeyEventResult.handled;
+                            }
+
+                            return KeyEventResult.ignored;
+                          } else if (key == LogicalKeyboardKey.escape) {
                             setState(() {
                               _inlineSearchResults = [];
                               _inlineLoading = false;
+                              _inlineSearchPending = false;
+                              _selectFirstWhenInlineReady = false;
                               _inlineSelectedIndex = -1;
                             });
+                            return KeyEventResult.handled;
                           }
-                        },
-                        onFieldSubmitted:  (v) async {
-                          final trimmed = v.trim();
-                          if (trimmed.isEmpty) return;
+                        }
+                        return KeyEventResult.ignored;
+                      },
+                      child: Directionality(
+                        textDirection: TextDirection.rtl,
+                        child: CustomFormField(
+                          controller: _barcodeController,
+                          hint:
+                              "امسح الباركود أو اكتب اسم المنتج ثم اضغط إدخال",
+                          focusNode: _barcodeFocus,
+                          onTap: () {
+                            // تأكد إن node الخاص بالكيبورد يستلم الفوكس أيضاً عند الضغط في الحقل
+                            if (!_inlineKeyboardNode.hasFocus)
+                              FocusScope.of(context)
+                                  .requestFocus(_inlineKeyboardNode);
+                          },
+                          onChanged: (v) {
+                            final trimmed = v.trim();
+                            final containsLetters =
+                                RegExp(r'[A-Za-z\u0621-\u064A]')
+                                    .hasMatch(trimmed);
+                            if (containsLetters) {
+                              _scheduleInlineSearch(trimmed);
+                            } else {
+                              _inlineDebounce?.cancel();
+                              setState(() {
+                                _inlineSearchResults = [];
+                                _inlineLoading = false;
+                                _inlineSearchPending = false;
+                                _selectFirstWhenInlineReady = false;
+                                _inlineSelectedIndex = -1;
+                              });
+                            }
+                          },
+                          onFieldSubmitted: (v) async {
+                            final trimmed = v.trim();
+                            if (trimmed.isEmpty) return;
 
-                          final containsLetters = RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
+                            final containsLetters =
+                                RegExp(r'[A-Za-z\u0621-\u064A]')
+                                    .hasMatch(trimmed);
 
-                          if (containsLetters) {
-                            if (_inlineSearchResults.isNotEmpty) {
-                              final first = _inlineSearchResults.first;
-                              if (_dialogOpening) return;
-                              _dialogOpening = true;
-                              try {
-                                await _showProductDetailDialog(first);
-                              } finally {
-                                if (!mounted) return;
+                            if (containsLetters) {
+                              if (_inlineLoading || _inlineSearchPending) {
                                 setState(() {
-                                  _inlineSearchResults = [];
-                                  _inlineLoading = false;
-                                  _inlineSelectedIndex = -1;
-                                  _dialogOpening = false;
+                                  _selectFirstWhenInlineReady = true;
                                 });
+                              } else if (_inlineSearchResults.isNotEmpty) {
+                                await _openInlineSearchProduct(
+                                    _inlineSearchResults.first);
                               }
                             } else {
-                              await _openNameSearchDialog(initialQuery: trimmed);
+                              // === barcode path: بحث بالباركود وإضافة للسلة ===
+                              await _onBarcodeSubmitted(trimmed);
+
+                              // تنظيف الحقل وإرجاع الفوكس للباركود (مريح للكاشير)
+                              if (!mounted) return;
+                              setState(() {
+                                _barcodeController.clear();
+                                _inlineSearchResults = [];
+                                _inlineSelectedIndex = -1;
+                              });
+                              FocusScope.of(context)
+                                  .requestFocus(_barcodeFocus);
                             }
-                          } else {
-                            // === barcode path: بحث بالباركود وإضافة للسلة ===
-                            await _onBarcodeSubmitted(trimmed);
-
-                            // تنظيف الحقل وإرجاع الفوكس للباركود (مريح للكاشير)
-                            if (!mounted) return;
-                            setState(() {
-                              _barcodeController.clear();
-                              _inlineSearchResults = [];
-                              _inlineSelectedIndex = -1;
-                            });
-                            FocusScope.of(context).requestFocus(_barcodeFocus);
-                          }
-                        },
-                        keyboardType: TextInputType.text,
+                          },
+                          keyboardType: TextInputType.text,
+                        ),
                       ),
                     ),
                   ),
-
-
-                ),
-                SizedBox(width: 12),
-                CustomButton(
-                  text: 'اضافه',
-                  onPressed: () => _onBarcodeSubmitted(_barcodeController.text),
-                  infinity: false,
-                ),
-
-              ],
-            ),
-            SizedBox(height: 15,),
-            // show inline results area
-            if (_inlineLoading || _inlineSearchResults.isNotEmpty)
-              Container(
-                margin: const EdgeInsets.only(top: 8),
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: AppColorsDark.bgCardColor,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                constraints: const BoxConstraints(maxHeight: 300),
-                child: _inlineLoading
-                    ? const Center(child: Text('جاري البحث...', style: TextStyle(color: Colors.white70)))
-                    : ListView.separated(
-                  controller: _inlineScrollController,
-                  shrinkWrap: true,
-                  itemCount: _inlineSearchResults.length,
-                  separatorBuilder: (_, __) => const Divider(height: 0.5, color: Colors.white10),
-                  itemBuilder: (context, i) {
-                    final item = _inlineSearchResults[i];
-                    final name = (item['name'] ?? '').toString();
-                    final barcode = (item['barcode'] ?? '').toString();
-                    final price = (item['selling_price'] ?? item['sellingPrice'] ?? '').toString();
-                    final stock = (item['total_units'] ?? 0).toString();
-                    final isSelected = i == _inlineSelectedIndex;
-
-                    return Container(
-                      color: isSelected ? Colors.white10 : Colors.transparent,
-                      child: ListTile(
-                        tileColor: Colors.transparent,
-                        title: Text(name, style: TextStyle(color: isSelected ? Colors.white : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
-                        subtitle: Text('باركود: $barcode  •  سعر: $price  •  متاح: $stock',
-                            style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                        onTap: () async {
-                          final item = _inlineSearchResults[i];
-                          await _showProductDetailDialog(item);
-                          if (!mounted) return;
-                          setState(() {
-                            _inlineSearchResults = [];
-                            _inlineLoading = false;
-                            _inlineSelectedIndex = -1;
-                          });
-                        },
-
-                      ),
-                    );
-                  },
-                ),
+                  SizedBox(width: 12),
+                  CustomButton(
+                    text: 'اضافه',
+                    onPressed: () =>
+                        _onBarcodeSubmitted(_barcodeController.text),
+                    infinity: false,
+                  ),
+                ],
               ),
-
-            const SizedBox(height: 20),
-            Expanded(
-              child: _isLoading
-                  ? CartListShimmer(
-                itemCount: 4, // عدد البطاقات اللي تحب تظهر كـ skeleton
-              )
-                  : CartList(
-                cart: _cart,
-                onChangeQty: _changeQuantity,
-                onRemove: (pid) => setState(() => _cart.remove(pid)),
-                onEditQty: _editQuantityDialog,
+              SizedBox(
+                height: 15,
               ),
-            ),
-            const SizedBox(height: 12),
-            // Payment controls + discount button row
-            Row(
-              children: [
-                // زر الخصم
-                Visibility(
-                  visible: Session.discount,
-                  child: SizedBox(
-                    height: 65,
-                    child: ElevatedButton(
-                      onPressed: _showDiscountDialog,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _discountValue > 0 ? Colors.orange : AppColorsDark.bgColor,
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
+              // show inline results area
+              if (_inlineLoading || _inlineSearchResults.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColorsDark.bgCardColor,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  constraints: const BoxConstraints(maxHeight: 300),
+                  child: _inlineLoading
+                      ? Center(
+                          child: Text('جاري البحث...',
+                              style: TextStyle(
+                                  color: AppColorsDark.mainTextLight)))
+                      : ListView.separated(
+                          controller: _inlineScrollController,
+                          shrinkWrap: true,
+                          itemCount: _inlineSearchResults.length,
+                          separatorBuilder: (_, __) => Divider(
+                              height: 0.5, color: AppColorsDark.strokColor),
+                          itemBuilder: (context, i) {
+                            final item = _inlineSearchResults[i];
+                            final name = (item['name'] ?? '').toString();
+                            final barcode = (item['barcode'] ?? '').toString();
+                            final price = (item['selling_price'] ??
+                                    item['sellingPrice'] ??
+                                    '')
+                                .toString();
+                            final stock =
+                                _availableUnitsForProductMap(item).toString();
+                            final isSelected = i == _inlineSelectedIndex;
+
+                            return Container(
+                              color: isSelected
+                                  ? AppColorsDark.mainColor
+                                      .withValues(alpha: 0.08)
+                                  : Colors.transparent,
+                              child: ListTile(
+                                tileColor: Colors.transparent,
+                                title: Text(name,
+                                    style: TextStyle(
+                                        color: isSelected
+                                            ? AppColorsDark.mainTextDark
+                                            : AppColorsDark.mainTextDark,
+                                        fontWeight: isSelected
+                                            ? FontWeight.bold
+                                            : FontWeight.normal)),
+                                subtitle: Text(
+                                    'باركود: $barcode  •  سعر: $price  •  متاح: $stock',
+                                    style: TextStyle(
+                                        color: AppColorsDark.mainTextLight,
+                                        fontSize: 12)),
+                                onTap: () async {
+                                  final item = _inlineSearchResults[i];
+                                  await _showProductDetailDialog(item);
+                                  if (!mounted) return;
+                                  setState(() {
+                                    _inlineSearchResults = [];
+                                    _inlineLoading = false;
+                                    _inlineSelectedIndex = -1;
+                                  });
+                                },
+                              ),
+                            );
+                          },
+                        ),
+                ),
+
+              const SizedBox(height: 20),
+              Flexible(
+                fit: FlexFit.tight,
+                child: _isLoading
+                    ? CartListShimmer(
+                        itemCount: 4, // عدد البطاقات اللي تحب تظهر كـ skeleton
+                      )
+                    : CartList(
+                        cart: _cart,
+                        onChangeQty: _changeQuantity,
+                        onRemove: (pid) => setState(() => _cart.remove(pid)),
+                        onEditQty: _editQuantityDialog,
                       ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.local_offer, color: Colors.white70,size: 27,),
-                          const SizedBox(height: 5),
-                          Text(
-                            _discountValue > 0 ? '${_discountValue.toStringAsFixed(0)}%' : 'خصم',
-                            style: const TextStyle(color: Colors.white, fontSize: 15),
+              ),
+              const SizedBox(height: 12),
+              // Payment controls + discount button row
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Visibility(
+                      visible: Session.discount,
+                      child: Padding(
+                        padding: const EdgeInsetsDirectional.only(
+                            start: 8, end: 14, bottom: 6),
+                        child: SizedBox(
+                          height: 72,
+                          child: ElevatedButton(
+                            onPressed: _showDiscountDialog,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _discountValue > 0
+                                  ? Colors.orange
+                                  : AppColorsDark.bgColor,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(22),
+                              ),
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.local_offer,
+                                  color: Theme.of(context).iconTheme.color,
+                                  size: 27,
+                                ),
+                                const SizedBox(height: 5),
+                                Text(
+                                  _discountValue > 0
+                                      ? '${_discountValue.toStringAsFixed(0)}%'
+                                      : 'خصم',
+                                  style: TextStyle(
+                                    color: Theme.of(context).brightness ==
+                                            Brightness.light
+                                        ? Colors.black
+                                        : Colors.white,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Directionality(
-                    textDirection: TextDirection.rtl,
-                    child: PaymentControls(
-                      paidController: _paidController,
-                      addQuickPaid: _addQuickPaid,
-                      setQuickPaid: _setQuickPaid,
-                      total: _effectiveTotal, // مهم: عرض الإجمالي بعد الخصم
-                      saving: _saving,
-                      onPayAndSave: () {
-                        setState(() {});
-                        _saveSale(requireFullPayment: true, paymentMethod: 'cash');
-                        Future.microtask(() {
-                          _barcodeController.clear();
-                          FocusScope.of(context).requestFocus(_barcodeFocus);
-                        });
-                      },
-                      onSaveAsLater: (){
-                        _saveSale(requireFullPayment: false, paymentMethod: 'credit');
-                        Future.microtask(() {
-                          _barcodeController.clear();
-                          FocusScope.of(context).requestFocus(_barcodeFocus);
-                        });
-                      },
-                      onSaveAsCard: () {
-                        _saveSale(requireFullPayment: true, paymentMethod: 'wallet');
-                        Future.microtask(() {
-                          _barcodeController.clear();
-                          FocusScope.of(context).requestFocus(_barcodeFocus);
-                        });
-                      },
-                      // If you want a BUTTON specifically to pay via the app wallet, you can hook it to:
-                      // onSaveAsWallet: () => _saveSale(requireFullPayment: true, paymentMethod: 'wallet'),
+                    Expanded(
+                      child: Directionality(
+                        textDirection: TextDirection.rtl,
+                        child: PaymentControls(
+                          paidController: _paidController,
+                          addQuickPaid: _addQuickPaid,
+                          setQuickPaid: _setQuickPaid,
+                          total: _effectiveTotal,
+                          saving: _saving,
+                          onPayAndSave: () {
+                            setState(() {});
+                            _saveSale(
+                                requireFullPayment: true,
+                                paymentMethod: 'cash');
+                            Future.microtask(() {
+                              _barcodeController.clear();
+                              FocusScope.of(context)
+                                  .requestFocus(_barcodeFocus);
+                            });
+                          },
+                          onSaveAsLater: () {
+                            _saveSale(
+                                requireFullPayment: false,
+                                paymentMethod: 'credit');
+                            Future.microtask(() {
+                              _barcodeController.clear();
+                              FocusScope.of(context)
+                                  .requestFocus(_barcodeFocus);
+                            });
+                          },
+                          onSaveAsCard: () {
+                            _saveSale(
+                                requireFullPayment: true,
+                                paymentMethod: 'wallet');
+                            Future.microtask(() {
+                              _barcodeController.clear();
+                              FocusScope.of(context)
+                                  .requestFocus(_barcodeFocus);
+                            });
+                          },
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Offstage(
-              offstage: true, // تغيير إلى false للتصحيح ورؤية الإيصال
-              child: RepaintBoundary(
-                key: _receiptKey,
-                child: ReceiptWidget(cart: _cart, paid: _paid, cashierUsername: _currentUsername ?? widget.cashierUsername, width: receiptWidth, useCairo: true),
               ),
-            ),
-            const SizedBox(height: 8),
-          ]),
+              const SizedBox(height: 12),
+              Offstage(
+                offstage: true, // تغيير إلى false للتصحيح ورؤية الإيصال
+                child: RepaintBoundary(
+                  key: _receiptKey,
+                  child: ReceiptWidget(
+                      cart: _cart,
+                      paid: _paid,
+                      cashierUsername:
+                          _currentUsername ?? widget.cashierUsername,
+                      width: receiptWidth,
+                      useCairo: true),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ]),
+          ),
         ),
       ),
     );
-
   }
-
 }

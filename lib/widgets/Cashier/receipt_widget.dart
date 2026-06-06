@@ -38,7 +38,9 @@ class ReceiptWidget extends StatelessWidget {
   double get _discountAmount {
     if (discountType == null) return 0.0;
     final dType = discountType!.toLowerCase();
-    final v = discountValue.isFinite ? discountValue.clamp(0.0, double.infinity) : 0.0;
+    final v = discountValue.isFinite
+        ? discountValue.clamp(0.0, double.infinity)
+        : 0.0;
     if (dType == 'percent' && v > 0) {
       final pct = v.clamp(0.0, 100.0);
       return (subtotal * (pct / 100.0));
@@ -62,8 +64,14 @@ class ReceiptWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final now = DateTime.now().toLocal();
     final shortDate = DateFormat('dd/MM').format(now);
-    final textStyle = TextStyle(fontFamily: useCairo ? 'Cairo' : null, fontSize: 12, color: Colors.black);
-    final headerStyle = TextStyle(fontFamily: useCairo ? 'Cairo' : null, fontSize: 14, fontWeight: FontWeight.bold);
+    final textStyle = TextStyle(
+        fontFamily: useCairo ? 'Cairo' : null,
+        fontSize: 12,
+        color: Colors.black);
+    final headerStyle = TextStyle(
+        fontFamily: useCairo ? 'Cairo' : null,
+        fontSize: 14,
+        fontWeight: FontWeight.bold);
 
     final discountAmt = _discountAmount;
     final hasDiscount = discountAmt > 0.000001;
@@ -72,7 +80,9 @@ class ReceiptWidget extends StatelessWidget {
     final paidRounded = paid;
     final totalAfter = totalAfterDiscount;
     final isPaidEnough = paidRounded >= totalAfter;
-    final changeOrRemaining = (isPaidEnough ? (paidRounded - totalAfter) : (totalAfter - paidRounded)).abs();
+    final changeOrRemaining =
+        (isPaidEnough ? (paidRounded - totalAfter) : (totalAfter - paidRounded))
+            .abs();
 
     String discountLabel = '';
     if (hasDiscount) {
@@ -92,7 +102,9 @@ class ReceiptWidget extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Center(child: Image.asset("assets/images/logo.png", width: 100, height: 100)),
+            Center(
+                child: Image.asset("assets/images/logo.png",
+                    width: 100, height: 100)),
             const SizedBox(height: 8),
             Center(child: Text('*** فاتورة بيع ***', style: headerStyle)),
             const SizedBox(height: 8),
@@ -102,12 +114,21 @@ class ReceiptWidget extends StatelessWidget {
             const Divider(),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 5),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    SizedBox(width: 20, child: Text('اجمالي', textAlign: TextAlign.center, style: textStyle)),
-                    SizedBox(width: 20, child: Text('سعر', textAlign: TextAlign.center, style: textStyle)),
-                    SizedBox(width: 20, child: Text('كم', textAlign: TextAlign.center, style: textStyle)),
-                    SizedBox(width: 20, child: Text('الصنف', textAlign: TextAlign.center, style: textStyle)),
+                    SizedBox(
+                        width: 40,
+                        child: Text('سعر',
+                            textAlign: TextAlign.center, style: textStyle)),
+                    SizedBox(
+                        width: 60,
+                        child: Text('كم',
+                            textAlign: TextAlign.center, style: textStyle)),
+                    SizedBox(
+                        width: 40,
+                        child: Text('الصنف',
+                            textAlign: TextAlign.center, style: textStyle)),
                   ]),
             ),
             const SizedBox(height: 4),
@@ -118,10 +139,20 @@ class ReceiptWidget extends StatelessWidget {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    SizedBox(width: 20, child: Text(item.subtotal.toStringAsFixed(2), textAlign: TextAlign.center, style: textStyle)),
-                    SizedBox(width: 20, child: Text(item.product.sellingPrice.toStringAsFixed(2), textAlign: TextAlign.center, style: textStyle)),
-                    SizedBox(width: 20, child: Text(item.quantity.toString(), textAlign: TextAlign.center, style: textStyle)),
-                    SizedBox(width: 20, child: Text(name,textAlign: TextAlign.center, style: textStyle)),
+                    SizedBox(
+                        width: 40,
+                        child: Text(
+                            item.product.sellingPrice.toStringAsFixed(2),
+                            textAlign: TextAlign.center,
+                            style: textStyle)),
+                    SizedBox(
+                        width: 60,
+                        child: Text(item.quantity.toString(),
+                            textAlign: TextAlign.center, style: textStyle)),
+                    SizedBox(
+                        width: 40,
+                        child: Text(name,
+                            textAlign: TextAlign.center, style: textStyle)),
                   ],
                 ),
               );
@@ -131,58 +162,71 @@ class ReceiptWidget extends StatelessWidget {
             if (hasDiscount) ...[
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  Text(subtotal.toStringAsFixed(2), style: headerStyle),
-                  Text(' :الإجمالي قبل الخصم', style: headerStyle),
-                ]),
+                child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(subtotal.toStringAsFixed(2), style: headerStyle),
+                      Text(' :الإجمالي قبل الخصم', style: headerStyle),
+                    ]),
               ),
             ],
             if (!hasDiscount) ...[
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  Text(subtotal.toStringAsFixed(2), style: headerStyle),
-                  Text(' :الإجمالي', style: headerStyle),
-                ]),
+                child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(subtotal.toStringAsFixed(2), style: headerStyle),
+                      Text(' :الإجمالي', style: headerStyle),
+                    ]),
               ),
             ],
-
 
             // Discount line (if any)
             if (hasDiscount) ...[
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  Text('${discountAmt.toStringAsFixed(2)}', style: textStyle),
-                  Text('${discountLabel} :خصم ', style: textStyle),
-                ]),
+                child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('${discountAmt.toStringAsFixed(2)}',
+                          style: textStyle),
+                      Text('${discountLabel} :خصم ', style: textStyle),
+                    ]),
               ),
               const SizedBox(height: 4),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  Text(totalAfter.toStringAsFixed(2), style: headerStyle),
-                  Text(' :الإجمالي بعد الخصم', style: headerStyle),
-                ]),
+                child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(totalAfter.toStringAsFixed(2), style: headerStyle),
+                      Text(' :الإجمالي بعد الخصم', style: headerStyle),
+                    ]),
               ),
             ],
-            if (!hasDiscount)
-              const SizedBox(height: 6),
+            if (!hasDiscount) const SizedBox(height: 6),
             const SizedBox(height: 6),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 5),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text(paidRounded.toStringAsFixed(2), style: textStyle),
-                Text(':المدفوع', style: textStyle),
-              ]),
+              child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(paidRounded.toStringAsFixed(2), style: textStyle),
+                    Text(':المدفوع', style: textStyle),
+                  ]),
             ),
             const SizedBox(height: 6),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 5),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text(changeOrRemaining.toStringAsFixed(2), style: textStyle),
-                Text(isPaidEnough ? ':الباقي' : ':المتبقي', style: textStyle),
-              ]),
+              child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(changeOrRemaining.toStringAsFixed(2),
+                        style: textStyle),
+                    Text(isPaidEnough ? ':الباقي' : ':المتبقي',
+                        style: textStyle),
+                  ]),
             ),
             const SizedBox(height: 10),
             Center(child: Text('شكراً لزيارتكم', style: textStyle)),

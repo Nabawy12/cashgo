@@ -4,16 +4,16 @@ class Product {
   final String barcode;
   final String name;
   final double purchasePrice; // سعر الكرتونة
-  final double sellingPrice;  // سعر بيع القطعة
-  final int quantity;         // عدد الكراتين (full cartons)
-  final int unitsInCarton;    // عدد القطع داخل الكرتونة
-  final int unitsRemainder;   // قطع متبقية (أقل من carton)
+  final double sellingPrice; // سعر بيع القطعة
+  final int quantity; // عدد الكراتين (full cartons)
+  final int unitsInCarton; // عدد القطع داخل الكرتونة
+  final int unitsRemainder; // قطع متبقية (أقل من carton)
 
   // new fields
   final String? productionDate; // yyyy-mm-dd
-  final String? expiryDate;     // yyyy-mm-dd
-  final int? lowStockSeen;      // 0 or 1
-  final int? expirySeen;        // 0 or 1
+  final String? expiryDate; // yyyy-mm-dd
+  final int? lowStockSeen; // 0 or 1
+  final int? expirySeen; // 0 or 1
 
   Product({
     this.id,
@@ -66,7 +66,9 @@ class Product {
     final cartons = (map['quantity'] as num).toInt();
 
     return Product(
-      id: map['id'] is int ? map['id'] as int : int.tryParse((map['id'] ?? '').toString()),
+      id: map['id'] is int
+          ? map['id'] as int
+          : int.tryParse((map['id'] ?? '').toString()),
       barcode: (map['barcode'] ?? '').toString(),
       name: (map['name'] ?? '').toString(),
       purchasePrice: (map['purchase_price'] as num).toDouble(),
@@ -76,8 +78,12 @@ class Product {
       unitsRemainder: unitsRemainder,
       productionDate: parseDate(map['production_date']),
       expiryDate: parseDate(map['expiry_date']),
-      lowStockSeen: map['low_stock_seen'] is int ? map['low_stock_seen'] as int : int.tryParse((map['low_stock_seen'] ?? '').toString()) ?? 0,
-      expirySeen: map['expiry_seen'] is int ? map['expiry_seen'] as int : int.tryParse((map['expiry_seen'] ?? '').toString()) ?? 0,
+      lowStockSeen: map['low_stock_seen'] is int
+          ? map['low_stock_seen'] as int
+          : int.tryParse((map['low_stock_seen'] ?? '').toString()) ?? 0,
+      expirySeen: map['expiry_seen'] is int
+          ? map['expiry_seen'] as int
+          : int.tryParse((map['expiry_seen'] ?? '').toString()) ?? 0,
     );
   }
 }

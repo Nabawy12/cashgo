@@ -15,7 +15,8 @@ class DashboardWidget extends StatelessWidget {
     this.onTap,
   }) : super(key: key);
 
-  bool _isNetwork(String path) => path.startsWith('http://') || path.startsWith('https://');
+  bool _isNetwork(String path) =>
+      path.startsWith('http://') || path.startsWith('https://');
   bool _isSvg(String path) => path.toLowerCase().endsWith('.svg');
 
   Widget _buildImage() {
@@ -57,31 +58,37 @@ class DashboardWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 140),
         child: Container(
           alignment: Alignment.center,
-          height: 240,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10),
             border: Border.all(color: AppColorsDark.mainColor, width: 2),
           ),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 1),
+            padding: const EdgeInsets.all(24),
             child: Column(
+              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.center,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 _buildImage(),
-                const SizedBox(height: 15),
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 25,
+                const SizedBox(height: 8),
+                Flexible(
+                  child: Text(
+                    title,
+                    style: TextStyle(
+                      color: AppColorsDark.mainTextDark,
+                      fontSize: 25,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  textAlign: TextAlign.center,
                 ),
               ],
             ),

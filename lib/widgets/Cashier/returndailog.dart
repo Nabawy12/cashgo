@@ -1,16 +1,17 @@
-import 'dart:convert';
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:hive/hive.dart';
 
 import '../../services/Api/Admin/Products.dart';
+import '../../services/db/db_helper.dart';
 import '../../models/product.dart';
 
 class ProcessReturnDialog extends StatefulWidget {
   final int originalSaleId;
-  final List<Map<String, dynamic>> items; // items from getSaleItemsBySaleId (passed by caller)
+  final List<Map<String, dynamic>>
+      items; // items from getSaleItemsBySaleId (passed by caller)
   final String cashierUsername;
   final void Function() onDone; // notify parent to refresh
 
@@ -27,7 +28,8 @@ class ProcessReturnDialog extends StatefulWidget {
 }
 
 class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
-  final TextEditingController _replacementBarcodeController = TextEditingController();
+  final TextEditingController _replacementBarcodeController =
+      TextEditingController();
   bool _processing = false;
   bool _isExchange = false;
 
@@ -40,16 +42,17 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
   // replacement product info stored with keys used later: 'selling_price' and 'total_units', 'name', 'barcode'
   final Map<int, Map<String, dynamic>> _replacementProducts = {};
 
-  static const String apiBase = 'https://nabawisolution.com/invoice_reciept.php';
-
   @override
   void initState() {
     super.initState();
     for (final it in widget.items) {
-      final pid = ((it['product_id'] as num?)?.toInt() ?? int.tryParse(it['product_id']?.toString() ?? '') ?? 0);
+      final pid = ((it['product_id'] as num?)?.toInt() ??
+          int.tryParse(it['product_id']?.toString() ?? '') ??
+          0);
       _selected[pid] = false;
       final orig = _originalQty(pid);
-      _selectedQty[pid] = orig > 0 ? 1 : 0; // default to 1 if original had stock
+      _selectedQty[pid] =
+          orig > 0 ? 1 : 0; // default to 1 if original had stock
     }
   }
 
@@ -69,24 +72,25 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     });
     if (found.isEmpty) return 0;
     final it = found.first;
-    return (it['qty'] as num?)?.toInt()
-        ?? (it['quantity'] as num?)?.toInt()
-        ?? (it['count'] as num?)?.toInt()
-        ?? (int.tryParse(it['qty']?.toString() ?? '') ?? (int.tryParse(it['quantity']?.toString() ?? '') ?? 0));
+    return (it['qty'] as num?)?.toInt() ??
+        (it['quantity'] as num?)?.toInt() ??
+        (it['count'] as num?)?.toInt() ??
+        (int.tryParse(it['qty']?.toString() ?? '') ??
+            (int.tryParse(it['quantity']?.toString() ?? '') ?? 0));
   }
 
   // compute line total using the original unit price from the sale record
   double _lineTotal(int productId) {
-    final found = widget.items.firstWhere(
-            (e) {
-          final id = (e['product_id'] is num) ? (e['product_id'] as num).toInt() : (int.tryParse(e['product_id']?.toString() ?? '') ?? 0);
-          return id == productId;
-        },
-        orElse: () => <String, dynamic>{});
+    final found = widget.items.firstWhere((e) {
+      final id = (e['product_id'] is num)
+          ? (e['product_id'] as num).toInt()
+          : (int.tryParse(e['product_id']?.toString() ?? '') ?? 0);
+      return id == productId;
+    }, orElse: () => <String, dynamic>{});
     if (found == null || (found is Map && found.isEmpty)) return 0.0;
-    final price = (found['price'] as num?)?.toDouble()
-        ?? (found['selling_price'] as num?)?.toDouble()
-        ?? 0.0;
+    final price = (found['price'] as num?)?.toDouble() ??
+        (found['selling_price'] as num?)?.toDouble() ??
+        0.0;
     final qty = _selectedQty[productId] ?? 0;
     return price * qty;
   }
@@ -143,8 +147,15 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     if (prod == null) return;
     final available = (prod['total_units'] as num?)?.toInt() ?? 0;
     final cur = _replacementQty[pid] ?? 0;
-    if (cur < available) setState(() => _replacementQty[pid] = cur + 1);
-    else ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد كمية كافية للاستبدال')));
+    if (cur < available)
+      setState(() => _replacementQty[pid] = cur + 1);
+    else
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('المنتج نفذ من المخزن'),
+        ),
+      ));
   }
 
   void _decReplacementQty(int pid) {
@@ -160,7 +171,12 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     try {
       final apiProduct = await ProductApi.getProductByBarcode(code);
       if (apiProduct == null) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('المنتج بالباركود $code غير موجود')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('المنتج غير موجود'),
+          ),
+        ));
         _replacementBarcodeController.clear();
         return;
       }
@@ -169,7 +185,12 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
       final pid = product.id!;
       final available = product.totalUnits ?? 0;
       if (available <= 0) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المنتج غير متوفر')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('المنتج نفذ من المخزن'),
+          ),
+        ));
         _replacementBarcodeController.clear();
         return;
       }
@@ -187,19 +208,64 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
       });
       _replacementBarcodeController.clear();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ في جلب المنتج: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('خطأ في جلب المنتج: $e'),
+        ),
+      ));
       _replacementBarcodeController.clear();
     }
   }
 
+  // Update local meta for offline cash/credit totals.
+  Future<void> _recordOfflineTotals(double amount, String paymentMethod) async {
+    try {
+      final meta = await Hive.openBox('meta');
+      double cash = (meta.get('lastOfflineSale_cash') as num? ?? 0).toDouble();
+      double credit =
+          (meta.get('lastOfflineSale_credit') as num? ?? 0).toDouble();
+
+      final pm = paymentMethod.toLowerCase();
+      if (pm == 'cash') {
+        cash += amount;
+      } else if (pm == 'credit') {
+        credit += amount;
+      } else if (pm != 'wallet' && pm != 'card') {
+        cash += amount;
+      }
+
+      await meta.put('lastOfflineSale_cash', cash);
+      await meta.put('lastOfflineSale_credit', credit);
+      await meta.put('lastOfflineSale', cash);
+      debugPrint(
+          '[ProcessReturn] recorded offline totals $amount via $paymentMethod -> cash=$cash credit=$credit totalDrawer=$cash');
+    } catch (e, st) {
+      debugPrint('[ProcessReturn] _recordOfflineTotals error: $e\n$st');
+    }
+  }
+
   Future<void> _process() async {
-    final returnsChosen = _selected.entries.where((e) => e.value == true).map((e) => e.key).toList();
+    final returnsChosen = _selected.entries
+        .where((e) => e.value == true)
+        .map((e) => e.key)
+        .toList();
     if (returnsChosen.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('اختر عنصر واحد على الأقل للمرتجع')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('اختر عنصر واحد على الأقل للمرتجع'),
+        ),
+      ));
       return;
     }
     if (_isExchange && _replacementQty.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أضف عناصر بديلة لعملية الاستبدال')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('أضف عناصر بديلة لعملية الاستبدال'),
+        ),
+      ));
       return;
     }
 
@@ -209,9 +275,13 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     final String actorCashier = widget.cashierUsername.trim();
     if (actorCashier.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('اسم الكاشير غير معروف. الرجاء تسجيل الدخول أو التحقق من حسابك.'))
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text(
+                'اسم الكاشير غير معروف. الرجاء تسجيل الدخول أو التحقق من حسابك.'),
+          ),
+        ));
         setState(() => _processing = false);
       }
       return;
@@ -225,14 +295,19 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
         final qty = _selectedQty[pid] ?? 0;
         if (qty <= 0) continue;
         final it = widget.items.firstWhere((e) {
-          final id = (e['product_id'] is num) ? (e['product_id'] as num).toInt() : (int.tryParse(e['product_id']?.toString() ?? '') ?? 0);
+          final id = (e['product_id'] is num)
+              ? (e['product_id'] as num).toInt()
+              : (int.tryParse(e['product_id']?.toString() ?? '') ?? 0);
           return id == pid;
         }, orElse: () => <String, dynamic>{});
         if (it.isEmpty) continue;
-        final unitPrice = (it['price'] as num?)?.toDouble() ?? (it['selling_price'] as num?)?.toDouble() ?? 0.0;
+        final unitPrice = (it['price'] as num?)?.toDouble() ??
+            (it['selling_price'] as num?)?.toDouble() ??
+            0.0;
         final name = (it['product_name'] ?? it['name'] ?? '').toString();
         // use 'qty' key to match server expectations
-        returnItems.add({'product_id': pid, 'qty': qty, 'price': unitPrice, 'name': name});
+        returnItems.add(
+            {'product_id': pid, 'qty': qty, 'price': unitPrice, 'name': name});
         totalReturnValue += unitPrice * qty;
       }
 
@@ -247,7 +322,8 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
         if (prod == null) continue;
         final unitPrice = (prod['selling_price'] as num?)?.toDouble() ?? 0.0;
         final name = (prod['name'] ?? '').toString();
-        exchangeItems.add({'product_id': pid, 'qty': qty, 'price': unitPrice, 'name': name});
+        exchangeItems.add(
+            {'product_id': pid, 'qty': qty, 'price': unitPrice, 'name': name});
         totalExchangeCost += unitPrice * qty;
       }
 
@@ -258,60 +334,47 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
       final double paidAmount = net > 0 ? net : 0.0;
 
       // determine paymentMethod: use 'cash' for payments, 'refund' when cashier returns money (server will interpret)
-      final String paymentMethod = paidAmount > 0 ? 'cash' : (refundAmount > 0 ? 'refund' : 'cash');
+      final String paymentMethod =
+          paidAmount > 0 ? 'cash' : (refundAmount > 0 ? 'refund' : 'cash');
 
-      final uri = Uri.parse(apiBase);
+      await DBHelper.instance.applyReturnExchangeToSale(
+        saleId: widget.originalSaleId,
+        returnsMap: {
+          for (final it in returnItems)
+            it['product_id'] as int: it['qty'] as int
+        },
+        additionsMap: {
+          for (final it in exchangeItems)
+            it['product_id'] as int: it['qty'] as int
+        },
+        paidDelta: paidAmount - refundAmount,
+        note: _isExchange ? 'Exchange (local)' : 'Refund (local)',
+      );
 
-      final body = {
-        'action': 'process_return',
-        'original_invoice_id': widget.originalSaleId,
-        'return_items': returnItems,
-        'exchange_items': exchangeItems,
-        'refund_amount': refundAmount,
-        'paid': paidAmount,
-        'paymentMethod': paymentMethod,
-        // الأهم: هنا نضع اسم الكاشير الذي يقوم بالعملية
-        'cashierUsername': actorCashier,
-        'return_note': _isExchange ? 'Exchange (via app)' : 'Refund (via app)',
-        'debug': false,
-        'create_child': true,
-      };
+      final amountToRecord = paidAmount > 0 ? paidAmount : refundAmount;
+      final pmForMeta = paymentMethod == 'refund' ? 'cash' : paymentMethod;
+      await _recordOfflineTotals(amountToRecord, pmForMeta);
 
-      debugPrint('[ProcessReturn] payload: ${jsonEncode(body)}');
-
-      final resp = await http
-          .post(uri,
-          headers: {'Content-Type': 'application/json; charset=utf-8'},
-          body: jsonEncode(body))
-          .timeout(const Duration(seconds: 20));
-
-      if (resp.statusCode != 200) {
-        throw Exception('خطأ من الخادم ${resp.statusCode}: ${resp.body}');
-      }
-
-      final decoded = jsonDecode(resp.body);
-      if (decoded is! Map<String, dynamic>) {
-        throw Exception('استجابة غير متوقعة من الخادم: ${resp.body}');
-      }
-      if (decoded['success'] != true) {
-        throw Exception(decoded['error'] ?? decoded['message'] ?? 'خطأ غير معروف من الخادم');
-      }
-
-      // notify parent to refresh and close dialog
       widget.onDone();
-
-      String idShown = '';
-      if (decoded.containsKey('child_record_id') && decoded['child_record_id'] != null) idShown = decoded['child_record_id'].toString();
-      else if (decoded.containsKey('return_invoice_id') && decoded['return_invoice_id'] != null) idShown = decoded['return_invoice_id'].toString();
-      else if (decoded.containsKey('updated_invoice_id') && decoded['updated_invoice_id'] != null) idShown = decoded['updated_invoice_id'].toString();
-
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تمت العملية بنجاح${idShown.isNotEmpty ? ' — رقم: $idShown' : ''}')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('تمت العملية محلياً بنجاح'),
+          ),
+        ));
         Navigator.pop(context, widget.originalSaleId);
       }
+      return;
     } catch (e, st) {
       debugPrint('ProcessReturn error: $e\n$st');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل التطبيق: $e')));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('فشل التطبيق: $e'),
+          ),
+        ));
     } finally {
       if (mounted) setState(() => _processing = false);
     }
@@ -332,50 +395,38 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
         child: Row(
           children: [
             Expanded(
-                child:
-                Text(
-                  name,
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 15
-                  ),
-                )
-            ),
+                child: Text(
+              name,
+              style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 15),
+            )),
             const SizedBox(width: 8),
             Text(
               'متاح : $available',
-              style: TextStyle(
-                  fontSize: 17,
-                  color: Colors.white
-              ),
+              style: TextStyle(fontSize: 17, color: AppColorsDark.mainTextDark),
             ),
             const SizedBox(width: 8),
             IconButton(
                 onPressed: () => _decReplacementQty(pid),
-                icon:Icon(
-                  Icons.remove_circle_outline,color: Colors.white70,)
-            ),
+                icon: Icon(
+                  Icons.remove_circle_outline,
+                  color: Theme.of(context).iconTheme.color,
+                )),
             Text(
               '$qty',
-              style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 17
-              ),
+              style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 17),
             ),
             IconButton(
                 onPressed: () => _incReplacementQty(pid),
-                icon:Icon(
+                icon: Icon(
                   Icons.add_circle_outline,
-                  color: Colors.white70,
-                )
-            ),
+                  color: Theme.of(context).iconTheme.color,
+                )),
             IconButton(
-                onPressed: () => setState(() { _replacementProducts.remove(pid); _replacementQty.remove(pid); }),
-                icon:Icon(
-                    Icons.delete,
-                    color: Colors.red.withOpacity(0.8)
-                )
-            ),
+                onPressed: () => setState(() {
+                      _replacementProducts.remove(pid);
+                      _replacementQty.remove(pid);
+                    }),
+                icon: Icon(Icons.delete, color: Colors.red.withOpacity(0.8))),
           ],
         ),
       ),
@@ -413,7 +464,11 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
           children: [
             Icon(Icons.attach_money, color: Colors.green),
             const SizedBox(width: 8),
-            Text('المشتري يدفع: $amountStr', style: TextStyle(color: Colors.green[700], fontSize: 18, fontWeight: FontWeight.bold)),
+            Text('المشتري يدفع: $amountStr',
+                style: TextStyle(
+                    color: Colors.green[700],
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold)),
           ],
         ),
       );
@@ -430,26 +485,28 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
           children: [
             Icon(Icons.reply, color: Colors.red),
             const SizedBox(width: 8),
-            Text('الكاشير يرجع للعميل: $amountStr', style: TextStyle(color: Colors.red[700], fontSize: 18, fontWeight: FontWeight.bold)),
+            Text('الكاشير يرجع للعميل: $amountStr',
+                style: TextStyle(
+                    color: Colors.red[700],
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold)),
           ],
         ),
       );
     } else {
       paymentStatusWidget = Container(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-        child: Text(resultMessage, style: TextStyle(color: Colors.white)),
+        child: Text(resultMessage,
+            style: TextStyle(color: AppColorsDark.mainTextDark)),
       );
     }
 
     return AlertDialog(
       backgroundColor: AppColorsDark.bgColor,
       title: Center(
-        child: const Text(
+        child: Text(
           'معالجة مرتجع / استبدال',
-          style: TextStyle(
-              fontSize: 17,
-              color: Colors.white
-          ),
+          style: TextStyle(fontSize: 17, color: AppColorsDark.mainTextDark),
         ),
       ),
       content: Padding(
@@ -465,11 +522,11 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   ChoiceChip(
-                    label: const Text(
+                    label: Text(
                       'استرجاع',
                       style: TextStyle(
                         fontSize: 17,
-                        color: Colors.white,
+                        color: AppColorsDark.mainTextDark,
                       ),
                     ),
                     selected: !_isExchange,
@@ -488,18 +545,20 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                       side: BorderSide(
-                        color: !_isExchange ? AppColorsDark.mainColor : AppColorsDark.bgCardColor,
+                        color: !_isExchange
+                            ? AppColorsDark.mainColor
+                            : AppColorsDark.bgCardColor,
                         width: 2,
                       ),
                     ),
                   ),
                   const SizedBox(width: 8),
                   ChoiceChip(
-                    label: const Text(
+                    label: Text(
                       'استبدال',
                       style: TextStyle(
                         fontSize: 17,
-                        color: Colors.white,
+                        color: AppColorsDark.mainTextDark,
                       ),
                     ),
                     selected: _isExchange,
@@ -513,30 +572,30 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                       side: BorderSide(
-                        color: _isExchange ? AppColorsDark.mainColor : AppColorsDark.bgCardColor,
+                        color: _isExchange
+                            ? AppColorsDark.mainColor
+                            : AppColorsDark.bgCardColor,
                         width: 2,
                       ),
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const Text(
+                  Text(
                     ' : النوع',
                     style: TextStyle(
                       fontSize: 17,
-                      color: Colors.white,
+                      color: AppColorsDark.mainTextDark,
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 10),
-              const Align(
+              Align(
                 alignment: Alignment.centerRight,
                 child: Text(
                   ' : اختر العناصر التي سيتم إرجاعها والكمية',
                   style: TextStyle(
-                      fontSize: 17,
-                      color: Colors.white
-                  ),
+                      fontSize: 17, color: AppColorsDark.mainTextDark),
                 ),
               ),
               const SizedBox(height: 8),
@@ -557,7 +616,8 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                       color: AppColorsDark.bgCardColor,
                       margin: const EdgeInsets.symmetric(vertical: 6),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8.0, vertical: 6),
                         child: Column(
                           children: [
                             Row(
@@ -567,21 +627,20 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                     onChanged: (_) => _toggleSelect(pid),
                                     activeColor: AppColorsDark.mainColor,
                                     checkColor: Colors.white,
-                                    fillColor: MaterialStateProperty.resolveWith<Color>((states) {
-                                      if (states.contains(MaterialState.selected)) {
+                                    fillColor: MaterialStateProperty
+                                        .resolveWith<Color>((states) {
+                                      if (states
+                                          .contains(MaterialState.selected)) {
                                         return AppColorsDark.mainColor;
                                       }
                                       return Colors.grey.withOpacity(0.1);
-                                    })
-                                ),
+                                    })),
                                 Expanded(
                                     child: Text(
-                                      '$name',
-                                      style: TextStyle(
-                                          color: Colors.white
-                                      ),
-                                    )
-                                ),
+                                  '$name',
+                                  style: TextStyle(
+                                      color: AppColorsDark.mainTextDark),
+                                )),
                                 Column(
                                   crossAxisAlignment: CrossAxisAlignment.end,
                                   mainAxisAlignment: MainAxisAlignment.center,
@@ -589,15 +648,15 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                     Text(
                                       '${price.toStringAsFixed(2)}  : السعر',
                                       style: TextStyle(
-                                        color: Colors.white,
+                                        color: AppColorsDark.mainTextDark,
                                         fontSize: 17,
                                       ),
                                     ),
                                     const SizedBox(height: 12),
                                     Text(
                                       'مباع : $origQty',
-                                      style: const TextStyle(
-                                        color: Colors.white,
+                                      style: TextStyle(
+                                        color: AppColorsDark.mainTextDark,
                                         fontSize: 17,
                                       ),
                                     ),
@@ -611,28 +670,27 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                 children: [
                                   IconButton(
                                       onPressed: () => _decReturnQty(pid),
-                                      icon: const Icon(Icons.remove_circle_outline,
-                                        color: Colors.white70,
-                                      )
-                                  ),
+                                      icon: Icon(
+                                        Icons.remove_circle_outline,
+                                        color:
+                                            Theme.of(context).iconTheme.color,
+                                      )),
                                   Text(
                                     '$selQty',
-                                    style: const TextStyle(
-                                        color: Colors.white
-                                    ),
+                                    style: TextStyle(
+                                        color: AppColorsDark.mainTextDark),
                                   ),
                                   IconButton(
                                       onPressed: () => _incReturnQty(pid),
-                                      icon: const Icon(
+                                      icon: Icon(
                                         Icons.add_circle_outline,
-                                        color: Colors.white70,
-                                      )
-                                  ),
-                                  const Text(
+                                        color:
+                                            Theme.of(context).iconTheme.color,
+                                      )),
+                                  Text(
                                     ' : كمية الإرجاع',
                                     style: TextStyle(
-                                        color: Colors.white
-                                    ),
+                                        color: AppColorsDark.mainTextDark),
                                   ),
                                 ],
                               )
@@ -645,15 +703,12 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
               ),
               if (_isExchange) ...[
                 const SizedBox(height: 8),
-                const Align(
+                Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
                       'أضف عناصر بدل (امسح الباركود):',
-                      style: TextStyle(
-                          color: Colors.white
-                      ),
-                    )
-                ),
+                      style: TextStyle(color: AppColorsDark.mainTextDark),
+                    )),
                 const SizedBox(height: 6),
                 Row(
                   children: [
@@ -667,21 +722,25 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                     const SizedBox(width: 8),
                     CustomButton(
                       text: 'أضف',
-                      onPressed: () => _addReplacementByBarcode(_replacementBarcodeController.text),
+                      onPressed: () => _addReplacementByBarcode(
+                          _replacementBarcodeController.text),
                       infinity: false,
                     ),
                   ],
                 ),
                 const SizedBox(height: 10),
                 if (_replacementProducts.isEmpty)
-                  const Text(
+                  Text(
                     'لا توجد عناصر بديلة مضافة',
-                    style: TextStyle(
-                        color: Colors.white
-                    ),
+                    style: TextStyle(color: AppColorsDark.mainTextDark),
                   )
                 else
-                  SizedBox(height: 120, child: ListView(children: _replacementProducts.keys.map((pid) => _buildReplacementTile(pid)).toList())),
+                  SizedBox(
+                      height: 120,
+                      child: ListView(
+                          children: _replacementProducts.keys
+                              .map((pid) => _buildReplacementTile(pid))
+                              .toList())),
               ],
               const SizedBox(height: 12),
               Align(
@@ -691,12 +750,10 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
               const SizedBox(height: 12),
               Align(
                 alignment: Alignment.center,
-                child: const Text(
+                child: Text(
                   'اضغط تطبيق — النظام سيحدث الفاتورة والمخزون تلقائياً.',
                   style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 13
-                  ),
+                      color: AppColorsDark.mainTextDark, fontSize: 13),
                 ),
               ),
             ],
@@ -709,27 +766,30 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
               backgroundColor: AppColorsDark.bgCardColor,
             ),
             onPressed: () => Navigator.pop(context),
-            child:Text(
+            child: Text(
               'إلغاء',
               style: TextStyle(
-                  color: Colors.white
-              ),
-            )
-        ),
+                  color: Theme.of(context).brightness == Brightness.light
+                      ? Colors.black
+                      : Colors.white),
+            )),
         ElevatedButton(
             style: TextButton.styleFrom(
               backgroundColor: AppColorsDark.bgCardColor,
             ),
             onPressed: _processing ? null : _process,
             child: _processing
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text(
-              'تطبيق',
-              style: TextStyle(
-                  color: Colors.white
-              ),
-            )
-        ),
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : Text(
+                    'تطبيق',
+                    style: TextStyle(
+                        color: Theme.of(context).brightness == Brightness.light
+                            ? Colors.black
+                            : Colors.white),
+                  )),
       ],
     );
   }

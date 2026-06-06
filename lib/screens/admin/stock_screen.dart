@@ -1,12 +1,18 @@
 // lib/screens/admin/credits_screen.dart
-import 'dart:convert';
+import 'dart:io';
+
 import 'package:accordion_widget/accordion_widget.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:flutter/services.dart';
+import 'package:intl/intl.dart' hide TextDirection;
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
 
+import '../../services/db/db_helper.dart';
 import '../../widgets/Loading/Admin/invoice_cash.dart';
+import '../../widgets/empty_state_card.dart';
 
 class CreditsScreen extends StatefulWidget {
   static const routeName = "/credits";
@@ -14,6 +20,208 @@ class CreditsScreen extends StatefulWidget {
 
   @override
   State<CreditsScreen> createState() => _CreditsScreenState();
+}
+
+class StockReportScreen extends StatefulWidget {
+  const StockReportScreen({super.key});
+
+  @override
+  State<StockReportScreen> createState() => _StockReportScreenState();
+}
+
+class _StockReportScreenState extends State<StockReportScreen> {
+  final _money = NumberFormat.currency(locale: 'ar', symbol: 'EGP ');
+  bool _loading = true;
+  List<Map<String, dynamic>> _rows = [];
+
+  double get _inventoryValue => _rows.fold<double>(
+      0,
+      (sum, row) =>
+          sum + ((row['inventory_value'] as num?)?.toDouble() ?? 0.0));
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final rows = await DBHelper.instance.getStockReport();
+      if (mounted) setState(() => _rows = rows);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  bool _isLowStock(Map<String, dynamic> row) {
+    return ((row['total_units'] as num?)?.toInt() ?? 0) <= 5;
+  }
+
+  bool _isNearExpiry(Map<String, dynamic> row) {
+    final raw = (row['expiry_date'] ?? '').toString();
+    final expiry = DateTime.tryParse(raw);
+    if (expiry == null) return false;
+    final days = expiry.difference(DateTime.now()).inDays;
+    return days >= 0 && days <= 30;
+  }
+
+  Future<void> _exportPdf() async {
+    final fontData = await rootBundle.load('assets/fonts/Cairo-Regular.ttf');
+    final font = pw.Font.ttf(fontData);
+    final doc = pw.Document();
+
+    doc.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        theme: pw.ThemeData.withFont(base: font, bold: font),
+        textDirection: pw.TextDirection.rtl,
+        build: (_) => [
+          pw.Text('تقرير المخزون',
+              style:
+                  pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
+          pw.SizedBox(height: 8),
+          pw.Text(
+              'قيمة المخزون التقديرية: ${_inventoryValue.toStringAsFixed(2)}'),
+          pw.SizedBox(height: 12),
+          pw.Table.fromTextArray(
+            headers: const [
+              'المنتج',
+              'الباركود',
+              'المخزون',
+              'سعر الشراء/وحدة',
+              'قيمة المخزون',
+              'الصلاحية',
+            ],
+            data: _rows.map((r) {
+              return [
+                (r['name'] ?? '').toString(),
+                (r['barcode'] ?? '').toString(),
+                '${(r['total_units'] as num?)?.toInt() ?? 0}',
+                ((r['unit_purchase_price'] as num?)?.toDouble() ?? 0)
+                    .toStringAsFixed(2),
+                ((r['inventory_value'] as num?)?.toDouble() ?? 0)
+                    .toStringAsFixed(2),
+                (r['expiry_date'] ?? '').toString(),
+              ];
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+
+    final downloads = Directory('${Platform.environment['HOME']}/Downloads');
+    if (!downloads.existsSync()) downloads.createSync(recursive: true);
+    final file = File(
+        '${downloads.path}/cashgo_stock_report_${DateTime.now().millisecondsSinceEpoch}.pdf');
+    await file.writeAsBytes(await doc.save());
+    _showSnack('تم حفظ التقرير في Downloads');
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Directionality(
+        textDirection: TextDirection.rtl,
+        child: Text(message),
+      ),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColorsDark.bgColor,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
+        title: Text('تقرير المخزون',
+            style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 24)),
+        actions: [
+          IconButton(
+            tooltip: 'تصدير PDF',
+            onPressed: _rows.isEmpty ? null : _exportPdf,
+            icon: Icon(Icons.picture_as_pdf,
+                color: Theme.of(context).iconTheme.color),
+          ),
+          IconButton(
+            tooltip: 'تحديث',
+            onPressed: _load,
+            icon: Icon(Icons.refresh, color: Theme.of(context).iconTheme.color),
+          ),
+        ],
+      ),
+      body: Directionality(
+        textDirection: TextDirection.rtl,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Card(
+                color: AppColorsDark.bgCardColor,
+                child: ListTile(
+                  title: Text('قيمة المخزون التقديرية',
+                      style: TextStyle(color: AppColorsDark.mainTextLight)),
+                  trailing: Text(_money.format(_inventoryValue),
+                      style: TextStyle(
+                          color: Colors.greenAccent,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: _loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _rows.isEmpty
+                        ? const EmptyStateCard(
+                            icon: Icons.inventory_2_outlined,
+                            title: 'لا توجد منتجات',
+                            message: 'أضف منتجات أولاً حتى يظهر تقرير المخزون.',
+                          )
+                        : ListView.separated(
+                            itemCount: _rows.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 8),
+                            itemBuilder: (_, i) {
+                              final row = _rows[i];
+                              final low = _isLowStock(row);
+                              final exp = _isNearExpiry(row);
+                              final color = low
+                                  ? Colors.red.withValues(alpha: 0.22)
+                                  : exp
+                                      ? Colors.orange.withValues(alpha: 0.22)
+                                      : AppColorsDark.bgCardColor;
+                              return Card(
+                                color: color,
+                                child: ListTile(
+                                  title: Text((row['name'] ?? '').toString(),
+                                      style: TextStyle(
+                                          color: AppColorsDark.mainTextDark)),
+                                  subtitle: Text(
+                                    'المخزون: ${(row['total_units'] as num?)?.toInt() ?? 0} | الصلاحية: ${(row['expiry_date'] ?? '').toString().isEmpty ? '-' : row['expiry_date']}',
+                                    style: TextStyle(
+                                        color: AppColorsDark.mainTextLight),
+                                  ),
+                                  trailing: Text(
+                                    _money.format(
+                                        (row['inventory_value'] as num?)
+                                                ?.toDouble() ??
+                                            0),
+                                    style: TextStyle(
+                                        color: AppColorsDark.mainTextDark),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _CreditsScreenState extends State<CreditsScreen> {
@@ -26,8 +234,6 @@ class _CreditsScreenState extends State<CreditsScreen> {
   final Map<int, List<Map<String, dynamic>>> saleReturnItemsCache = {};
   final Map<int, List<Map<String, dynamic>>> saleReturnsCache = {};
 
-  static const String apiBase = 'https://nabawisolution.com/invoice_reciept.php';
-
   @override
   void initState() {
     super.initState();
@@ -39,168 +245,45 @@ class _CreditsScreenState extends State<CreditsScreen> {
     if (mounted) setState(() => loading = true);
 
     try {
-      final uri = Uri.parse('$apiBase?action=get_all_invoices');
-      final resp = await http.get(uri).timeout(const Duration(seconds: 15));
-      if (resp.statusCode != 200) {
-        throw Exception('Server returned ${resp.statusCode}: ${resp.body}');
-      }
-
-      final Map<String, dynamic> body = jsonDecode(resp.body);
-      if (body['success'] != true || body['data'] == null) {
-        throw Exception('Unexpected server response: ${resp.body}');
-      }
-
-      final List<dynamic> remote = List<dynamic>.from(body['data'] as List);
-
-      // split top-level invoices and child invoices
-      final List<Map<String, dynamic>> topLevel = [];
-      final List<Map<String, dynamic>> childInvoices = [];
-
-      for (final e in remote) {
-        if (e == null) continue;
-        final Map<String, dynamic> raw = (e is Map<String, dynamic>) ? Map<String, dynamic>.from(e) : {};
-        if (raw.isEmpty) continue;
-
-        final parent = raw['parent_invoice_id'];
-        final parentInt = (parent is num) ? parent.toInt() : (parent == null ? null : int.tryParse(parent.toString()));
-
-        if (parentInt == null) topLevel.add(raw);
-        else childInvoices.add(raw);
-      }
-
-      // Build return caches from childInvoices
       saleReturnItemsCache.clear();
       saleReturnsCache.clear();
-      for (final child in childInvoices) {
-        final parent = child['parent_invoice_id'];
-        final parentId = (parent is num) ? parent.toInt() : (parent == null ? 0 : int.tryParse(parent.toString()) ?? 0);
-        if (parentId == 0) continue;
-
-        // product_list may be array or {meta:..., items: [...]}
-        final dynamic pl = child['product_list'];
-        final List<Map<String, dynamic>> items = [];
-        if (pl is List) {
-          for (final it in pl) {
-            if (it == null) continue;
-            final Map<String, dynamic> rIt = (it is Map<String, dynamic>) ? Map<String, dynamic>.from(it) : {};
-            items.add({
-              'product_id': (rIt['product_id'] is num) ? (rIt['product_id'] as num).toInt() : (int.tryParse(rIt['product_id']?.toString() ?? '') ?? 0),
-              'product_name': (rIt['product_name'] ?? rIt['name'] ?? '').toString(),
-              'barcode': rIt['barcode']?.toString() ?? '',
-              'price': (rIt['price'] is num) ? (rIt['price'] as num).toDouble() : (double.tryParse(rIt['price']?.toString() ?? '') ?? 0.0),
-              'qty': (rIt['qty'] is num) ? (rIt['qty'] as num).toInt() : (int.tryParse(rIt['qty']?.toString() ?? '') ?? 0),
-            });
-          }
-        } else if (pl is Map && pl.containsKey('items')) {
-          final itemsRaw = pl['items'];
-          if (itemsRaw is List) {
-            for (final it in itemsRaw) {
-              if (it == null) continue;
-              final Map<String, dynamic> rIt = (it is Map<String, dynamic>) ? Map<String, dynamic>.from(it) : {};
-              items.add({
-                'product_id': (rIt['product_id'] is num) ? (rIt['product_id'] as num).toInt() : (int.tryParse(rIt['product_id']?.toString() ?? '') ?? 0),
-                'product_name': (rIt['product_name'] ?? rIt['name'] ?? '').toString(),
-                'barcode': rIt['barcode']?.toString() ?? '',
-                'price': (rIt['price'] is num) ? (rIt['price'] as num).toDouble() : (double.tryParse(rIt['price']?.toString() ?? '') ?? 0.0),
-                'qty': (rIt['qty'] is num) ? (rIt['qty'] as num).toInt() : (int.tryParse(rIt['qty']?.toString() ?? '') ?? 0),
-              });
-            }
-          }
-        }
-
-        // interpret items: negative qty => returned (is_replacement=0), positive => replacement (is_replacement=1)
-        for (final it in items) {
-          final int pid = (it['product_id'] is num) ? (it['product_id'] as num).toInt() : 0;
-          int qty = (it['qty'] is num) ? (it['qty'] as num).toInt() : (int.tryParse(it['qty']?.toString() ?? '') ?? 0);
-          final price = (it['price'] is num) ? (it['price'] as num).toDouble() : 0.0;
-          final name = (it['product_name'] ?? '').toString();
-          final isReplacement = qty > 0 ? 1 : 0;
-          final qtyAbs = qty.abs();
-
-          saleReturnItemsCache.putIfAbsent(parentId, () => []);
-          saleReturnItemsCache[parentId]!.add({
-            'return_id': (child['id'] is num) ? (child['id'] as num).toInt() : int.tryParse(child['id']?.toString() ?? '') ?? 0,
-            'product_id': pid,
-            'product_name': name,
-            'price': price,
-            'qty': qtyAbs,
-            'is_replacement': isReplacement,
-          });
-        }
-
-        // meta / paid_delta
-        final double paidAmount = (child['paid_amount'] is num) ? (child['paid_amount'] as num).toDouble() : (double.tryParse(child['paid_amount']?.toString() ?? '') ?? 0.0);
-        double refundAmountInMeta = 0.0;
-        try {
-          final meta = child['meta'] ?? child['meta_json'];
-          if (meta is Map && meta.containsKey('refund_amount')) {
-            final raf = meta['refund_amount'];
-            refundAmountInMeta = (raf is num) ? raf.toDouble() : (double.tryParse(raf?.toString() ?? '') ?? 0.0);
-          }
-        } catch (_) {}
-        final double paid_delta = paidAmount - refundAmountInMeta;
-
-        saleReturnsCache.putIfAbsent((child['parent_invoice_id'] as int?) ?? 0, () => []);
-        saleReturnsCache[(child['parent_invoice_id'] is num) ? (child['parent_invoice_id'] as num).toInt() : int.tryParse(child['parent_invoice_id']?.toString() ?? '') ?? 0]!.add({
-          'id': (child['id'] is num) ? (child['id'] as num).toInt() : int.tryParse(child['id']?.toString() ?? '') ?? 0,
-          'date': child['created_at'] ?? child['date'] ?? DateTime.now().toIso8601String(),
-          'paid_delta': paid_delta,
-          'meta': child['meta'] ?? child['meta_json'] ?? {},
-          'type': child['type'] ?? 'return',
-          'cashier': child['cashier_name'] ?? child['cashier_username'] ?? '',
-        });
-      }
-
-      // now filter topLevel for invoices where payment_type == 'credit'
-      final List<Map<String, dynamic>> onlyCredits = [];
-      for (final inv in topLevel) {
-        // strict check on payment_type field (case-insensitive)
-        final pt = (inv['payment_type'] ?? '').toString().trim().toLowerCase();
-        bool isCredit = pt == 'credit';
-
-        // allow fallback if meta explicitly marks is_credit
-        if (!isCredit) {
-          final meta = inv['meta'] ?? inv['meta_json'];
-          if (meta is Map && meta.containsKey('is_credit')) {
-            final v = meta['is_credit'];
-            if (v is num) isCredit = v.toInt() == 1;
-            else if (v is bool) isCredit = v;
-            else if (v is String) {
-              final s = v.trim().toLowerCase();
-              isCredit = s == '1' || s == 'true' || s == 'yes';
-            }
-          }
-        }
-
-        if (isCredit) {
-          onlyCredits.add(inv);
-        }
-      }
-
-      // set credits and prefetch items for them
-      credits = onlyCredits;
-
-      // prefetch items for each credit invoice (chunked)
       saleItemsCache.clear();
-      const int chunkSize = 12;
-      final creditIds = credits.map((c) => (c['id'] is num) ? (c['id'] as num).toInt() : int.tryParse(c['id']?.toString() ?? '') ?? 0).toList();
-      for (int i = 0; i < creditIds.length; i += chunkSize) {
-        final end = (i + chunkSize < creditIds.length) ? i + chunkSize : creditIds.length;
-        final chunk = creditIds.sublist(i, end);
-        await Future.wait(chunk.map((saleId) async {
-          try {
-            final items = await _fetchInvoiceItems(saleId);
-            saleItemsCache[saleId] = items;
-          } catch (e) {
-            saleItemsCache[saleId] = [];
-          }
-        }));
-        if (mounted) setState(() {});
+
+      final rows = await DBHelper.instance.getCreditSales();
+      credits = rows.map((sale) {
+        return {
+          'id': sale['id'],
+          'invoice_id': sale['id'].toString(),
+          'total': sale['total'] ?? 0.0,
+          'paid_amount': sale['paid_amount'] ?? 0.0,
+          'change_amount': sale['change_amount'] ?? 0.0,
+          'payment_type': sale['payment_method'] ?? 'credit',
+          'cashier_username': sale['cashier_username'] ?? '',
+          'customer_name': sale['customer_name'] ?? '',
+          'date': sale['date'] ?? '',
+          'created_at': sale['date'] ?? '',
+          'is_credit': sale['is_credit'] ?? 1,
+          'meta': {},
+        };
+      }).toList();
+
+      for (final c in credits) {
+        final id = (c['id'] as num).toInt();
+        saleItemsCache[id] = await _fetchInvoiceItems(id);
+        saleReturnItemsCache[id] =
+            await DBHelper.instance.getSaleReturnItemsForSale(id);
+        saleReturnsCache[id] =
+            await DBHelper.instance.getSaleReturnsBySaleId(id);
       }
     } catch (e, st) {
       debugPrint('Error loading credits: $e\n$st');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل تحميل الفواتير: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('فشل تحميل الفواتير: $e'),
+          ),
+        ));
       }
     } finally {
       if (mounted) setState(() => loading = false);
@@ -208,27 +291,16 @@ class _CreditsScreenState extends State<CreditsScreen> {
   }
 
   Future<List<Map<String, dynamic>>> _fetchInvoiceItems(int saleId) async {
-    final uri = Uri.parse('$apiBase?action=get_invoice_items&id=$saleId');
-    final resp = await http.get(uri).timeout(const Duration(seconds: 10));
-    if (resp.statusCode != 200) throw Exception('get_invoice_items error ${resp.statusCode}');
-    final decoded = jsonDecode(resp.body);
-    if (decoded is Map && decoded['success'] == true && decoded['data'] is List) {
-      final itemsRaw = List<dynamic>.from(decoded['data']);
-      final List<Map<String, dynamic>> items = [];
-      for (final it in itemsRaw) {
-        if (it == null) continue;
-        final Map<String, dynamic> rIt = (it is Map<String, dynamic>) ? Map<String, dynamic>.from(it) : {};
-        items.add({
-          'product_id': (rIt['product_id'] is num) ? (rIt['product_id'] as num).toInt() : (int.tryParse(rIt['product_id']?.toString() ?? '') ?? 0),
-          'product_name': (rIt['product_name'] ?? rIt['name'] ?? '').toString(),
-          'barcode': rIt['barcode']?.toString() ?? '',
-          'price': (rIt['price'] is num) ? (rIt['price'] as num).toDouble() : (double.tryParse(rIt['price']?.toString() ?? '') ?? 0.0),
-          'quantity': (rIt['qty'] is num) ? (rIt['qty'] as num).toInt() : (rIt['quantity'] is num) ? (rIt['quantity'] as num).toInt() : (int.tryParse(rIt['qty']?.toString() ?? '') ?? (int.tryParse(rIt['quantity']?.toString() ?? '') ?? 0)),
-        });
-      }
-      return items;
-    }
-    return [];
+    final rows = await DBHelper.instance.getSaleItemsBySaleId(saleId);
+    return rows
+        .map((r) => {
+              'product_id': r['product_id'],
+              'product_name': r['product_name'] ?? '',
+              'barcode': r['product_barcode'] ?? '',
+              'price': r['price'] ?? 0.0,
+              'quantity': r['quantity'] ?? 0,
+            })
+        .toList();
   }
 
   // ------------------ Helpers & UI logic (mostly same as original) ------------------
@@ -254,7 +326,9 @@ class _CreditsScreenState extends State<CreditsScreen> {
       final name = (s['customer_name'] ?? '').toString().toLowerCase();
       final cashier = (s['cashier_username'] ?? '').toString().toLowerCase();
       final id = (s['id'] ?? '').toString();
-      return name.contains(query) || cashier.contains(query) || id.contains(query);
+      return name.contains(query) ||
+          cashier.contains(query) ||
+          id.contains(query);
     }).toList();
   }
 
@@ -343,94 +417,74 @@ class _CreditsScreenState extends State<CreditsScreen> {
   }
 
   // ------------------ Actions: mark as paid & delete (local-only) ------------------
-  Future<void> _markAsPaid(int saleId, Map<String, dynamic> saleRow, String method) async {
-    // compute amount to pay: نستخدم الدالة الحالية التي تحسب المجموع الفعلي
+  Future<void> _markAsPaid(
+      int saleId, Map<String, dynamic> saleRow, String method) async {
     final double amountToPay = _effectiveTotalForSaleHeader(saleRow);
 
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: AppColorsDark.bgCardColor,
-        title: Center(child: Text('تأكيد الدفع', style: TextStyle(color: Colors.white))),
+        title: Center(
+            child: Text('تأكيد الدفع',
+                style: TextStyle(color: AppColorsDark.mainTextDark))),
         content: Directionality(
           textDirection: TextDirection.rtl,
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 8.0),
             child: Text(
               'سيتم تسجيل الفاتورة كمُسدّدة بواسطة "$method" بمبلغ ${amountToPay.toStringAsFixed(2)}. هل تريد المتابعة؟',
-              style: TextStyle(color: Colors.white),
+              style: TextStyle(color: AppColorsDark.mainTextDark),
             ),
           ),
         ),
         actions: [
           TextButton(
-              style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
+              style: TextButton.styleFrom(
+                  backgroundColor: AppColorsDark.bgCardColor),
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('إلغاء', style: TextStyle(color: Colors.white))),
+              child: Text('إلغاء',
+                  style: TextStyle(
+                      color: Theme.of(context).brightness == Brightness.light
+                          ? Colors.black
+                          : Colors.white))),
           TextButton(
-              style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
+              style: TextButton.styleFrom(
+                  backgroundColor: AppColorsDark.bgCardColor),
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('تأكيد', style: TextStyle(color: Colors.white))),
+              child: Text('تأكيد',
+                  style: TextStyle(
+                      color: Theme.of(context).brightness == Brightness.light
+                          ? Colors.black
+                          : Colors.white))),
         ],
       ),
     );
     if (confirmed != true) return;
 
-    // show loading dialog
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => Center(child: CircularProgressIndicator()),
-    );
-
     try {
-      final uri = Uri.parse(apiBase);
-      final payload = {
-        'action': 'mark_paid',
-        'invoice_id': saleId,
-        'paymentMethod': method,
-        'paid': amountToPay,
-        // optional: pass cashier
-        'cashierUsername': (saleRow['cashier_username'] ?? saleRow['cashierName'] ?? '').toString(),
-        // optional debug flag
-        'debug': true,
-      };
-
-      final resp = await http
-          .post(uri, headers: {'Content-Type': 'application/json'}, body: jsonEncode(payload))
-          .timeout(const Duration(seconds: 15));
-
-      Navigator.of(context).pop(); // close loading
-
-      if (resp.statusCode != 200) {
-        throw Exception('Server returned ${resp.statusCode}: ${resp.body}');
-      }
-
-      final Map<String, dynamic> body = jsonDecode(resp.body);
-      if (body['success'] == true) {
-        // update local state: remove from credits & caches
-        setState(() {
-          credits.removeWhere((r) => (r['id'] as num).toInt() == saleId);
-          saleItemsCache.remove(saleId);
-          saleReturnItemsCache.remove(saleId);
-          saleReturnsCache.remove(saleId);
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('تم تسجيل الدفع على السيرفر بنجاح (${body['payment_type'] ?? method}).'),
-          duration: const Duration(seconds: 3),
-        ));
-      } else {
-        final msg = body['message'] ?? 'خطأ غير معروف من السيرفر';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('فشل تسجيل الدفع: $msg'),
-          duration: const Duration(seconds: 4),
-        ));
-      }
+      await DBHelper.instance.markSaleAsPaid(saleId,
+          paymentMethod: method, paidAmount: amountToPay);
+      setState(() {
+        credits.removeWhere((r) => (r['id'] as num).toInt() == saleId);
+        saleItemsCache.remove(saleId);
+        saleReturnItemsCache.remove(saleId);
+        saleReturnsCache.remove(saleId);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('تم تسجيل الدفع محلياً.'),
+        ),
+      ));
     } catch (e) {
-      try { Navigator.of(context).pop(); } catch (_) {}
       debugPrint('markAsPaid error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل إرسال طلب الدفع: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('فشل تسجيل الدفع: $e'),
+        ),
+      ));
     }
   }
 
@@ -439,20 +493,32 @@ class _CreditsScreenState extends State<CreditsScreen> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: AppColorsDark.bgCardColor,
-        title: Center(child: Text('حذف الفاتورة', style: TextStyle(color: Colors.white))),
+        title: Center(
+            child: Text('حذف الفاتورة',
+                style: TextStyle(color: AppColorsDark.mainTextDark))),
         content: Text(
-          'هل تريد حذف الفاتورة #$saleId؟ هذا الحذف محلي فقط ولن يؤثر على السيرفر. لحذف فعلي احتاج endpoint في السيرفر.',
-          style: TextStyle(color: Colors.white),
+          'هل تريد حذف الفاتورة #$saleId؟',
+          style: TextStyle(color: AppColorsDark.mainTextDark),
         ),
         actions: [
           TextButton(
-              style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
+              style: TextButton.styleFrom(
+                  backgroundColor: AppColorsDark.bgCardColor),
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('إلغاء', style: TextStyle(color: Colors.white))),
+              child: Text('إلغاء',
+                  style: TextStyle(
+                      color: Theme.of(context).brightness == Brightness.light
+                          ? Colors.black
+                          : Colors.white))),
           TextButton(
-              style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
+              style: TextButton.styleFrom(
+                  backgroundColor: AppColorsDark.bgCardColor),
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('حذف محلي', style: TextStyle(color: Colors.white))),
+              child: Text('حذف محلي',
+                  style: TextStyle(
+                      color: Theme.of(context).brightness == Brightness.light
+                          ? Colors.black
+                          : Colors.white))),
         ],
       ),
     );
@@ -466,7 +532,10 @@ class _CreditsScreenState extends State<CreditsScreen> {
     });
 
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text('حُذفت الفاتورة محليًا. لإجراء حذف دائم على السيرفر أرسل لي endpoint لأربطه.'),
+      content: Directionality(
+        textDirection: TextDirection.rtl,
+        child: Text('تم الحذف'),
+      ),
       duration: Duration(seconds: 3),
     ));
   }
@@ -479,8 +548,8 @@ class _CreditsScreenState extends State<CreditsScreen> {
         Text(
           value,
           textAlign: TextAlign.right,
-          style: const TextStyle(
-            color: Colors.white70,
+          style: TextStyle(
+            color: AppColorsDark.mainTextLight,
             fontSize: 15,
           ),
           overflow: TextOverflow.ellipsis,
@@ -488,8 +557,8 @@ class _CreditsScreenState extends State<CreditsScreen> {
         const SizedBox(width: 6),
         Text(
           ' : $label',
-          style: const TextStyle(
-            color: Colors.white,
+          style: TextStyle(
+            color: AppColorsDark.mainTextDark,
             fontSize: 13,
           ),
         ),
@@ -504,7 +573,8 @@ class _CreditsScreenState extends State<CreditsScreen> {
     // Group credits by cashier username
     final Map<String, List<Map<String, dynamic>>> byCashier = {};
     for (final s in list) {
-      final cashier = (s['cashier_username'] ?? s['cashierName'] ?? '-').toString();
+      final cashier =
+          (s['cashier_username'] ?? s['cashierName'] ?? '-').toString();
       byCashier.putIfAbsent(cashier, () => []).add(s);
     }
     final cashiers = byCashier.keys.toList();
@@ -515,16 +585,17 @@ class _CreditsScreenState extends State<CreditsScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0.0,
         scrolledUnderElevation: 0.0,
-        iconTheme: const IconThemeData(color: Colors.white70),
-        title: const Text(
+        iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
+        title: Text(
           'فواتير مدفوعة (بطاقة / كريدت)',
-          style: TextStyle(color: Colors.white, fontSize: 20),
+          style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 20),
         ),
         actions: [
           IconButton(
             tooltip: 'تحديث',
             onPressed: _loadCredits,
-            icon: const Icon(Icons.refresh, color: Colors.white70, size: 22),
+            icon: Icon(Icons.refresh,
+                color: Theme.of(context).iconTheme.color, size: 22),
           ),
         ],
       ),
@@ -541,304 +612,610 @@ class _CreditsScreenState extends State<CreditsScreen> {
             Expanded(
               child: loading
                   ? ListView.separated(
-                padding: const EdgeInsets.all(12),
-                itemCount: 6, // عدد عناصر shimmer المراد عرضها أثناء التحميل
-                separatorBuilder: (_, __) => const SizedBox(height: 12),
-                itemBuilder: (context, index) {
-                  return LoadingShimmer(
-                    height: 80,
-                    borderRadius: BorderRadius.circular(10),
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                  );
-                },
-              )
+                      padding: const EdgeInsets.all(12),
+                      itemCount:
+                          6, // عدد عناصر shimmer المراد عرضها أثناء التحميل
+                      separatorBuilder: (_, __) => const SizedBox(height: 12),
+                      itemBuilder: (context, index) {
+                        return LoadingShimmer(
+                          height: 80,
+                          borderRadius: BorderRadius.circular(10),
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                        );
+                      },
+                    )
                   : list.isEmpty
-                  ? const Center(child: Text('لا توجد فواتير حتي الان', style: TextStyle(fontSize: 18, color: Colors.white)))
-                  : ListView.separated(
-                itemCount: cashiers.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 12),
-                itemBuilder: (context, idx) {
-                  final cashier = cashiers[idx];
-                  final salesForCashier = byCashier[cashier] ?? [];
+                      ? const EmptyStateCard(
+                          icon: Icons.receipt_long,
+                          title: 'لا توجد فواتير',
+                          message: 'لا توجد فواتير آجلة مطابقة لهذا البحث.',
+                        )
+                      : ListView.separated(
+                          itemCount: cashiers.length,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 12),
+                          itemBuilder: (context, idx) {
+                            final cashier = cashiers[idx];
+                            final salesForCashier = byCashier[cashier] ?? [];
 
-                  return Card(
-                      color: AppColorsDark.bgCardColor,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: AppColorsDark.mainColor.withOpacity(0.12))),
-                      child: Directionality(
-                        textDirection: TextDirection.rtl,
-                        child: AccordionWidget(
-                          decoration: BoxDecoration(color: AppColorsDark.bgColor),
-                          showIcon: true,
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          header: AbsorbPointer(
-                            absorbing: true,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 6),
-                              child: Row(
-                                children: [
-                                  CircleAvatar(
-                                    radius: 22,
-                                    backgroundColor: AppColorsDark.mainColor.withOpacity(0.12),
-                                    child: Text('${salesForCashier.length}', style: TextStyle(color: AppColorsDark.mainColor, fontWeight: FontWeight.bold)),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(cashier, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis),
-                                        const SizedBox(height: 6),
-                                        Text('الفواتير الخاصة بهذا الكاشير', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          content: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                // For each sale of this cashier, render the existing sale Card+Accordion as before
-                                ...salesForCashier.map((s) {
-                                  final saleId = (s['id'] as num).toInt();
-                                  final customer = (s['customer_name'] ?? '-').toString();
-                                  final effectiveTotal = _effectiveTotalForSaleHeader(s);
-                                  final paid = (s['paid_amount'] as num?)?.toDouble() ?? 0.0;
-                                  final dateRaw = (s['date'] ?? s['created_at'] ?? '').toString();
-                                  final time = _formatTime(dateRaw);
-                                  final cashierName = (s['cashier_username'] ?? s['cashierName'] ?? '-').toString();
-                                  final discountLabel = _discountLabelForSale(s);
-
-                                  return Padding(
-                                    padding: const EdgeInsets.symmetric(vertical: 6.0),
-                                    child: Card(
-                                      color: AppColorsDark.bgCardColor,
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: AppColorsDark.mainColor.withOpacity(0.12))),
-                                      child: Directionality(
-                                        textDirection: TextDirection.rtl,
-                                        child: AccordionWidget(
-                                          decoration: BoxDecoration(color: AppColorsDark.bgCardColor),
-                                          showIcon: false,
-                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                          header: Padding(
-                                            padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 6),
-                                            child: AbsorbPointer(
-                                              absorbing: true,
-                                              child: Row(
+                            return Card(
+                                color: AppColorsDark.bgCardColor,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    side: BorderSide(
+                                        color: AppColorsDark.mainColor
+                                            .withOpacity(0.12))),
+                                child: Directionality(
+                                  textDirection: TextDirection.rtl,
+                                  child: AccordionWidget(
+                                    decoration: BoxDecoration(
+                                        color: AppColorsDark.bgColor),
+                                    showIcon: true,
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 6),
+                                    header: AbsorbPointer(
+                                      absorbing: true,
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 8.0, horizontal: 6),
+                                        child: Row(
+                                          children: [
+                                            CircleAvatar(
+                                              radius: 22,
+                                              backgroundColor: AppColorsDark
+                                                  .mainColor
+                                                  .withOpacity(0.12),
+                                              child: Text(
+                                                  '${salesForCashier.length}',
+                                                  style: TextStyle(
+                                                      color: AppColorsDark
+                                                          .mainColor,
+                                                      fontWeight:
+                                                          FontWeight.bold)),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
                                                 children: [
-                                                  CircleAvatar(
-                                                    radius: 22,
-                                                    backgroundColor: AppColorsDark.mainColor.withOpacity(0.12),
-                                                    child: Text('#$saleId', style: TextStyle(color: AppColorsDark.mainColor, fontWeight: FontWeight.bold)),
-                                                  ),
-                                                  const SizedBox(width: 12),
-                                                  Expanded(
-                                                    child: Column(
-                                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                                      children: [
-                                                        Text(customer, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis),
-                                                        const SizedBox(height: 6),
-                                                        Row(
-                                                          children: [
-                                                            Icon(Icons.person, size: 14, color: Colors.white24),
-                                                            const SizedBox(width: 6),
-                                                            Text(cashierName, style: TextStyle(color: Colors.white70, fontSize: 12)),
-                                                            const SizedBox(width: 12),
-                                                            Icon(Icons.access_time, size: 14, color: Colors.white24),
-                                                            const SizedBox(width: 6),
-                                                            Text(time, style: TextStyle(color: Colors.white70, fontSize: 12)),
-                                                          ],
-                                                        )
-                                                      ],
-                                                    ),
-                                                  ),
-                                                  Column(
-                                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                                    children: [
-                                                      Text(effectiveTotal.toStringAsFixed(2), style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                                                      const SizedBox(height: 6),
-                                                      if (discountLabel.isNotEmpty)
-                                                        Container(
-                                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                                          decoration: BoxDecoration(
-                                                            color: AppColorsDark.mainColor.withOpacity(0.08),
-                                                            borderRadius: BorderRadius.circular(20),
-                                                            border: Border.all(color: AppColorsDark.mainColor.withOpacity(0.2)),
-                                                          ),
-                                                          child: Text(discountLabel, style: TextStyle(color: AppColorsDark.mainColor, fontSize: 12)),
-                                                        )
-                                                    ],
-                                                  )
+                                                  Text(cashier,
+                                                      style: TextStyle(
+                                                          color: AppColorsDark
+                                                              .mainTextDark,
+                                                          fontSize: 16,
+                                                          fontWeight:
+                                                              FontWeight.w700),
+                                                      overflow: TextOverflow
+                                                          .ellipsis),
+                                                  const SizedBox(height: 6),
+                                                  Text(
+                                                      'الفواتير الخاصة بهذا الكاشير',
+                                                      style: TextStyle(
+                                                          color: AppColorsDark
+                                                              .mainTextLight,
+                                                          fontSize: 12)),
                                                 ],
                                               ),
                                             ),
-                                          ),
-                                          content: Padding(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6),
-                                            child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                Builder(builder: (_) {
-                                                  final items = saleItemsCache[saleId] ?? [];
-                                                  if (loadingSaleItems.contains(saleId)) {
-                                                    return const Padding(
-                                                      padding: EdgeInsets.all(8.0),
-                                                      child: Center(child: CircularProgressIndicator()),
-                                                    );
-                                                  }
-                                                  if (items.isEmpty) {
-                                                    return const Padding(
-                                                      padding: EdgeInsets.all(8.0),
-                                                      child: Text('لا توجد عناصر مسجلة لهذه الفاتورة', style: TextStyle(color: Colors.white)),
-                                                    );
-                                                  }
-
-                                                  final itemsTotal = items.fold<double>(0.0, (p, it) {
-                                                    final qty = (it['quantity'] as num?)?.toDouble() ?? 0.0;
-                                                    final price = (it['price'] as num?)?.toDouble() ?? 0.0;
-                                                    return p + qty * price;
-                                                  });
-
-                                                  final discountTypeRaw = (s['discount_type'] ?? 'fixed').toString();
-                                                  final discountValueRaw = (s['discount_value'] as num?)?.toDouble() ?? 0.0;
-                                                  final discountType = (discountTypeRaw == 'percent') ? 'percent' : 'fixed';
-                                                  double discountValue = discountValueRaw.isFinite ? discountValueRaw : 0.0;
-                                                  double discountAmount = 0.0;
-                                                  if (discountType == 'percent') {
-                                                    discountAmount = itemsTotal * (discountValue / 100.0);
-                                                  } else {
-                                                    discountAmount = discountValue;
-                                                  }
-                                                  if (discountAmount < 0) discountAmount = 0.0;
-                                                  if (discountAmount > itemsTotal) discountAmount = itemsTotal;
-
-                                                  final effectiveTotalLocal = (itemsTotal - discountAmount).clamp(0.0, double.infinity);
-
-                                                  return Column(
-                                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                                    children: [
-                                                      // items list: compact rows
-                                                      ...items.map((it) {
-                                                        final name = (it['product_name'] ?? 'منتج') as String;
-                                                        final qty = (it['quantity'] as num?)?.toInt() ?? 0;
-                                                        final price = (it['price'] as num?)?.toDouble() ?? 0.0;
-                                                        return Padding(
-                                                          padding: const EdgeInsets.symmetric(vertical: 6.0),
-                                                          child: Row(
-                                                            children: [
-                                                              Expanded(
-                                                                child: Text(name, style: const TextStyle(color: Colors.white70, fontSize: 14), overflow: TextOverflow.ellipsis),
-                                                              ),
-                                                              const SizedBox(width: 8),
-                                                              Text('$qty x', style: const TextStyle(color: Colors.white54, fontSize: 13)),
-                                                              const SizedBox(width: 8),
-                                                              Text(price.toStringAsFixed(2), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                                                            ],
-                                                          ),
-                                                        );
-                                                      }).toList(),
-
-                                                      const Divider(color: Colors.white12),
-
-                                                      // summary row
-                                                      Padding(
-                                                        padding: const EdgeInsets.symmetric(vertical: 8.0),
-                                                        child: Row(
-                                                          children: [
-                                                            Expanded(
-                                                              child: Column(
-                                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                                children: [
-                                                                  Text('مجموع العناصر', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                                                                  const SizedBox(height: 6),
-                                                                  Text(itemsTotal.toStringAsFixed(2), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                                                                ],
-                                                              ),
-                                                            ),
-                                                            Expanded(
-                                                              child: Column(
-                                                                crossAxisAlignment: CrossAxisAlignment.end,
-                                                                children: [
-                                                                  Text('بعد الخصم', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                                                                  const SizedBox(height: 6),
-                                                                  Text(effectiveTotalLocal.toStringAsFixed(2), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                                                                ],
-                                                              ),
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ),
-
-                                                      const SizedBox(height: 10),
-
-                                                      // actions row
-                                                      Row(
-                                                        mainAxisAlignment: MainAxisAlignment.end,
-                                                        children: [
-                                                          TextButton.icon(
-                                                            style: TextButton.styleFrom(
-                                                              backgroundColor: AppColorsDark.bgCardColor,
-                                                            ),
-                                                            onPressed: () async {
-                                                              final choice = await showDialog<String>(
-                                                                context: context,
-                                                                builder: (ctx) => AlertDialog(
-                                                                  backgroundColor: AppColorsDark.bgCardColor,
-                                                                  title: Center(child: Text('بماذا تم الدفع؟', style: TextStyle(color: Colors.white, fontSize: 22))),
-                                                                  actions: [
-                                                                    TextButton(
-                                                                        style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
-                                                                        onPressed: () => Navigator.pop(ctx, null),
-                                                                        child: const Text('إلغاء', style: TextStyle(color: Colors.white))),
-                                                                    TextButton(
-                                                                        style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
-                                                                        onPressed: () => Navigator.pop(ctx, 'card'),
-                                                                        child: const Text('كارت', style: TextStyle(color: Colors.white))),
-                                                                    TextButton(
-                                                                        style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor),
-                                                                        onPressed: () => Navigator.pop(ctx, 'cash'),
-                                                                        child: const Text('نقدي', style: TextStyle(color: Colors.white))),
-                                                                  ],
-                                                                ),
-                                                              );
-                                                              if (choice == null) return;
-                                                              await _markAsPaid(saleId, s, choice);
-                                                            },
-                                                            icon: const Icon(Icons.check_circle, color: Colors.green),
-                                                            label: const Text('تم الدفع', style: TextStyle(color: Colors.green)),
-                                                          ),
-                                                          const SizedBox(width: 8),
-                                                          TextButton.icon(
-                                                            style: TextButton.styleFrom(
-                                                              backgroundColor: AppColorsDark.bgCardColor,
-                                                            ),
-                                                            onPressed: () => _deleteCredit(saleId),
-                                                            icon: Icon(Icons.delete, color: Colors.red.withOpacity(0.7)),
-                                                            label: Text('حذف', style: TextStyle(color: Colors.red.withOpacity(0.7))),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ],
-                                                  );
-                                                }),
-                                              ],
-                                            ),
-                                          ),
+                                          ],
                                         ),
                                       ),
                                     ),
-                                  );
-                                }).toList(),
-                              ],
-                            ),
-                          ),
+                                    content: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8.0, vertical: 6),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          // For each sale of this cashier, render the existing sale Card+Accordion as before
+                                          ...salesForCashier.map((s) {
+                                            final saleId =
+                                                (s['id'] as num).toInt();
+                                            final customer =
+                                                (s['customer_name'] ?? '-')
+                                                    .toString();
+                                            final effectiveTotal =
+                                                _effectiveTotalForSaleHeader(s);
+                                            final paid =
+                                                (s['paid_amount'] as num?)
+                                                        ?.toDouble() ??
+                                                    0.0;
+                                            final dateRaw = (s['date'] ??
+                                                    s['created_at'] ??
+                                                    '')
+                                                .toString();
+                                            final time = _formatTime(dateRaw);
+                                            final cashierName =
+                                                (s['cashier_username'] ??
+                                                        s['cashierName'] ??
+                                                        '-')
+                                                    .toString();
+                                            final discountLabel =
+                                                _discountLabelForSale(s);
+
+                                            return Padding(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      vertical: 6.0),
+                                              child: Card(
+                                                color:
+                                                    AppColorsDark.bgCardColor,
+                                                shape: RoundedRectangleBorder(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            12),
+                                                    side: BorderSide(
+                                                        color: AppColorsDark
+                                                            .mainColor
+                                                            .withOpacity(
+                                                                0.12))),
+                                                child: Directionality(
+                                                  textDirection:
+                                                      TextDirection.rtl,
+                                                  child: AccordionWidget(
+                                                    decoration: BoxDecoration(
+                                                        color: AppColorsDark
+                                                            .bgCardColor),
+                                                    showIcon: false,
+                                                    padding: const EdgeInsets
+                                                        .symmetric(
+                                                        horizontal: 12,
+                                                        vertical: 6),
+                                                    header: Padding(
+                                                      padding: const EdgeInsets
+                                                          .symmetric(
+                                                          vertical: 8.0,
+                                                          horizontal: 6),
+                                                      child: AbsorbPointer(
+                                                        absorbing: true,
+                                                        child: Row(
+                                                          children: [
+                                                            CircleAvatar(
+                                                              radius: 22,
+                                                              backgroundColor:
+                                                                  AppColorsDark
+                                                                      .mainColor
+                                                                      .withOpacity(
+                                                                          0.12),
+                                                              child: Text(
+                                                                  '#$saleId',
+                                                                  style: TextStyle(
+                                                                      color: AppColorsDark
+                                                                          .mainColor,
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .bold)),
+                                                            ),
+                                                            const SizedBox(
+                                                                width: 12),
+                                                            Expanded(
+                                                              child: Column(
+                                                                crossAxisAlignment:
+                                                                    CrossAxisAlignment
+                                                                        .start,
+                                                                children: [
+                                                                  Text(customer,
+                                                                      style: TextStyle(
+                                                                          color: Colors
+                                                                              .white,
+                                                                          fontSize:
+                                                                              16,
+                                                                          fontWeight: FontWeight
+                                                                              .w700),
+                                                                      overflow:
+                                                                          TextOverflow
+                                                                              .ellipsis),
+                                                                  const SizedBox(
+                                                                      height:
+                                                                          6),
+                                                                  Row(
+                                                                    children: [
+                                                                      Icon(
+                                                                          Icons
+                                                                              .person,
+                                                                          size:
+                                                                              14,
+                                                                          color: Theme.of(context)
+                                                                              .iconTheme
+                                                                              .color),
+                                                                      const SizedBox(
+                                                                          width:
+                                                                              6),
+                                                                      Text(
+                                                                          cashierName,
+                                                                          style: TextStyle(
+                                                                              color: AppColorsDark.mainTextLight,
+                                                                              fontSize: 12)),
+                                                                      const SizedBox(
+                                                                          width:
+                                                                              12),
+                                                                      Icon(
+                                                                          Icons
+                                                                              .access_time,
+                                                                          size:
+                                                                              14,
+                                                                          color: Theme.of(context)
+                                                                              .iconTheme
+                                                                              .color),
+                                                                      const SizedBox(
+                                                                          width:
+                                                                              6),
+                                                                      Text(time,
+                                                                          style: TextStyle(
+                                                                              color: AppColorsDark.mainTextLight,
+                                                                              fontSize: 12)),
+                                                                    ],
+                                                                  )
+                                                                ],
+                                                              ),
+                                                            ),
+                                                            Column(
+                                                              crossAxisAlignment:
+                                                                  CrossAxisAlignment
+                                                                      .end,
+                                                              children: [
+                                                                Text(
+                                                                    effectiveTotal
+                                                                        .toStringAsFixed(
+                                                                            2),
+                                                                    style: TextStyle(
+                                                                        color: Colors
+                                                                            .white,
+                                                                        fontSize:
+                                                                            16,
+                                                                        fontWeight:
+                                                                            FontWeight.bold)),
+                                                                const SizedBox(
+                                                                    height: 6),
+                                                                if (discountLabel
+                                                                    .isNotEmpty)
+                                                                  Container(
+                                                                    padding: const EdgeInsets
+                                                                        .symmetric(
+                                                                        horizontal:
+                                                                            8,
+                                                                        vertical:
+                                                                            4),
+                                                                    decoration:
+                                                                        BoxDecoration(
+                                                                      color: AppColorsDark
+                                                                          .mainColor
+                                                                          .withOpacity(
+                                                                              0.08),
+                                                                      borderRadius:
+                                                                          BorderRadius.circular(
+                                                                              20),
+                                                                      border: Border.all(
+                                                                          color: AppColorsDark
+                                                                              .mainColor
+                                                                              .withOpacity(0.2)),
+                                                                    ),
+                                                                    child: Text(
+                                                                        discountLabel,
+                                                                        style: TextStyle(
+                                                                            color:
+                                                                                AppColorsDark.mainColor,
+                                                                            fontSize: 12)),
+                                                                  )
+                                                              ],
+                                                            )
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    content: Padding(
+                                                      padding: const EdgeInsets
+                                                          .symmetric(
+                                                          horizontal: 8.0,
+                                                          vertical: 6),
+                                                      child: Column(
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .start,
+                                                        children: [
+                                                          Builder(builder: (_) {
+                                                            final items =
+                                                                saleItemsCache[
+                                                                        saleId] ??
+                                                                    [];
+                                                            if (loadingSaleItems
+                                                                .contains(
+                                                                    saleId)) {
+                                                              return const Padding(
+                                                                padding:
+                                                                    EdgeInsets
+                                                                        .all(
+                                                                            8.0),
+                                                                child: Center(
+                                                                    child:
+                                                                        CircularProgressIndicator()),
+                                                              );
+                                                            }
+                                                            if (items.isEmpty) {
+                                                              return const Padding(
+                                                                padding:
+                                                                    EdgeInsets
+                                                                        .all(
+                                                                            8.0),
+                                                                child:
+                                                                    EmptyStateCard(
+                                                                  icon: Icons
+                                                                      .inventory_2_outlined,
+                                                                  title:
+                                                                      'لا توجد عناصر',
+                                                                  message:
+                                                                      'لا توجد عناصر مسجلة لهذه الفاتورة.',
+                                                                  margin:
+                                                                      EdgeInsets
+                                                                          .zero,
+                                                                ),
+                                                              );
+                                                            }
+
+                                                            final itemsTotal =
+                                                                items.fold<
+                                                                        double>(
+                                                                    0.0,
+                                                                    (p, it) {
+                                                              final qty = (it['quantity']
+                                                                          as num?)
+                                                                      ?.toDouble() ??
+                                                                  0.0;
+                                                              final price = (it[
+                                                                              'price']
+                                                                          as num?)
+                                                                      ?.toDouble() ??
+                                                                  0.0;
+                                                              return p +
+                                                                  qty * price;
+                                                            });
+
+                                                            final discountTypeRaw =
+                                                                (s['discount_type'] ??
+                                                                        'fixed')
+                                                                    .toString();
+                                                            final discountValueRaw =
+                                                                (s['discount_value']
+                                                                            as num?)
+                                                                        ?.toDouble() ??
+                                                                    0.0;
+                                                            final discountType =
+                                                                (discountTypeRaw ==
+                                                                        'percent')
+                                                                    ? 'percent'
+                                                                    : 'fixed';
+                                                            double
+                                                                discountValue =
+                                                                discountValueRaw
+                                                                        .isFinite
+                                                                    ? discountValueRaw
+                                                                    : 0.0;
+                                                            double
+                                                                discountAmount =
+                                                                0.0;
+                                                            if (discountType ==
+                                                                'percent') {
+                                                              discountAmount =
+                                                                  itemsTotal *
+                                                                      (discountValue /
+                                                                          100.0);
+                                                            } else {
+                                                              discountAmount =
+                                                                  discountValue;
+                                                            }
+                                                            if (discountAmount <
+                                                                0)
+                                                              discountAmount =
+                                                                  0.0;
+                                                            if (discountAmount >
+                                                                itemsTotal)
+                                                              discountAmount =
+                                                                  itemsTotal;
+
+                                                            final effectiveTotalLocal =
+                                                                (itemsTotal -
+                                                                        discountAmount)
+                                                                    .clamp(
+                                                                        0.0,
+                                                                        double
+                                                                            .infinity);
+
+                                                            return Column(
+                                                              crossAxisAlignment:
+                                                                  CrossAxisAlignment
+                                                                      .start,
+                                                              children: [
+                                                                // items list: compact rows
+                                                                ...items
+                                                                    .map((it) {
+                                                                  final name = (it[
+                                                                              'product_name'] ??
+                                                                          'منتج')
+                                                                      as String;
+                                                                  final qty =
+                                                                      (it['quantity'] as num?)
+                                                                              ?.toInt() ??
+                                                                          0;
+                                                                  final price =
+                                                                      (it['price'] as num?)
+                                                                              ?.toDouble() ??
+                                                                          0.0;
+                                                                  return Padding(
+                                                                    padding: const EdgeInsets
+                                                                        .symmetric(
+                                                                        vertical:
+                                                                            6.0),
+                                                                    child: Row(
+                                                                      children: [
+                                                                        Expanded(
+                                                                          child: Text(
+                                                                              name,
+                                                                              style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 14),
+                                                                              overflow: TextOverflow.ellipsis),
+                                                                        ),
+                                                                        const SizedBox(
+                                                                            width:
+                                                                                8),
+                                                                        Text(
+                                                                            '$qty x',
+                                                                            style:
+                                                                                TextStyle(color: AppColorsDark.mainTextLight, fontSize: 13)),
+                                                                        const SizedBox(
+                                                                            width:
+                                                                                8),
+                                                                        Text(
+                                                                            price.toStringAsFixed(
+                                                                                2),
+                                                                            style:
+                                                                                TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.w700)),
+                                                                      ],
+                                                                    ),
+                                                                  );
+                                                                }).toList(),
+
+                                                                const Divider(
+                                                                    color: Colors
+                                                                        .white12),
+
+                                                                // summary row
+                                                                Padding(
+                                                                  padding: const EdgeInsets
+                                                                      .symmetric(
+                                                                      vertical:
+                                                                          8.0),
+                                                                  child: Row(
+                                                                    children: [
+                                                                      Expanded(
+                                                                        child:
+                                                                            Column(
+                                                                          crossAxisAlignment:
+                                                                              CrossAxisAlignment.start,
+                                                                          children: [
+                                                                            Text('مجموع العناصر',
+                                                                                style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 12)),
+                                                                            const SizedBox(height: 6),
+                                                                            Text(itemsTotal.toStringAsFixed(2),
+                                                                                style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                          ],
+                                                                        ),
+                                                                      ),
+                                                                      Expanded(
+                                                                        child:
+                                                                            Column(
+                                                                          crossAxisAlignment:
+                                                                              CrossAxisAlignment.end,
+                                                                          children: [
+                                                                            Text('بعد الخصم',
+                                                                                style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 12)),
+                                                                            const SizedBox(height: 6),
+                                                                            Text(effectiveTotalLocal.toStringAsFixed(2),
+                                                                                style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                          ],
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                ),
+
+                                                                const SizedBox(
+                                                                    height: 10),
+
+                                                                // actions row
+                                                                Row(
+                                                                  mainAxisAlignment:
+                                                                      MainAxisAlignment
+                                                                          .end,
+                                                                  children: [
+                                                                    TextButton
+                                                                        .icon(
+                                                                      style: TextButton
+                                                                          .styleFrom(
+                                                                        backgroundColor:
+                                                                            AppColorsDark.bgCardColor,
+                                                                      ),
+                                                                      onPressed:
+                                                                          () async {
+                                                                        final choice =
+                                                                            await showDialog<String>(
+                                                                          context:
+                                                                              context,
+                                                                          builder: (ctx) =>
+                                                                              AlertDialog(
+                                                                            backgroundColor:
+                                                                                AppColorsDark.bgCardColor,
+                                                                            title:
+                                                                                Center(child: Text('بماذا تم الدفع؟', style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 22))),
+                                                                            actions: [
+                                                                              TextButton(style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor), onPressed: () => Navigator.pop(ctx, null), child: Text('إلغاء', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black : Colors.white))),
+                                                                              TextButton(style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor), onPressed: () => Navigator.pop(ctx, 'card'), child: Text('كارت', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black : Colors.white))),
+                                                                              TextButton(style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor), onPressed: () => Navigator.pop(ctx, 'cash'), child: Text('نقدي', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black : Colors.white))),
+                                                                            ],
+                                                                          ),
+                                                                        );
+                                                                        if (choice ==
+                                                                            null)
+                                                                          return;
+                                                                        await _markAsPaid(
+                                                                            saleId,
+                                                                            s,
+                                                                            choice);
+                                                                      },
+                                                                      icon: const Icon(
+                                                                          Icons
+                                                                              .check_circle,
+                                                                          color:
+                                                                              Colors.green),
+                                                                      label: const Text(
+                                                                          'تم الدفع',
+                                                                          style:
+                                                                              TextStyle(color: Colors.green)),
+                                                                    ),
+                                                                    const SizedBox(
+                                                                        width:
+                                                                            8),
+                                                                    TextButton
+                                                                        .icon(
+                                                                      style: TextButton
+                                                                          .styleFrom(
+                                                                        backgroundColor:
+                                                                            AppColorsDark.bgCardColor,
+                                                                      ),
+                                                                      onPressed:
+                                                                          () =>
+                                                                              _deleteCredit(saleId),
+                                                                      icon: Icon(
+                                                                          Icons
+                                                                              .delete,
+                                                                          color: Colors
+                                                                              .red
+                                                                              .withOpacity(0.7)),
+                                                                      label: Text(
+                                                                          'حذف',
+                                                                          style:
+                                                                              TextStyle(color: Colors.red.withOpacity(0.7))),
+                                                                    ),
+                                                                  ],
+                                                                ),
+                                                              ],
+                                                            );
+                                                          }),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            );
+                                          }).toList(),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ));
+                          },
                         ),
-                      ));
-                },
-              ),
             ),
           ],
         ),

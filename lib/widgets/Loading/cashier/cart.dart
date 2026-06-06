@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../../utils/colors.dart';
-
+import '../../empty_state_card.dart';
 
 /// Shimmer skeleton for the CartList you posted.
 /// Shows [itemCount] shimmering cards to mimic the real list while loading.
@@ -18,7 +18,10 @@ class CartListShimmer extends StatelessWidget {
     this.padding = const EdgeInsets.symmetric(vertical: 12),
   }) : super(key: key);
 
-  Widget _shimmerBox({double height = 12, double width = double.infinity, BorderRadius? borderRadius}) {
+  Widget _shimmerBox(
+      {double height = 12,
+      double width = double.infinity,
+      BorderRadius? borderRadius}) {
     return Container(
       height: height,
       width: width,
@@ -31,7 +34,13 @@ class CartListShimmer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (itemCount <= 0) return const Center(child: Text('السلة فارغة'));
+    if (itemCount <= 0) {
+      return const EmptyStateCard(
+        icon: Icons.shopping_cart_outlined,
+        title: 'السلة فارغة',
+        message: 'ابدأ بإضافة منتجات إلى الفاتورة.',
+      );
+    }
 
     // Shimmer colors: adjust if you want lighter/darker look
     final base = AppColorsDark.bgCardColor;
@@ -46,7 +55,6 @@ class CartListShimmer extends StatelessWidget {
             padding: padding,
             child: Card(
               color: AppColorsDark.bgCardColor,
-
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(cardRadius),
                 side: BorderSide(color: AppColorsDark.mainColor),
@@ -70,7 +78,8 @@ class CartListShimmer extends StatelessWidget {
                   ),
                   // Subtitle area (price & available)
                   subtitle: Padding(
-                    padding: const EdgeInsets.only(bottom: 15, left: 15, right: 15,top: 15),
+                    padding: const EdgeInsets.only(
+                        bottom: 15, left: 15, right: 15, top: 15),
                     child: Align(
                       alignment: Alignment.centerRight,
                       child: _shimmerBox(
@@ -97,7 +106,10 @@ class CartListShimmer extends StatelessWidget {
                         ),
                         const SizedBox(width: 8),
                         // qty box skeleton
-                        _shimmerBox(height: 34, width: 48, borderRadius: BorderRadius.circular(6)),
+                        _shimmerBox(
+                            height: 34,
+                            width: 48,
+                            borderRadius: BorderRadius.circular(6)),
                         const SizedBox(width: 8),
                         // plus button skeleton
                         Container(
@@ -110,7 +122,10 @@ class CartListShimmer extends StatelessWidget {
                         ),
                         const SizedBox(width: 12),
                         // subtotal skeleton
-                        _shimmerBox(height: 16, width: 56, borderRadius: BorderRadius.circular(6)),
+                        _shimmerBox(
+                            height: 16,
+                            width: 56,
+                            borderRadius: BorderRadius.circular(6)),
                         const SizedBox(width: 12),
                         // delete icon skeleton (small square)
                         Container(

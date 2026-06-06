@@ -1,24 +1,25 @@
 // admin_paid_purchases_screen.dart
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
-import 'package:http/http.dart' as http;
 
+import '../../services/db/db_helper.dart';
 import '../../utils/colors.dart';
 import '../../widgets/Loading/Admin/invoice_cash.dart';
+import '../../widgets/empty_state_card.dart';
 
 class AdminPaidPurchasesScreen extends StatefulWidget {
   const AdminPaidPurchasesScreen({Key? key}) : super(key: key);
 
   @override
-  State<AdminPaidPurchasesScreen> createState() => _AdminPaidPurchasesScreenState();
+  State<AdminPaidPurchasesScreen> createState() =>
+      _AdminPaidPurchasesScreenState();
 }
 
 class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   List<Map<String, dynamic>> _rows = [];
   bool _loading = false;
   String? _error;
+  final ScrollController _scrollController = ScrollController();
 
   // totals by payment type
   double _cashTotal = 0.0;
@@ -31,12 +32,16 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   // ===== فلتر التاريخ =====
   DateTime selectedDate = DateTime.now();
 
-  static const String _endpoint = 'https://nabawisolution.com/receive_from_supplier.php';
-
   @override
   void initState() {
     super.initState();
     _load(date: selectedDate);
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _load({DateTime? date}) async {
@@ -60,10 +65,13 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
         if (due > 0.0) return false;
 
         if (date == null) return true;
-        final raw = (r['created_at'] ?? r['receipt_date'] ?? r['date'] ?? '').toString();
+        final raw = (r['created_at'] ?? r['receipt_date'] ?? r['date'] ?? '')
+            .toString();
         final dt = _parseDateOnly(raw);
         if (dt == null) return false;
-        return dt.year == date.year && dt.month == date.month && dt.day == date.day;
+        return dt.year == date.year &&
+            dt.month == date.month &&
+            dt.day == date.day;
       }).toList();
 
       _computeTotals(filtered);
@@ -81,38 +89,9 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     }
   }
 
-  Future<List<Map<String, dynamic>>> _fetchReceiptsFromServer({DateTime? date}) async {
-    final qp = <String, String>{'action': 'get_goods_receipts'};
-    if (date != null) {
-      qp['date'] = DateFormat('yyyy-MM-dd').format(date);
-    }
-
-    final uri = Uri.parse(_endpoint).replace(queryParameters: qp);
-    final resp = await http.get(uri).timeout(const Duration(seconds: 15));
-
-    if (resp.statusCode != 200) {
-      throw Exception('Server returned ${resp.statusCode}');
-    }
-
-    final body = resp.body.trim();
-    if (body.isEmpty) return [];
-
-    final jsonBody = jsonDecode(body);
-    // API (as provided) returns: { success: true, data: [...] }
-    List<dynamic> data = [];
-    if (jsonBody is Map && jsonBody.containsKey('data')) {
-      data = jsonBody['data'] as List<dynamic>;
-    } else if (jsonBody is List) {
-      data = jsonBody;
-    } else {
-      throw Exception('Unexpected response format from server');
-    }
-
-    // normalize into List<Map<String,dynamic>>
-    return data.map<Map<String, dynamic>>((e) {
-      if (e is Map<String, dynamic>) return e;
-      return Map<String, dynamic>.from(e as Map);
-    }).toList();
+  Future<List<Map<String, dynamic>>> _fetchReceiptsFromServer(
+      {DateTime? date}) async {
+    return DBHelper.instance.getPaidPurchaseReceipts();
   }
 
   /// مساعد لتحليل التاريخ بصيغ متعددة إلى DateTime (يُستخدم للفلترة)
@@ -129,7 +108,8 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
         final d = int.tryParse(m.group(3) ?? '') ?? 0;
         if (y > 0 && mo > 0 && d > 0) return DateTime(y, mo, d);
       }
-      final parts = raw.split(RegExp(r'[\s/\\\-]')).where((p) => p.isNotEmpty).toList();
+      final parts =
+          raw.split(RegExp(r'[\s/\\\-]')).where((p) => p.isNotEmpty).toList();
       if (parts.length >= 3) {
         if (parts[0].length == 4) {
           final y = int.tryParse(parts[0]) ?? 0;
@@ -181,7 +161,13 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   }
 
   double _getPaidAmount(Map<String, dynamic> r) {
-    final candidates = ['total_paid', 'totalPaid', 'paid', 'paid_amount', 'paidAmount'];
+    final candidates = [
+      'total_paid',
+      'totalPaid',
+      'paid',
+      'paid_amount',
+      'paidAmount'
+    ];
     for (final k in candidates) {
       final v = r[k];
       if (v == null) continue;
@@ -227,7 +213,10 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   }
 
   String _normalizePaymentType(Map<String, dynamic> r) {
-    final raw = (r['payment_type'] ?? r['paymentType'] ?? '').toString().trim().toLowerCase();
+    final raw = (r['payment_type'] ?? r['paymentType'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
     if (raw.isEmpty) return 'cash';
     if (raw == 'wallet' || raw == 'card' || raw == 'cash') return raw;
     if (raw.contains('card')) return 'card';
@@ -239,7 +228,15 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   /// استخراج آخر وسيلة دفع ممكنة من الـ row (يحاول عدة مفاتيح محتملة)
   String? _extractLastPaymentMethod(Map<String, dynamic> r) {
     // مفاتيح محتملة نصية مباشرة
-    final keys = ['last_payment_method', 'lastPaymentMethod', 'last_payment_type', 'lastPaymentType', 'last_method', 'recent_payment_method', 'recentPaymentMethod'];
+    final keys = [
+      'last_payment_method',
+      'lastPaymentMethod',
+      'last_payment_type',
+      'lastPaymentType',
+      'last_method',
+      'recent_payment_method',
+      'recentPaymentMethod'
+    ];
     for (final k in keys) {
       final v = r[k];
       if (v == null) continue;
@@ -248,14 +245,24 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     }
 
     // لو فيه حقل payments أو payment_history كمصفوفة، حاول نأخذ آخر عنصر
-    final paymentsCandidates = ['payments', 'payment_history', 'payments_history', 'paymentsList', 'paymentHistory'];
+    final paymentsCandidates = [
+      'payments',
+      'payment_history',
+      'payments_history',
+      'paymentsList',
+      'paymentHistory'
+    ];
     for (final k in paymentsCandidates) {
       final v = r[k];
       if (v == null) continue;
       if (v is List && v.isNotEmpty) {
         final last = v.last;
         if (last is Map) {
-          final maybe = (last['method'] ?? last['payment_type'] ?? last['type'] ?? last['paymentMethod'] ?? last['method_name']);
+          final maybe = (last['method'] ??
+              last['payment_type'] ??
+              last['type'] ??
+              last['paymentMethod'] ??
+              last['method_name']);
           if (maybe != null) {
             final s = maybe.toString().trim();
             if (s.isNotEmpty) return s;
@@ -304,9 +311,9 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   Color? _paymentColor(String paymentType) {
     switch (paymentType) {
       case 'cash':
-        return AppColorsDark.bgColor;
+        return Theme.of(context).cardColor;
       case 'wallet':
-        return AppColorsDark.bgColor;
+        return Theme.of(context).cardColor;
       case 'card':
         return Colors.orangeAccent[200];
       default:
@@ -318,43 +325,57 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     final label = paymentType == 'cash'
         ? 'نقدي'
         : paymentType == 'wallet'
-        ? 'محفظة إلكترونية'
-        : paymentType == 'card'
-        ? 'بطاقة'
-        : paymentType;
+            ? 'دفع بالمحفظة'
+            : paymentType == 'card'
+                ? 'بطاقة'
+                : paymentType;
     return Chip(
-      label: Text(label, style: const TextStyle(color: Colors.white, fontSize: 15,fontWeight: FontWeight.bold)),
+      label: Text(label,
+          style: TextStyle(
+              color: AppColorsDark.mainTextDark,
+              fontSize: 15,
+              fontWeight: FontWeight.bold)),
       backgroundColor: _paymentColor(paymentType),
       visualDensity: VisualDensity.compact,
       shape: RoundedRectangleBorder(
           side: BorderSide(
-              color:
-              label == 'محفظة إلكترونية' ?
-              Colors.blueAccent : Colors.green,
-              width: 1.5
-          ),
-          borderRadius: BorderRadius.circular(15)
-      ),
+              color: label == 'دفع بالمحفظة' ? Colors.blueAccent : Colors.green,
+              width: 1.5),
+          borderRadius: BorderRadius.circular(15)),
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 
   Widget _buildSummaryBoards() {
     Widget board(String title, int count, double total, Color bg) {
-      return Expanded(
+      return SizedBox(
+        width: 220,
         child: Card(
           color: bg.withOpacity(0.1),
-          shape: RoundedRectangleBorder(side: BorderSide(color: bg), borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+              side: BorderSide(color: bg),
+              borderRadius: BorderRadius.circular(12)),
           child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16.0, horizontal: 12.0),
+            padding:
+                const EdgeInsets.symmetric(vertical: 16.0, horizontal: 12.0),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(title, style: const TextStyle(color: Colors.white70, fontSize: 14)),
+                Text(title,
+                    style: TextStyle(
+                        color: AppColorsDark.mainTextLight, fontSize: 14)),
                 const SizedBox(height: 8),
-                Text('$count سند', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                Text('$count سند',
+                    style: TextStyle(
+                        color: AppColorsDark.mainTextDark,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16)),
                 const SizedBox(height: 8),
-                Text(total.toStringAsFixed(2), style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800)),
+                Text(total.toStringAsFixed(2),
+                    style: TextStyle(
+                        color: AppColorsDark.mainTextDark,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800)),
               ],
             ),
           ),
@@ -364,12 +385,13 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
 
     return Directionality(
       textDirection: TextDirection.rtl,
-      child: Row(
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 10,
+        runSpacing: 10,
         children: [
           board('نقدي', _cashCount, _cashTotal, Colors.green),
-          const SizedBox(width: 10),
-          board('محفظة إلكترونية', _walletCount, _walletTotal, Colors.blueAccent),
-          const SizedBox(width: 10),
+          board('دفع بالمحفظة', _walletCount, _walletTotal, Colors.blueAccent),
         ],
       ),
     );
@@ -395,133 +417,185 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColorsDark.bgColor,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0.0,
         scrolledUnderElevation: 0.0,
-        iconTheme: const IconThemeData(color: Colors.white70),
-        title: const Text(
+        iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
+        title: Text(
           'المشتريات المدفوعة',
-          style: TextStyle(color: Colors.white),
+          style: TextStyle(color: AppColorsDark.mainTextDark),
         ),
         actions: [
           IconButton(
             tooltip: "إعادة تحميل (فلتر التاريخ الحالي)",
             onPressed: () => _load(date: selectedDate),
-            icon: const Icon(Icons.refresh, color: Colors.white70),
+            icon: Icon(Icons.refresh, color: Theme.of(context).iconTheme.color),
           )
         ],
       ),
       body: _loading
           ? ListView.separated(
-        padding: const EdgeInsets.all(12),
-        itemCount: 6, // عدد عناصر shimmer المراد عرضها أثناء التحميل
-        separatorBuilder: (_, __) => const SizedBox(height: 12),
-        itemBuilder: (context, index) {
-          return LoadingShimmer(
-            height: 80,
-            borderRadius: BorderRadius.circular(10),
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-          );
-        },
-      )
+              padding: const EdgeInsets.all(12),
+              itemCount: 6, // عدد عناصر shimmer المراد عرضها أثناء التحميل
+              separatorBuilder: (_, __) => const SizedBox(height: 12),
+              itemBuilder: (context, index) {
+                return LoadingShimmer(
+                  height: 80,
+                  borderRadius: BorderRadius.circular(10),
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                );
+              },
+            )
           : Directionality(
-        textDirection: TextDirection.rtl,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // التاريخ
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 16.0),
-              child: Row(
+              textDirection: TextDirection.rtl,
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  GestureDetector(
-                    onTap: _pickDate,
-                    child: Column(
+                  // التاريخ
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 12.0, horizontal: 16.0),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text('التاريخ', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                        const SizedBox(height: 4),
-                        Text(_formatSelectedDate(selectedDate), style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                        GestureDetector(
+                          onTap: _pickDate,
+                          child: Column(
+                            children: [
+                              Text('التاريخ',
+                                  style: TextStyle(
+                                      color: AppColorsDark.mainTextLight,
+                                      fontSize: 13)),
+                              const SizedBox(height: 4),
+                              Text(_formatSelectedDate(selectedDate),
+                                  style: TextStyle(
+                                      color: AppColorsDark.mainTextDark,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
+                  ),
+                  const SizedBox(height: 8),
+                  // error
+                  if (_error != null)
+                    Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Text('حدث خطأ: $_error',
+                          style: TextStyle(color: Colors.redAccent)),
+                    ),
+                  Expanded(
+                    child: Scrollbar(
+                      controller: _scrollController,
+                      thumbVisibility: true,
+                      child: _rows.isEmpty
+                          ? const EmptyStateCard(
+                              icon: Icons.assignment_turned_in,
+                              title: 'لا توجد سندات',
+                              message: 'لا توجد سندات مدفوعة في هذا التاريخ.',
+                            )
+                          : ListView.builder(
+                              controller: _scrollController,
+                              itemCount: _rows.length,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 30, vertical: 20),
+                              itemBuilder: (_, i) {
+                                final r = _rows[i];
+                                final title =
+                                    r['product_name'] ?? r['barcode'] ?? '—';
+                                final paid = _getPaidAmount(r);
+                                final created =
+                                    (r['created_at'] ?? r['receipt_date'] ?? '')
+                                        .toString();
+                                final paymentType = _effectivePaymentType(r);
+
+                                return Card(
+                                  color: Theme.of(context).cardColor,
+                                  margin:
+                                      const EdgeInsets.symmetric(vertical: 12),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12)),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(16.0),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          crossAxisAlignment:
+                                              WrapCrossAlignment.center,
+                                          children: [
+                                            ConstrainedBox(
+                                              constraints: const BoxConstraints(
+                                                  minWidth: 160, maxWidth: 520),
+                                              child: Text('$title',
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                      color: AppColorsDark
+                                                          .mainTextDark,
+                                                      fontSize: 18,
+                                                      fontWeight:
+                                                          FontWeight.bold)),
+                                            ),
+                                            _buildPaymentChip(paymentType),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        _buildInfoRow(
+                                            "استلم:", _getCashierName(r)),
+                                        _buildInfoRow("الكمية:",
+                                            "${r['cartons'] ?? 0} كرتينات + ${r['units'] ?? 0} وحدات"),
+                                        _buildInfoRow(
+                                            "المدفوع:", paid.toStringAsFixed(1),
+                                            valueColor: Colors.green),
+                                        _buildInfoRow(
+                                            "التاريخ:", _fmtDate(created)),
+                                        if ((_getDueAmount(r) ?? 0.0) > 0)
+                                          _buildInfoRow(
+                                              "المتبقي (Due):",
+                                              (_getDueAmount(r) ?? 0.0)
+                                                  .toStringAsFixed(2),
+                                              valueColor:
+                                                  Colors.orangeAccent[200]),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 20.0, vertical: 12.0),
+                    child: _buildSummaryBoards(),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 8),
-            // error
-            if (_error != null)
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Text('حدث خطأ: $_error', style: const TextStyle(color: Colors.redAccent)),
-              ),
-            Expanded(
-              child: Scrollbar(
-                thumbVisibility: true,
-                child: _rows.isEmpty
-                    ? Center(child: Text('لا توجد سندات لعرضها', style: TextStyle(color: Colors.white70)))
-                    : ListView.builder(
-                  itemCount: _rows.length,
-                  primary: true,
-                  padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
-                  itemBuilder: (_, i) {
-                    final r = _rows[i];
-                    final title = r['product_name'] ?? r['barcode'] ?? '—';
-                    final paid = _getPaidAmount(r);
-                    final created = (r['created_at'] ?? r['receipt_date'] ?? '').toString();
-                    final paymentType = _effectivePaymentType(r);
-
-                    return Card(
-                      color: AppColorsDark.bgCardColor,
-                      margin: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text('$title', style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-                                ),
-                                const SizedBox(width: 8),
-                                _buildPaymentChip(paymentType),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            _buildInfoRow("استلم:", _getCashierName(r)),
-                            _buildInfoRow("الكمية:", "${r['cartons'] ?? 0} كرتينات + ${r['units'] ?? 0} وحدات"),
-                            _buildInfoRow("المدفوع:", paid.toStringAsFixed(1), valueColor: Colors.green),
-                            _buildInfoRow("التاريخ:", _fmtDate(created)),
-                            if ((_getDueAmount(r) ?? 0.0) > 0)
-                              _buildInfoRow("المتبقي (Due):", (_getDueAmount(r) ?? 0.0).toStringAsFixed(2), valueColor: Colors.orangeAccent[200]),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 12.0),
-              child: _buildSummaryBoards(),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
   double? _getDueAmount(Map<String, dynamic> r) {
     // support many possible keys, including credit_amount which we want to check
-    final candidates = ['credit_amount', 'creditAmount', 'due_amount', 'due', 'remaining', 'dueAmount'];
+    final candidates = [
+      'credit_amount',
+      'creditAmount',
+      'due_amount',
+      'due',
+      'remaining',
+      'dueAmount'
+    ];
     for (final k in candidates) {
       final v = r[k];
       if (v == null) continue;
@@ -539,8 +613,14 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
       child: Text.rich(
         TextSpan(
           children: [
-            TextSpan(text: "$label ", style: TextStyle(color: Colors.grey[400], fontSize: 14)),
-            TextSpan(text: value, style: TextStyle(color: valueColor ?? Colors.white, fontSize: 14)),
+            TextSpan(
+                text: "$label ",
+                style: TextStyle(color: Colors.grey[400], fontSize: 14)),
+            TextSpan(
+                text: value,
+                style: TextStyle(
+                    color: valueColor ?? AppColorsDark.mainTextDark,
+                    fontSize: 14)),
           ],
         ),
       ),

@@ -19,15 +19,22 @@ class CustomButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDisabled = onPressed == null || isLoading;
+    final isLight = Theme.of(context).brightness == Brightness.light;
     return SizedBox(
       width: infinity ? double.infinity : null,
       height: 50,
       child: ElevatedButton(
         style: ElevatedButton.styleFrom(
           backgroundColor: color,
-            elevation: 0.0,
+          disabledBackgroundColor:
+              isLight ? Colors.grey.shade300 : AppColorsDark.bgCardColor,
+          disabledForegroundColor:
+              isLight ? Colors.grey.shade800 : Colors.white70,
+          elevation: 0.0,
           overlayColor: Colors.blueAccent.withOpacity(0.5),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
         ),
         onPressed: isLoading ? null : onPressed, // ✅ يوقف الضغط لو في لودينج
         child: AnimatedSwitcher(
@@ -36,23 +43,25 @@ class CustomButton extends StatelessWidget {
               FadeTransition(opacity: anim, child: child),
           child: isLoading
               ? SizedBox(
-            key: const ValueKey("loader"),
-            height: 24,
-            width: 24,
-            child: CircularProgressIndicator(
-              strokeWidth: 3,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-          )
+                  key: const ValueKey("loader"),
+                  height: 24,
+                  width: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                )
               : Text(
-            text,
-            key: const ValueKey("text"),
-            style: const TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w500,
-              color: Colors.white,
-            ),
-          ),
+                  text,
+                  key: const ValueKey("text"),
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w500,
+                    color: isDisabled
+                        ? (isLight ? Colors.grey.shade800 : Colors.white70)
+                        : Colors.white,
+                  ),
+                ),
         ),
       ),
     );

@@ -11,7 +11,7 @@ class CustomFormField extends StatefulWidget {
   final String? Function(String?)? validator;
   final void Function(String)? onChanged;
   final List<TextInputFormatter>? inputFormatters;
-  final bool label ;
+  final bool label;
 
   final bool readOnly;
   final VoidCallback? onTap;
@@ -92,8 +92,19 @@ class _CustomFormFieldState extends State<CustomFormField> {
             ...(widget.inputFormatters ?? []),
             // ✅ فورماتر يحول أي أرقام عربية إلى إنجليزية
             TextInputFormatter.withFunction((oldValue, newValue) {
-              const arabic = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
-              const english = ['0','1','2','3','4','5','6','7','8','9'];
+              const arabic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+              const english = [
+                '0',
+                '1',
+                '2',
+                '3',
+                '4',
+                '5',
+                '6',
+                '7',
+                '8',
+                '9'
+              ];
 
               String text = newValue.text;
               for (int i = 0; i < arabic.length; i++) {
@@ -119,7 +130,7 @@ class _CustomFormFieldState extends State<CustomFormField> {
           onFieldSubmitted: widget.onFieldSubmitted,
           decoration: InputDecoration(
             hintText: widget.hint,
-            hintStyle: const TextStyle(color: Colors.white70),
+            hintStyle: TextStyle(color: AppColorsDark.mainTextLight),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(
@@ -129,28 +140,26 @@ class _CustomFormFieldState extends State<CustomFormField> {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(
+              borderSide: BorderSide(
                 color: AppColorsDark.mainColor,
                 width: 2,
               ),
             ),
             suffixIcon: widget.isPassword
                 ? IconButton(
-              icon: Icon(
-                _obscure ? Icons.visibility_off : Icons.visibility,
-                color: Colors.white,
-              ),
-              onPressed: () {
-                setState(() {
-                  _obscure = !_obscure;
-                });
-              },
-            )
+                    icon: Icon(
+                      _obscure ? Icons.visibility_off : Icons.visibility,
+                      color: AppColorsDark.mainTextDark,
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _obscure = !_obscure;
+                      });
+                    },
+                  )
                 : null,
           ),
-          style: const TextStyle(color: Colors.white,
-          fontSize: 18
-          ),
+          style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 18),
         ),
       ],
     );

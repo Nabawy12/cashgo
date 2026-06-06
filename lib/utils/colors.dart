@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
 
+import '../services/app_settings_controller.dart';
+
+class _CurrentTheme {
+  static bool get isLight =>
+      AppSettingsController.themeMode.value == ThemeMode.light;
+}
+
 /// ألوان الوضع الفاتح
 class AppColorsLight {
   static const Color mainColor = Color(0xff5465FF);
-  static const Color bgColor = Color(0xffFFFFFF);
-  static const Color iconColor = Color(0xffFFFFFF);
-  static const Color bgCardColor = Color(0xffF5F6F7);
+  static const Color bgColor = Color(0xffF7F8FC);
+  static const Color iconColor = Colors.black;
+  static const Color bgCardColor = Color(0xffFFFFFF);
   static const Color strokColor = Color(0xffd1d5db);
   static const Color successColor = Color(0xff27AF4D);
   static final Color iconTextFormColor = Colors.grey.shade400;
@@ -18,18 +25,25 @@ class AppColorsLight {
   static const Color pending = Color(0xfffdb448);
 
   /// ألوان النصوص
-  static const Color secondTextLight = Color(0xff6b7280);
-  static const Color mainTextDark = Color(0xff0a1425);
+  static const Color secondTextLight = Color(0xff424242);
+  static const Color mainTextDark = Colors.black;
 }
 
 /// ألوان الوضع الغامق
 class AppColorsDark {
   static const Color mainColor = Color(0xff5465FF);
-  static const Color bgColor = Color(0xff1A1C28);
-  static const Color bgCardColor = Color(0xff262935);
-  static const Color strokColor = Color(0xff3A3D48);
+  static Color get bgColor =>
+      _CurrentTheme.isLight ? AppColorsLight.bgColor : const Color(0xff1A1C28);
+  static Color get bgCardColor => _CurrentTheme.isLight
+      ? AppColorsLight.bgCardColor
+      : const Color(0xff262935);
+  static Color get strokColor => _CurrentTheme.isLight
+      ? AppColorsLight.strokColor
+      : const Color(0xff3A3D48);
 
   /// ألوان النصوص
-  static const Color mainTextLight = Color(0xff808B97);
-  static const Color mainTextDark = Colors.white;
+  static Color get mainTextLight =>
+      _CurrentTheme.isLight ? Colors.grey.shade800 : const Color(0xff808B97);
+  static Color get mainTextDark =>
+      _CurrentTheme.isLight ? Colors.black : Colors.white;
 }

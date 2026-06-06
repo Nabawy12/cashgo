@@ -15,7 +15,7 @@ class LoadingShimmer extends StatefulWidget {
   final Color highlightColor;
   final bool circular; // لو true يصبح شكل دائري (مثلاً لأفاتار)
 
-   LoadingShimmer({
+  LoadingShimmer({
     Key? key,
     this.width,
     this.height,
@@ -26,14 +26,16 @@ class LoadingShimmer extends StatefulWidget {
     Color? highlightColor,
     this.circular = false,
   })  : baseColor = baseColor ?? AppColorsDark.bgCardColor,
-        highlightColor = highlightColor ?? AppColorsDark.mainColor.withOpacity(0.8),
+        highlightColor =
+            highlightColor ?? AppColorsDark.mainColor.withOpacity(0.8),
         super(key: key);
 
   @override
   State<LoadingShimmer> createState() => _LoadingShimmerState();
 }
 
-class _LoadingShimmerState extends State<LoadingShimmer> with SingleTickerProviderStateMixin {
+class _LoadingShimmerState extends State<LoadingShimmer>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
   @override
@@ -77,7 +79,8 @@ class _LoadingShimmerState extends State<LoadingShimmer> with SingleTickerProvid
 
   @override
   Widget build(BuildContext context) {
-    final BorderRadius radius = widget.borderRadius ?? BorderRadius.circular(widget.circular ? 999 : 8.0);
+    final BorderRadius radius = widget.borderRadius ??
+        BorderRadius.circular(widget.circular ? 999 : 8.0);
 
     return Padding(
       padding: widget.padding ?? EdgeInsets.zero,
@@ -104,7 +107,8 @@ class _LoadingShimmerState extends State<LoadingShimmer> with SingleTickerProvid
                     },
                     blendMode: BlendMode.srcATop,
                     child: Container(
-                      color: Colors.white.withOpacity(1.0), // اللون هنا لا يهم لكون blendMode srcATop
+                      color: Colors.white.withOpacity(
+                          1.0), // اللون هنا لا يهم لكون blendMode srcATop
                     ),
                   ),
                 ],

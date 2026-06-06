@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io' show Platform;
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
@@ -11,6 +13,17 @@ class DBHelper {
 
   DBHelper._init();
 
+  static String _hashPassword(String password, String salt) {
+    return sha256.convert(utf8.encode('$salt:$password')).toString();
+  }
+
+  static String _newSalt() {
+    return sha256
+        .convert(utf8.encode(DateTime.now().microsecondsSinceEpoch.toString()))
+        .toString()
+        .substring(0, 16);
+  }
+
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDB('pos_system.db_v2.151');
@@ -18,7 +31,8 @@ class DBHelper {
   }
 
   Future<Database> _initDB(String fileName) async {
-    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       try {
         sqfliteFfiInit();
         databaseFactory = databaseFactoryFfi;
@@ -31,8 +45,28 @@ class DBHelper {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 151,
       onCreate: _createDB,
+      onUpgrade: (db, oldVersion, newVersion) async {
+        await _ensureUnitsRemainderColumn(db);
+        await _ensureSaleColumns(db);
+        await _ensureProductDatesColumns(db);
+        await _ensureExpirySeenColumn(db);
+        await _ensureLowStockSeenColumn(db);
+        await _ensurePurchaseReceiptsTable(db);
+        await _ensurePurchaseReceiptsColumns(db);
+        await _ensureCashDrawerTable(db);
+        await _ensureIsCurrentUserColumn(db);
+        await _ensureSalePaymentMethodColumn(db);
+        await _ensureSaleCardTransferredColumn(db);
+        await _ensureSaleDiscountColumns(db);
+        await _ensureDrawerWithdrawnAmountColumn(db);
+        await _ensureUserAuthColumns(db);
+        await _migratePlaintextUsers(db);
+        await _ensureCloseShiftsTable(db);
+        await _ensureShiftSettingsTable(db);
+        await _ensureAppSettingsTable(db);
+      },
       onOpen: (db) async {
         try {
           await _ensureUnitsRemainderColumn(db);
@@ -55,26 +89,47 @@ class DBHelper {
         try {
           await _ensurePurchaseReceiptsColumns(db);
         } catch (_) {}
-        try { await _ensureCashDrawerTable(db); } catch (_) {}
+        try {
+          await _ensureCashDrawerTable(db);
+        } catch (_) {}
 
-        try { await _ensureIsCurrentUserColumn(db); } catch (_) {}
+        try {
+          await _ensureIsCurrentUserColumn(db);
+        } catch (_) {}
 
-        try { await _ensureSalePaymentMethodColumn(db); } catch (_) {}
+        try {
+          await _ensureSalePaymentMethodColumn(db);
+        } catch (_) {}
 
-        try { await _ensureSaleCardTransferredColumn(db); } catch (_) {}
+        try {
+          await _ensureSaleCardTransferredColumn(db);
+        } catch (_) {}
 
-        try { await _ensureSaleDiscountColumns(db); } catch (_) {}
-        try { await _ensureProductDatesColumns(db); } catch (_) {}
+        try {
+          await _ensureSaleDiscountColumns(db);
+        } catch (_) {}
+        try {
+          await _ensureProductDatesColumns(db);
+        } catch (_) {}
 
-        try { await _ensureDrawerWithdrawnAmountColumn(db); } catch (_) {}
-
-
-
-
-
-
-
-
+        try {
+          await _ensureDrawerWithdrawnAmountColumn(db);
+        } catch (_) {}
+        try {
+          await _ensureUserAuthColumns(db);
+        } catch (_) {}
+        try {
+          await _migratePlaintextUsers(db);
+        } catch (_) {}
+        try {
+          await _ensureCloseShiftsTable(db);
+        } catch (_) {}
+        try {
+          await _ensureShiftSettingsTable(db);
+        } catch (_) {}
+        try {
+          await _ensureAppSettingsTable(db);
+        } catch (_) {}
       },
     );
   }
@@ -86,7 +141,15 @@ class DBHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL UNIQUE,
         password TEXT NOT NULL,
-        role TEXT NOT NULL
+        role TEXT NOT NULL,
+        can_view_credit INTEGER NOT NULL DEFAULT 0
+      )""",
+    );
+
+    await db.execute(
+      """CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
       )""",
     );
 
@@ -130,8 +193,6 @@ class DBHelper {
     drawer_withdrawn_amount REAL NOT NULL DEFAULT 0
   )""",
     );
-
-
 
     // sale_items
     await db.execute(
@@ -180,6 +241,7 @@ class DBHelper {
         product_name TEXT,
         barcode TEXT,
         received_by TEXT,
+        cashier_username TEXT,
         cartons INTEGER NOT NULL DEFAULT 0,
         units INTEGER NOT NULL DEFAULT 0,
         units_in_carton INTEGER NOT NULL DEFAULT 1,
@@ -206,12 +268,111 @@ class DBHelper {
     });
   }
 
+  Future<void> _ensureUserAuthColumns(Database db) async {
+    final cols = await db.rawQuery("PRAGMA table_info(users);");
+
+    Future<void> addIfMissing(String name, String sql) async {
+      if (!cols.any((c) => c['name'] == name)) {
+        await db.execute(sql);
+      }
+    }
+
+    await addIfMissing(
+        'password_hash', 'ALTER TABLE users ADD COLUMN password_hash TEXT;');
+    await addIfMissing('salt', 'ALTER TABLE users ADD COLUMN salt TEXT;');
+    await addIfMissing(
+        'permissions', 'ALTER TABLE users ADD COLUMN permissions TEXT;');
+    await addIfMissing('can_view_credit',
+        'ALTER TABLE users ADD COLUMN can_view_credit INTEGER NOT NULL DEFAULT 0;');
+  }
+
+  Future<void> _migratePlaintextUsers(Database db) async {
+    await _ensureUserAuthColumns(db);
+    final rows = await db.query('users');
+    for (final row in rows) {
+      final currentHash = (row['password_hash'] ?? '').toString();
+      final password = (row['password'] ?? '').toString();
+      if (currentHash.isNotEmpty ||
+          password.isEmpty ||
+          password == '__hashed__') continue;
+      final salt = _newSalt();
+      await db.update(
+        'users',
+        {
+          'password_hash': _hashPassword(password, salt),
+          'salt': salt,
+          'password': '__hashed__',
+        },
+        where: 'id = ?',
+        whereArgs: [row['id']],
+      );
+    }
+  }
+
+  Future<void> _ensureCloseShiftsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS close_shifts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cashier_name TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        opening_balance REAL NOT NULL DEFAULT 0,
+        total_sales REAL NOT NULL DEFAULT 0,
+        total_expenses REAL NOT NULL DEFAULT 0,
+        net_profit REAL NOT NULL DEFAULT 0,
+        closing_balance REAL NOT NULL DEFAULT 0,
+        note TEXT,
+        created_at TEXT NOT NULL
+      )
+    ''');
+
+    final cols = await db.rawQuery("PRAGMA table_info(close_shifts);");
+    Future<void> addIfMissing(String name, String sql) async {
+      if (!cols.any((c) => c['name'] == name)) {
+        await db.execute(sql);
+      }
+    }
+
+    await addIfMissing('opening_balance',
+        'ALTER TABLE close_shifts ADD COLUMN opening_balance REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('total_sales',
+        'ALTER TABLE close_shifts ADD COLUMN total_sales REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('total_expenses',
+        'ALTER TABLE close_shifts ADD COLUMN total_expenses REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('net_profit',
+        'ALTER TABLE close_shifts ADD COLUMN net_profit REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('closing_balance',
+        'ALTER TABLE close_shifts ADD COLUMN closing_balance REAL NOT NULL DEFAULT 0;');
+    await addIfMissing(
+        'note', 'ALTER TABLE close_shifts ADD COLUMN note TEXT;');
+  }
+
+  Future<void> _ensureShiftSettingsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS shift_settings (
+        key TEXT PRIMARY KEY,
+        value REAL NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future<void> _ensureAppSettingsTable(Database db) async {
+    await db.execute(
+      """CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )""",
+    );
+  }
+
   // ----------------- migrations helpers (same as before) -----------------
   Future<void> _ensureUnitsRemainderColumn(Database db) async {
     final cols = await db.rawQuery("PRAGMA table_info(products);");
     final has = cols.any((c) => c['name'] == 'units_remainder');
     if (!has) {
-      await db.execute('ALTER TABLE products ADD COLUMN units_remainder INTEGER NOT NULL DEFAULT 0;');
+      await db.execute(
+          'ALTER TABLE products ADD COLUMN units_remainder INTEGER NOT NULL DEFAULT 0;');
       await db.update('products', {'units_remainder': 0});
     }
   }
@@ -231,14 +392,21 @@ class DBHelper {
       }
     }
 
-    await addIfMissing('paid_amount', 'ALTER TABLE sales ADD COLUMN paid_amount REAL NOT NULL DEFAULT 0;');
-    await addIfMissing('change_amount', 'ALTER TABLE sales ADD COLUMN change_amount REAL NOT NULL DEFAULT 0;');
-    await addIfMissing('is_credit', 'ALTER TABLE sales ADD COLUMN is_credit INTEGER NOT NULL DEFAULT 0;');
-    await addIfMissing('is_return', 'ALTER TABLE sales ADD COLUMN is_return INTEGER NOT NULL DEFAULT 0;');
-    await addIfMissing('return_of_sale_id', 'ALTER TABLE sales ADD COLUMN return_of_sale_id INTEGER;');
-    await addIfMissing('return_note', "ALTER TABLE sales ADD COLUMN return_note TEXT;");
+    await addIfMissing('paid_amount',
+        'ALTER TABLE sales ADD COLUMN paid_amount REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('change_amount',
+        'ALTER TABLE sales ADD COLUMN change_amount REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('is_credit',
+        'ALTER TABLE sales ADD COLUMN is_credit INTEGER NOT NULL DEFAULT 0;');
+    await addIfMissing('is_return',
+        'ALTER TABLE sales ADD COLUMN is_return INTEGER NOT NULL DEFAULT 0;');
+    await addIfMissing('return_of_sale_id',
+        'ALTER TABLE sales ADD COLUMN return_of_sale_id INTEGER;');
+    await addIfMissing(
+        'return_note', "ALTER TABLE sales ADD COLUMN return_note TEXT;");
     // new: customer_name column
-    await addIfMissing('customer_name', "ALTER TABLE sales ADD COLUMN customer_name TEXT;");
+    await addIfMissing(
+        'customer_name', "ALTER TABLE sales ADD COLUMN customer_name TEXT;");
   }
 
   Future<void> ensureSaleColumns() async {
@@ -268,7 +436,8 @@ class DBHelper {
     final hasColumn = cols.any((c) => c['name'] == 'expiry_seen');
 
     if (!hasColumn) {
-      await db.execute('ALTER TABLE products ADD COLUMN expiry_seen INTEGER NOT NULL DEFAULT 0;');
+      await db.execute(
+          'ALTER TABLE products ADD COLUMN expiry_seen INTEGER NOT NULL DEFAULT 0;');
       await db.update('products', {'expiry_seen': 0});
     }
   }
@@ -283,7 +452,8 @@ class DBHelper {
     final hasColumn = cols.any((c) => c['name'] == 'low_stock_seen');
 
     if (!hasColumn) {
-      await db.execute('ALTER TABLE products ADD COLUMN low_stock_seen INTEGER NOT NULL DEFAULT 0;');
+      await db.execute(
+          'ALTER TABLE products ADD COLUMN low_stock_seen INTEGER NOT NULL DEFAULT 0;');
       await db.update('products', {'low_stock_seen': 0});
     }
   }
@@ -295,7 +465,8 @@ class DBHelper {
 
   // Ensure purchase_receipts table exists (for migrations)
   Future<void> _ensurePurchaseReceiptsTable(Database db) async {
-    final tables = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='purchase_receipts';");
+    final tables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='purchase_receipts';");
     final exists = tables.isNotEmpty;
     if (!exists) {
       await db.execute(
@@ -305,6 +476,7 @@ class DBHelper {
           product_name TEXT,
           barcode TEXT,
           received_by TEXT,
+          cashier_username TEXT,
           cartons INTEGER NOT NULL DEFAULT 0,
           units INTEGER NOT NULL DEFAULT 0,
           units_in_carton INTEGER NOT NULL DEFAULT 1,
@@ -337,9 +509,23 @@ class DBHelper {
       }
     }
 
-    await addIfMissing('payment_type', "ALTER TABLE purchase_receipts ADD COLUMN payment_type TEXT NOT NULL DEFAULT 'cash';");
-    await addIfMissing('paid_amount', "ALTER TABLE purchase_receipts ADD COLUMN paid_amount REAL NOT NULL DEFAULT 0;");
-    await addIfMissing('due_amount', "ALTER TABLE purchase_receipts ADD COLUMN due_amount REAL NOT NULL DEFAULT 0;");
+    await addIfMissing('payment_type',
+        "ALTER TABLE purchase_receipts ADD COLUMN payment_type TEXT NOT NULL DEFAULT 'cash';");
+    await addIfMissing('paid_amount',
+        "ALTER TABLE purchase_receipts ADD COLUMN paid_amount REAL NOT NULL DEFAULT 0;");
+    await addIfMissing('due_amount',
+        "ALTER TABLE purchase_receipts ADD COLUMN due_amount REAL NOT NULL DEFAULT 0;");
+    await addIfMissing('cashier_username',
+        "ALTER TABLE purchase_receipts ADD COLUMN cashier_username TEXT;");
+    await db.rawUpdate(
+      '''
+      UPDATE purchase_receipts
+      SET cashier_username = received_by
+      WHERE (cashier_username IS NULL OR TRIM(cashier_username) = '')
+        AND received_by IS NOT NULL
+        AND TRIM(received_by) != ''
+      ''',
+    );
   }
 
   Future<void> ensurePurchaseReceiptsColumns() async {
@@ -350,23 +536,154 @@ class DBHelper {
   // ----------------- auth / CRUD / helpers (mostly same as previous) -----------------
   Future<Map<String, dynamic>?> login(String username, String password) async {
     final db = await instance.database;
+    await _ensureUserAuthColumns(db);
+    await _migratePlaintextUsers(db);
     final result = await db.query(
       'users',
-      where: 'username = ? AND password = ?',
-      whereArgs: [username, password],
+      where: 'username = ?',
+      whereArgs: [username],
+      limit: 1,
     );
-    if (result.isNotEmpty) return result.first;
+    if (result.isNotEmpty) {
+      final user = Map<String, dynamic>.from(result.first);
+      final salt = (user['salt'] ?? '').toString();
+      final hash = (user['password_hash'] ?? '').toString();
+      final legacyPassword = (user['password'] ?? '').toString();
+      final matchesHash =
+          salt.isNotEmpty && hash == _hashPassword(password, salt);
+      final matchesLegacy = legacyPassword.isNotEmpty &&
+          legacyPassword != '__hashed__' &&
+          legacyPassword == password;
+      if (matchesHash || matchesLegacy) {
+        if (matchesLegacy) {
+          final newSalt = _newSalt();
+          await db.update(
+            'users',
+            {
+              'password_hash': _hashPassword(password, newSalt),
+              'salt': newSalt,
+              'password': '__hashed__',
+            },
+            where: 'id = ?',
+            whereArgs: [user['id']],
+          );
+          user['password'] = '__hashed__';
+        }
+        return _normaliseUserRow(user);
+      }
+    }
     return null;
   }
 
   Future<int> changePassword(String username, String newPassword) async {
     final db = await instance.database;
+    await _ensureUserAuthColumns(db);
+    final salt = _newSalt();
     return await db.update(
       'users',
-      {'password': newPassword},
+      {
+        'password': '__hashed__',
+        'password_hash': _hashPassword(newPassword, salt),
+        'salt': salt,
+      },
       where: 'username = ?',
       whereArgs: [username],
     );
+  }
+
+  Map<String, dynamic> _normaliseUserRow(Map<String, dynamic> row) {
+    final out = Map<String, dynamic>.from(row);
+    out.remove('password_hash');
+    out.remove('salt');
+    out.remove('password');
+    final rawPermissions = row['permissions'];
+    final canViewCredit = (row['can_view_credit'] as num?)?.toInt() == 1 ||
+        row['can_view_credit'] == true ||
+        row['can_view_credit']?.toString() == '1';
+    if (rawPermissions is String && rawPermissions.trim().isNotEmpty) {
+      try {
+        out['permissions'] = jsonDecode(rawPermissions);
+      } catch (_) {
+        out['permissions'] = rawPermissions;
+      }
+    } else {
+      out['permissions'] = {
+        'invoice_log': false,
+        'receive_from_suppliers': false,
+        'pay_credit': false,
+        'discount': false,
+      };
+    }
+    if (out['permissions'] is Map) {
+      out['permissions'] = Map<String, dynamic>.from(out['permissions'])
+        ..['can_view_credit'] = canViewCredit;
+    }
+    out['can_view_credit'] = canViewCredit ? 1 : 0;
+    return out;
+  }
+
+  Future<List<Map<String, dynamic>>> getUsers() async {
+    final db = await instance.database;
+    await _ensureUserAuthColumns(db);
+    await _migratePlaintextUsers(db);
+    final rows = await db.query('users', orderBy: 'role ASC, username ASC');
+    return rows
+        .map((row) => _normaliseUserRow(Map<String, dynamic>.from(row)))
+        .toList();
+  }
+
+  Future<int> insertUser({
+    required String username,
+    required String password,
+    String role = 'cashier',
+    Map<String, dynamic>? permissions,
+    bool canViewCredit = false,
+  }) async {
+    final db = await instance.database;
+    await _ensureUserAuthColumns(db);
+    final salt = _newSalt();
+    return await db.insert('users', {
+      'username': username,
+      'password': '__hashed__',
+      'password_hash': _hashPassword(password, salt),
+      'salt': salt,
+      'role': role,
+      'permissions': jsonEncode(permissions ?? {}),
+      'can_view_credit': canViewCredit ? 1 : 0,
+    });
+  }
+
+  Future<int> updateUserLocal(
+    int id, {
+    String? username,
+    String? password,
+    String? role,
+    Map<String, dynamic>? permissions,
+    bool? canViewCredit,
+  }) async {
+    final db = await instance.database;
+    await _ensureUserAuthColumns(db);
+    final values = <String, dynamic>{};
+    if (username != null && username.trim().isNotEmpty)
+      values['username'] = username.trim();
+    if (role != null && role.trim().isNotEmpty) values['role'] = role.trim();
+    if (permissions != null) values['permissions'] = jsonEncode(permissions);
+    if (canViewCredit != null) {
+      values['can_view_credit'] = canViewCredit ? 1 : 0;
+    }
+    if (password != null && password.isNotEmpty) {
+      final salt = _newSalt();
+      values['password'] = '__hashed__';
+      values['password_hash'] = _hashPassword(password, salt);
+      values['salt'] = salt;
+    }
+    if (values.isEmpty) return 0;
+    return await db.update('users', values, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<int> deleteUserLocal(int id) async {
+    final db = await instance.database;
+    return await db.delete('users', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<int> insertProduct(Map<String, dynamic> product) async {
@@ -425,12 +742,38 @@ class DBHelper {
 
   Future<int> deleteProduct(int id) async {
     final db = await instance.database;
+    final saleRows = await db.query('sale_items',
+        where: 'product_id = ?', whereArgs: [id], limit: 1);
+    final returnRows = await db.query('sale_return_items',
+        where: 'product_id = ?', whereArgs: [id], limit: 1);
+    final purchaseRows = await db.query('purchase_receipts',
+        where: 'product_id = ?', whereArgs: [id], limit: 1);
+    if (saleRows.isNotEmpty ||
+        returnRows.isNotEmpty ||
+        purchaseRows.isNotEmpty) {
+      throw 'لا يمكن حذف منتج له سجل مبيعات أو مشتريات. يمكن تعديل الكمية بدلاً من الحذف.';
+    }
     return await db.delete('products', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<Map<String, dynamic>?> getProductById(int id) async {
+    final db = await instance.database;
+    final res =
+        await db.query('products', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (res.isEmpty) return null;
+    final product = Map<String, dynamic>.from(res.first);
+    final cartons = (product['quantity'] as num?)?.toInt() ?? 0;
+    final unitsInCarton = (product['units_in_carton'] as num?)?.toInt() ?? 0;
+    final remainder = (product['units_remainder'] as num?)?.toInt() ?? 0;
+    product['units_remainder'] = remainder;
+    product['total_units'] = cartons * unitsInCarton + remainder;
+    return product;
   }
 
   Future<Map<String, dynamic>?> getProductByBarcode(String barcode) async {
     final db = await instance.database;
-    final res = await db.query('products', where: 'barcode = ?', whereArgs: [barcode], limit: 1);
+    final res = await db.query('products',
+        where: 'barcode = ?', whereArgs: [barcode], limit: 1);
     if (res.isNotEmpty) {
       final product = Map<String, dynamic>.from(res.first);
       final cartons = (product['quantity'] as num).toInt();
@@ -445,7 +788,8 @@ class DBHelper {
 
   // في DBHelper:
 // يبحث باستخدام LIKE ويرجع قائمة منتجات مع حقل total_units محسوب
-  Future<List<Map<String, dynamic>>> searchProductsByName(String q, {int limit = 50}) async {
+  Future<List<Map<String, dynamic>>> searchProductsByName(String q,
+      {int limit = 50}) async {
     final db = await instance.database;
     final pattern = '%${q.replaceAll("'", "''")}%';
     final rows = await db.rawQuery(
@@ -470,7 +814,8 @@ class DBHelper {
 // يجلب منتج واحد مطابقًا تمامًا للاسم (limit = 1) ويحسب total_units
   Future<Map<String, dynamic>?> getProductByName(String name) async {
     final db = await instance.database;
-    final res = await db.query('products', where: 'name = ?', whereArgs: [name], limit: 1);
+    final res = await db.query('products',
+        where: 'name = ?', whereArgs: [name], limit: 1);
     if (res.isNotEmpty) {
       final product = Map<String, dynamic>.from(res.first);
       final cartons = (product['quantity'] as num?)?.toInt() ?? 0;
@@ -482,7 +827,6 @@ class DBHelper {
     }
     return null;
   }
-
 
   // ----------------- sales & sale_items -----------------
   Future<int> createSale({
@@ -532,8 +876,6 @@ class DBHelper {
     return id;
   }
 
-
-
   Future<int> insertSaleItem({
     required int saleId,
     required int productId,
@@ -549,10 +891,88 @@ class DBHelper {
     });
   }
 
+  Future<int> createSaleWithItems({
+    required List<Map<String, dynamic>> items,
+    required double subtotal,
+    required double total,
+    required double paid,
+    required String cashierUsername,
+    required String paymentMethod,
+    bool requireFullPayment = false,
+    String? customerName,
+    String discountType = 'fixed',
+    double discountValue = 0.0,
+  }) async {
+    final db = await instance.database;
+    return await db.transaction<int>((txn) async {
+      final change = paid >= total ? paid - total : 0.0;
+      final saleId = await txn.insert('sales', {
+        'total': total,
+        'date': DateTime.now().toIso8601String(),
+        'cashier_username': cashierUsername,
+        'paid_amount': paid,
+        'change_amount': change,
+        'is_credit': paymentMethod == 'credit' ? 1 : 0,
+        'is_return': 0,
+        'return_of_sale_id': null,
+        'return_note': '',
+        'customer_name': customerName ?? '',
+        'payment_method': paymentMethod,
+        'discount_type': discountType,
+        'discount_value': discountValue,
+      });
+
+      for (final item in items) {
+        final productId = (item['product_id'] as num?)?.toInt() ??
+            int.tryParse(item['product_id']?.toString() ?? '') ??
+            0;
+        final qty = (item['qty'] as num?)?.toInt() ??
+            (item['quantity'] as num?)?.toInt() ??
+            int.tryParse(item['qty']?.toString() ?? '') ??
+            0;
+        final price = (item['price'] as num?)?.toDouble() ??
+            double.tryParse(item['price']?.toString() ?? '') ??
+            0.0;
+        if (productId <= 0 || qty <= 0) continue;
+        await txn.insert('sale_items', {
+          'sale_id': saleId,
+          'product_id': productId,
+          'quantity': qty,
+          'price': price,
+        });
+
+        final rows = await txn.query('products',
+            where: 'id = ?', whereArgs: [productId], limit: 1);
+        if (rows.isEmpty) continue;
+        final product = rows.first;
+        final unitsInCarton =
+            (product['units_in_carton'] as num?)?.toInt() ?? 1;
+        final currentCartons = (product['quantity'] as num?)?.toInt() ?? 0;
+        final currentRemainder =
+            (product['units_remainder'] as num?)?.toInt() ?? 0;
+        final currentUnits = currentCartons * unitsInCarton + currentRemainder;
+        final remaining = (currentUnits - qty).clamp(0, currentUnits);
+        await txn.update(
+          'products',
+          {
+            'quantity': unitsInCarton > 0 ? remaining ~/ unitsInCarton : 0,
+            'units_remainder':
+                unitsInCarton > 0 ? remaining % unitsInCarton : remaining,
+          },
+          where: 'id = ?',
+          whereArgs: [productId],
+        );
+      }
+
+      return saleId;
+    });
+  }
+
   Future<int> reduceProductStockByUnits(int productId, int unitsSold) async {
     if (unitsSold <= 0) return 0;
     final db = await instance.database;
-    final res = await db.query('products', where: 'id = ?', whereArgs: [productId], limit: 1);
+    final res = await db.query('products',
+        where: 'id = ?', whereArgs: [productId], limit: 1);
     if (res.isEmpty) return 0;
     final product = Map<String, dynamic>.from(res.first);
 
@@ -561,10 +981,13 @@ class DBHelper {
     final currentRemainder = (product['units_remainder'] as num?)?.toInt() ?? 0;
     final currentTotalUnits = currentCartons * unitsInCarton + currentRemainder;
 
-    final remainingUnits = (currentTotalUnits - unitsSold).clamp(0, currentTotalUnits);
+    final remainingUnits =
+        (currentTotalUnits - unitsSold).clamp(0, currentTotalUnits);
 
-    final newCartons = unitsInCarton > 0 ? (remainingUnits ~/ unitsInCarton) : 0;
-    final newRemainder = unitsInCarton > 0 ? (remainingUnits % unitsInCarton) : remainingUnits;
+    final newCartons =
+        unitsInCarton > 0 ? (remainingUnits ~/ unitsInCarton) : 0;
+    final newRemainder =
+        unitsInCarton > 0 ? (remainingUnits % unitsInCarton) : remainingUnits;
 
     return await db.update(
       'products',
@@ -580,7 +1003,8 @@ class DBHelper {
   Future<int> increaseProductStockByUnits(int productId, int unitsToAdd) async {
     if (unitsToAdd <= 0) return 0;
     final db = await instance.database;
-    final res = await db.query('products', where: 'id = ?', whereArgs: [productId], limit: 1);
+    final res = await db.query('products',
+        where: 'id = ?', whereArgs: [productId], limit: 1);
     if (res.isEmpty) return 0;
     final product = Map<String, dynamic>.from(res.first);
 
@@ -592,7 +1016,8 @@ class DBHelper {
     final newTotalUnits = currentTotalUnits + unitsToAdd;
 
     final newCartons = unitsInCarton > 0 ? (newTotalUnits ~/ unitsInCarton) : 0;
-    final newRemainder = unitsInCarton > 0 ? (newTotalUnits % unitsInCarton) : newTotalUnits;
+    final newRemainder =
+        unitsInCarton > 0 ? (newTotalUnits % unitsInCarton) : newTotalUnits;
 
     return await db.update(
       'products',
@@ -667,7 +1092,8 @@ class DBHelper {
     return Sqflite.firstIntValue(result) ?? 0;
   }
 
-  Future<List<Map<String, dynamic>>> getExpiringUnseenProducts({required int daysThreshold}) async {
+  Future<List<Map<String, dynamic>>> getExpiringUnseenProducts(
+      {required int daysThreshold}) async {
     final db = await instance.database;
     final now = DateTime.now();
     final thresholdDate = now.add(Duration(days: daysThreshold));
@@ -726,12 +1152,14 @@ class DBHelper {
   // get sale_returns rows for a sale
   Future<List<Map<String, dynamic>>> getSaleReturnsBySaleId(int saleId) async {
     final db = await instance.database;
-    final rows = await db.query('sale_returns', where: 'sale_id = ?', whereArgs: [saleId], orderBy: 'date DESC');
+    final rows = await db.query('sale_returns',
+        where: 'sale_id = ?', whereArgs: [saleId], orderBy: 'date DESC');
     return rows;
   }
 
   // get sale_return_items for a sale (join with sale_returns)
-  Future<List<Map<String, dynamic>>> getSaleReturnItemsForSale(int saleId) async {
+  Future<List<Map<String, dynamic>>> getSaleReturnItemsForSale(
+      int saleId) async {
     final db = await instance.database;
     final rows = await db.rawQuery(
       '''
@@ -758,7 +1186,8 @@ class DBHelper {
         : 0.0;
   }
 
-  Future<int> markSaleAsReturn(int originalSaleId, {required int returnSaleId, String? note}) async {
+  Future<int> markSaleAsReturn(int originalSaleId,
+      {required int returnSaleId, String? note}) async {
     final db = await instance.database;
     return await db.update(
       'sales',
@@ -782,23 +1211,21 @@ class DBHelper {
   /// while still logging the action in sale_returns / sale_return_items.
   Future<void> applyReturnExchangeToSale({
     required int saleId,
-    required Map<int, int> returnsMap, // productId -> qtyReturned
-    required Map<int, int> additionsMap, // productId -> qtyAdded (replacements)
+    required Map<int, int> returnsMap,
+    required Map<int, int> additionsMap,
     required double paidDelta,
     required String note,
   }) async {
     final db = await instance.database;
 
     await db.transaction((txn) async {
-      // load sale
-      final saleRows = await txn.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
+      final saleRows = await txn.query('sales',
+          where: 'id = ?', whereArgs: [saleId], limit: 1);
       if (saleRows.isEmpty) throw 'Original sale not found';
       final sale = saleRows.first;
-      final oldPaid = (sale['paid_amount'] as num?)?.toDouble() ?? 0.0;
       final oldNote = (sale['return_note'] ?? '').toString();
-
-      // create a sale_returns row to log this action
       final now = DateTime.now().toIso8601String();
+
       final returnRowId = await txn.insert('sale_returns', {
         'sale_id': saleId,
         'date': now,
@@ -807,147 +1234,68 @@ class DBHelper {
         'note': note,
       });
 
-      // --- NEW: reflect refund in card_wallet ledger if original payment was card/wallet
-// --- تعديل: خصم من المحفظة فى حالة المرتجع
-      try {
-        final pm = (sale['payment_method'] ?? '').toString().toLowerCase();
-        final double pd = paidDelta;
-        if (pd.abs() > 0.000001 &&
-            (pm == 'card' || pm == 'wallet' || pm.contains('card') || pm.contains('wallet'))) {
-          // تأكد إن الجدول موجود
-          final tables = await txn.rawQuery(
-              "SELECT name FROM sqlite_master WHERE type='table' AND name='card_wallet';"
-          );
-          if (tables.isEmpty) {
-            await txn.execute('''
-        CREATE TABLE IF NOT EXISTS card_wallet (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          amount REAL NOT NULL,
-          updated_by TEXT,
-          note TEXT,
-          created_at TEXT NOT NULL
-        )
-      ''');
-          }
-
-          // لو paidDelta = +100 (يعنى العميل دفع زيادة)، المرتجع = -100 فى wallet
-          // لو paidDelta = -100 (يعنى استرجع فلوس)، برضه تسجّل سالب عشان يخصم من wallet
-          await txn.insert('card_wallet', {
-            'amount': -pd.abs(),  // دايماً سالب
-            'updated_by': sale['cashier_username'] ?? '',
-            'note': 'Refund for return #$returnRowId (sale #$saleId)',
-            'created_at': now,
-          });
-        }
-      } catch (e, st) {
-        debugPrint('Warning: failed to update card_wallet for return: $e\n$st');
-      }
-
-
-      // 1) Process returns: decrement quantities in sale_items and restore stock
       for (final entry in returnsMap.entries) {
         final pid = entry.key;
         final qtyReturn = entry.value;
         if (qtyReturn <= 0) continue;
 
-        // find the sale_item in the original sale (current state)
-        final items = await txn.query(
+        final itemRows = await txn.query(
           'sale_items',
           where: 'sale_id = ? AND product_id = ?',
           whereArgs: [saleId, pid],
           limit: 1,
         );
-
-        if (items.isEmpty) {
-          // If original sale didn't have that product, still log the return (fallback price)
-          final prodRows = await txn.query('products', where: 'id = ?', whereArgs: [pid], limit: 1);
-          if (prodRows.isEmpty) throw 'Product id $pid not found';
-          final fallbackPrice = (prodRows.first['selling_price'] as num?)?.toDouble() ?? 0.0;
-
-          await txn.insert('sale_return_items', {
-            'return_id': returnRowId,
-            'product_id': pid,
-            'qty': qtyReturn,
-            'is_replacement': 0,
-            'price': fallbackPrice,
-          });
-        } else {
-          final item = items.first;
-          final itemId = (item['id'] as num).toInt();
-          final origQty = (item['quantity'] as num?)?.toInt() ?? 0;
-          final price = (item['price'] as num?)?.toDouble() ?? 0.0;
-
-          final newQty = origQty - qtyReturn;
-          if (newQty > 0) {
-            await txn.update('sale_items', {'quantity': newQty}, where: 'id = ?', whereArgs: [itemId]);
-          } else {
-            await txn.delete('sale_items', where: 'id = ?', whereArgs: [itemId]);
-          }
-
-          // log returned item
-          await txn.insert('sale_return_items', {
-            'return_id': returnRowId,
-            'product_id': pid,
-            'qty': qtyReturn,
-            'is_replacement': 0,
-            'price': price,
-          });
-        }
-
-        // restore product stock by units
-        final prodRows = await txn.query('products', where: 'id = ?', whereArgs: [pid], limit: 1);
+        final prodRows = await txn.query('products',
+            where: 'id = ?', whereArgs: [pid], limit: 1);
         if (prodRows.isEmpty) throw 'Product $pid not found in products table';
+        final price = itemRows.isNotEmpty
+            ? ((itemRows.first['price'] as num?)?.toDouble() ?? 0.0)
+            : ((prodRows.first['selling_price'] as num?)?.toDouble() ?? 0.0);
+
+        await txn.insert('sale_return_items', {
+          'return_id': returnRowId,
+          'product_id': pid,
+          'qty': qtyReturn,
+          'is_replacement': 0,
+          'price': price,
+        });
+
         final prod = Map<String, dynamic>.from(prodRows.first);
         final unitsInCarton = (prod['units_in_carton'] as num).toInt();
         final currentCartons = (prod['quantity'] as num).toInt();
-        final currentRemainder = (prod['units_remainder'] as num?)?.toInt() ?? 0;
-        final currentTotal = currentCartons * unitsInCarton + currentRemainder;
-        final newTotal = currentTotal + qtyReturn;
-        final newCartons = unitsInCarton > 0 ? (newTotal ~/ unitsInCarton) : 0;
-        final newRemainder = unitsInCarton > 0 ? (newTotal % unitsInCarton) : newTotal;
-        await txn.update('products', {
-          'quantity': newCartons,
-          'units_remainder': newRemainder,
-        }, where: 'id = ?', whereArgs: [pid]);
+        final currentRemainder =
+            (prod['units_remainder'] as num?)?.toInt() ?? 0;
+        final newTotal =
+            currentCartons * unitsInCarton + currentRemainder + qtyReturn;
+        await txn.update(
+            'products',
+            {
+              'quantity': unitsInCarton > 0 ? (newTotal ~/ unitsInCarton) : 0,
+              'units_remainder':
+                  unitsInCarton > 0 ? (newTotal % unitsInCarton) : newTotal,
+            },
+            where: 'id = ?',
+            whereArgs: [pid]);
       }
 
-      // 2) Process additions (replacement items): add/increase sale_items and reduce stock
       for (final entry in additionsMap.entries) {
         final pid = entry.key;
         final qtyAdd = entry.value;
         if (qtyAdd <= 0) continue;
 
-        // check product exists and availability
-        final prodRows = await txn.query('products', where: 'id = ?', whereArgs: [pid], limit: 1);
+        final prodRows = await txn.query('products',
+            where: 'id = ?', whereArgs: [pid], limit: 1);
         if (prodRows.isEmpty) throw 'Replacement product $pid not found';
         final prod = Map<String, dynamic>.from(prodRows.first);
         final unitsInCarton = (prod['units_in_carton'] as num).toInt();
         final currentCartons = (prod['quantity'] as num).toInt();
-        final currentRemainder = (prod['units_remainder'] as num?)?.toInt() ?? 0;
+        final currentRemainder =
+            (prod['units_remainder'] as num?)?.toInt() ?? 0;
         final currentTotal = currentCartons * unitsInCarton + currentRemainder;
-        if (qtyAdd > currentTotal) throw 'Not enough stock for replacement product ${prod['name']}';
-
+        if (qtyAdd > currentTotal)
+          throw 'Not enough stock for replacement product ${prod['name']}';
         final price = (prod['selling_price'] as num?)?.toDouble() ?? 0.0;
 
-        // find existing sale_item for this product in the sale
-        final items = await txn.query('sale_items', where: 'sale_id = ? AND product_id = ?', whereArgs: [saleId, pid], limit: 1);
-        if (items.isEmpty) {
-          // insert new sale_item row
-          await txn.insert('sale_items', {
-            'sale_id': saleId,
-            'product_id': pid,
-            'quantity': qtyAdd,
-            'price': price,
-          });
-        } else {
-          final item = items.first;
-          final itemId = (item['id'] as num).toInt();
-          final origQty = (item['quantity'] as num?)?.toInt() ?? 0;
-          final newQty = origQty + qtyAdd;
-          await txn.update('sale_items', {'quantity': newQty}, where: 'id = ?', whereArgs: [itemId]);
-        }
-
-        // log this replacement item (is_replacement = 1)
         await txn.insert('sale_return_items', {
           'return_id': returnRowId,
           'product_id': pid,
@@ -956,45 +1304,29 @@ class DBHelper {
           'price': price,
         });
 
-        final newTotalAfter = currentTotal - qtyAdd;
-        final newCartonsAfter = unitsInCarton > 0 ? (newTotalAfter ~/ unitsInCarton) : 0;
-        final newRemainderAfter = unitsInCarton > 0 ? (newTotalAfter % unitsInCarton) : newTotalAfter;
-        await txn.update('products', {
-          'quantity': newCartonsAfter,
-          'units_remainder': newRemainderAfter,
-        }, where: 'id = ?', whereArgs: [pid]);
+        final newTotal = currentTotal - qtyAdd;
+        await txn.update(
+            'products',
+            {
+              'quantity': unitsInCarton > 0 ? (newTotal ~/ unitsInCarton) : 0,
+              'units_remainder':
+                  unitsInCarton > 0 ? (newTotal % unitsInCarton) : newTotal,
+            },
+            where: 'id = ?',
+            whereArgs: [pid]);
       }
 
-      final sumRow = await txn.rawQuery('SELECT SUM(quantity * price) AS sum_total FROM sale_items WHERE sale_id = ?', [saleId]);
-      final newTotal = (sumRow.isNotEmpty && sumRow.first['sum_total'] != null) ? (sumRow.first['sum_total'] as num).toDouble() : 0.0;
-
-      double newPaid = oldPaid + paidDelta;
-      if (newPaid < 0) newPaid = 0.0;
-
-      double newChange = 0.0;
-      int isCredit = 0;
-      if (newPaid >= newTotal) {
-        newChange = newPaid - newTotal;
-        isCredit = 0;
-      } else {
-        newChange = 0.0;
-        isCredit = 1;
-      }
-
-      final combinedNote = (oldNote.isEmpty ? '' : (oldNote + ' | ')) + note;
-
-      await txn.update('sales', {
-        'total': newTotal,
-        'paid_amount': newPaid,
-        'change_amount': newChange,
-        'is_credit': isCredit,
-        'is_return': 1,
-        'return_note': combinedNote,
-      }, where: 'id = ?', whereArgs: [saleId]);
+      final combinedNote = (oldNote.isEmpty ? '' : '$oldNote | ') + note;
+      await txn.update(
+          'sales',
+          {
+            'is_return': 1,
+            'return_note': combinedNote,
+          },
+          where: 'id = ?',
+          whereArgs: [saleId]);
     });
   }
-
-
 
   Future<List<Map<String, dynamic>>> getProductsByName(String query) async {
     final db = await instance.database;
@@ -1037,7 +1369,8 @@ class DBHelper {
         start = end;
         break;
       case 'week':
-        start = end.subtract(const Duration(days: 6)); // آخر 7 أيام (بما فيها اليوم)
+        start = end
+            .subtract(const Duration(days: 6)); // آخر 7 أيام (بما فيها اليوم)
         break;
       case 'month':
         start = DateTime(now.year, now.month, 1);
@@ -1099,11 +1432,13 @@ class DBHelper {
 
     Map<String, dynamic>? found;
     if (b.isNotEmpty) {
-      final res = await db.query('products', where: 'barcode = ?', whereArgs: [b], limit: 1);
+      final res = await db.query('products',
+          where: 'barcode = ?', whereArgs: [b], limit: 1);
       if (res.isNotEmpty) found = Map<String, dynamic>.from(res.first);
     }
     if (found == null && n.isNotEmpty) {
-      final res = await db.query('products', where: 'name LIKE ? COLLATE NOCASE', whereArgs: [n], limit: 1);
+      final res = await db.query('products',
+          where: 'name LIKE ? COLLATE NOCASE', whereArgs: [n], limit: 1);
       if (res.isNotEmpty) found = Map<String, dynamic>.from(res.first);
     }
 
@@ -1118,26 +1453,30 @@ class DBHelper {
         await increaseProductStockByUnits(pid, totalUnitsToAdd);
       }
 
-
       double unitPrice = 0.0;
       if (purchasePricePerUnit != null) {
         unitPrice = purchasePricePerUnit;
       } else if (purchasePricePerCarton != null && unitsInCarton > 0) {
         unitPrice = purchasePricePerCarton / unitsInCarton;
-      } else if ((found['purchase_price'] as num?) != null && (found['purchase_price'] as num) > 0 && unitsInCarton > 0) {
+      } else if ((found['purchase_price'] as num?) != null &&
+          (found['purchase_price'] as num) > 0 &&
+          unitsInCarton > 0) {
         // fallback to stored purchase price (assumed carton price)
-        unitPrice = (found['purchase_price'] as num).toDouble() / (unitsInCarton > 0 ? unitsInCarton : 1);
+        unitPrice = (found['purchase_price'] as num).toDouble() /
+            (unitsInCarton > 0 ? unitsInCarton : 1);
       }
 
       double? newCartonPrice;
       if (purchasePricePerCarton != null) {
         newCartonPrice = purchasePricePerCarton;
       } else if (purchasePricePerUnit != null) {
-        newCartonPrice = purchasePricePerUnit * (unitsInCarton > 0 ? unitsInCarton : 1);
+        newCartonPrice =
+            purchasePricePerUnit * (unitsInCarton > 0 ? unitsInCarton : 1);
       }
 
       if (newCartonPrice != null) {
-        await db.update('products', {'purchase_price': newCartonPrice}, where: 'id = ?', whereArgs: [pid]);
+        await db.update('products', {'purchase_price': newCartonPrice},
+            where: 'id = ?', whereArgs: [pid]);
       }
 
       final totalCost = unitPrice * totalUnitsToAdd;
@@ -1149,6 +1488,7 @@ class DBHelper {
         'product_name': found['name'] ?? '',
         'barcode': found['barcode'] ?? '',
         'received_by': receivedBy,
+        'cashier_username': receivedBy,
         'cartons': cartons,
         'units': units,
         'units_in_carton': unitsInCarton,
@@ -1173,21 +1513,25 @@ class DBHelper {
       if (sellingPricePerUnitIfNew == null) {
         return {
           'status': 'need_selling_price',
-          'message': 'Product not found. Please provide sellingPricePerUnitIfNew and unitsInCartonIfNew to create.',
+          'message':
+              'Product not found. Please provide sellingPricePerUnitIfNew and unitsInCartonIfNew to create.',
           'suggested_name': n,
           'suggested_barcode': b,
         };
       }
 
       final cartonPrice = purchasePricePerCarton ??
-          (purchasePricePerUnit != null ? purchasePricePerUnit * unitsInCartonIfNew : null) ??
+          (purchasePricePerUnit != null
+              ? purchasePricePerUnit * unitsInCartonIfNew
+              : null) ??
           0.0;
 
       final initialCartons = cartons;
       final initialRemainder = units;
       final totalUnits = initialCartons * unitsInCartonIfNew + initialRemainder;
 
-      final unitPrice = purchasePricePerUnit ?? (unitsInCartonIfNew > 0 ? (cartonPrice / unitsInCartonIfNew) : 0.0);
+      final unitPrice = purchasePricePerUnit ??
+          (unitsInCartonIfNew > 0 ? (cartonPrice / unitsInCartonIfNew) : 0.0);
       final totalCost = unitPrice * totalUnits;
       double due = totalCost - paidAmount;
       if (due < 0) due = 0.0;
@@ -1212,6 +1556,7 @@ class DBHelper {
         'product_name': n,
         'barcode': b,
         'received_by': receivedBy,
+        'cashier_username': receivedBy,
         'cartons': cartons,
         'units': units,
         'units_in_carton': unitsInCartonIfNew,
@@ -1237,13 +1582,17 @@ class DBHelper {
 
   Future<List<Map<String, dynamic>>> getPaidPurchaseReceipts() async {
     final db = await instance.database;
-    final rows = await db.query('purchase_receipts', where: 'due_amount = 0 OR (paid_amount IS NOT NULL AND paid_amount > 0 AND due_amount = 0)', orderBy: 'created_at DESC');
+    final rows = await db.query('purchase_receipts',
+        where:
+            'due_amount = 0 OR (paid_amount IS NOT NULL AND paid_amount > 0 AND due_amount = 0)',
+        orderBy: 'created_at DESC');
     return rows;
   }
 
   Future<List<Map<String, dynamic>>> getCreditPurchaseReceipts() async {
     final db = await instance.database;
-    final rows = await db.query('purchase_receipts', where: 'due_amount > 0', orderBy: 'created_at DESC');
+    final rows = await db.query('purchase_receipts',
+        where: 'due_amount > 0', orderBy: 'created_at DESC');
     return rows;
   }
 
@@ -1251,7 +1600,8 @@ class DBHelper {
     if (amount <= 0) return 0;
     final db = await instance.database;
     return await db.transaction((txn) async {
-      final rows = await txn.query('purchase_receipts', where: 'id = ?', whereArgs: [receiptId], limit: 1);
+      final rows = await txn.query('purchase_receipts',
+          where: 'id = ?', whereArgs: [receiptId], limit: 1);
       if (rows.isEmpty) throw 'Receipt not found';
       final r = Map<String, dynamic>.from(rows.first);
       final currentPaid = (r['paid_amount'] as num?)?.toDouble() ?? 0.0;
@@ -1259,7 +1609,9 @@ class DBHelper {
       final newPaid = currentPaid + amount;
       double newDue = currentDue - amount;
       if (newDue < 0) newDue = 0.0;
-      final updated = await txn.update('purchase_receipts', {'paid_amount': newPaid, 'due_amount': newDue}, where: 'id = ?', whereArgs: [receiptId]);
+      final updated = await txn.update(
+          'purchase_receipts', {'paid_amount': newPaid, 'due_amount': newDue},
+          where: 'id = ?', whereArgs: [receiptId]);
       return updated;
     });
   }
@@ -1268,8 +1620,7 @@ class DBHelper {
 
   Future<void> _ensureCashDrawerTable(Database db) async {
     final tables = await db.rawQuery(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='cash_drawer';"
-    );
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cash_drawer';");
     final exists = tables.isNotEmpty;
     if (!exists) {
       await db.execute('''
@@ -1284,7 +1635,6 @@ class DBHelper {
     }
   }
 
-
   Future<void> ensureCashDrawerTable() async {
     final db = await instance.database;
     await _ensureCashDrawerTable(db);
@@ -1292,12 +1642,14 @@ class DBHelper {
 
   Future<double> getLatestDrawerStartingAmount() async {
     final db = await instance.database;
-    final rows = await db.rawQuery('SELECT amount FROM cash_drawer ORDER BY id DESC LIMIT 1');
+    final rows = await db
+        .rawQuery('SELECT amount FROM cash_drawer ORDER BY id DESC LIMIT 1');
     if (rows.isEmpty) return 0.0;
     return (rows.first['amount'] as num?)?.toDouble() ?? 0.0;
   }
 
-  Future<int> setDrawerStartingAmount(double amount, String updatedBy, {String note = ''}) async {
+  Future<int> setDrawerStartingAmount(double amount, String updatedBy,
+      {String note = ''}) async {
     final db = await instance.database;
     // تأكد أن الجدول موجود (مفيد لو نسيت استدعاءه في onOpen)
     await _ensureCashDrawerTable(db);
@@ -1310,13 +1662,16 @@ class DBHelper {
     });
   }
 
-  Future<Map<String, double>> getDrawerTotals({String? fromDate, String? toDate}) async {
+  Future<Map<String, double>> getDrawerTotals(
+      {String? fromDate, String? toDate}) async {
     final db = await instance.database;
 
     // تحقق من وجود عمود drawer_withdrawn_amount
     final cols = await db.rawQuery("PRAGMA table_info(sales);");
-    final hasWithdrawnFlag = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
-    final hasWithdrawnAmount = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn_amount');
+    final hasWithdrawnFlag =
+        cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
+    final hasWithdrawnAmount =
+        cols.any((c) => (c['name'] as String) == 'drawer_withdrawn_amount');
 
     String dateCondition = '';
     List<Object?> args = [];
@@ -1336,32 +1691,34 @@ class DBHelper {
     if (hasWithdrawnAmount) {
       // نحسب SUM(MAX(net - drawer_withdrawn_amount, 0))
       salesNetCashSql =
-      'SELECT SUM(CASE WHEN ((COALESCE(paid_amount,0)-COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0 THEN ((COALESCE(paid_amount,0)-COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) ELSE 0 END) as sales_net_cash '
+          'SELECT SUM(CASE WHEN ((COALESCE(paid_amount,0)-COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0 THEN ((COALESCE(paid_amount,0)-COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) ELSE 0 END) as sales_net_cash '
           'FROM sales WHERE payment_method = ? $dateCondition';
     } else if (hasWithdrawnFlag) {
       // قديم: استبعد الفواتير المعلّمة drawer_withdrawn = 1
       salesNetCashSql =
-      'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_cash '
+          'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_cash '
           'FROM sales WHERE payment_method = ? AND COALESCE(drawer_withdrawn,0) = 0 $dateCondition';
     } else {
       // لا عمود تتبع: اجمع كل النقدي
       salesNetCashSql =
-      'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_cash '
+          'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_cash '
           'FROM sales WHERE payment_method = ? $dateCondition';
     }
 
     final salesRow = await db.rawQuery(salesNetCashSql, ['cash', ...args]);
-    final salesNetCash = (salesRow.isNotEmpty && salesRow.first['sales_net_cash'] != null)
-        ? (salesRow.first['sales_net_cash'] as num).toDouble()
-        : 0.0;
+    final salesNetCash =
+        (salesRow.isNotEmpty && salesRow.first['sales_net_cash'] != null)
+            ? (salesRow.first['sales_net_cash'] as num).toDouble()
+            : 0.0;
 
     final cardRow = await db.rawQuery(
       'SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_net_card FROM sales WHERE payment_method = ? $dateCondition',
       ['card', ...args],
     );
-    final salesNetCard = (cardRow.isNotEmpty && cardRow.first['sales_net_card'] != null)
-        ? (cardRow.first['sales_net_card'] as num).toDouble()
-        : 0.0;
+    final salesNetCard =
+        (cardRow.isNotEmpty && cardRow.first['sales_net_card'] != null)
+            ? (cardRow.first['sales_net_card'] as num).toDouble()
+            : 0.0;
 
     // بقية الحسابات كما كانت
     String purchaseDateCond = '';
@@ -1380,7 +1737,8 @@ class DBHelper {
       'SELECT SUM(COALESCE(paid_amount,0)) as purchase_paid_cash FROM purchase_receipts WHERE payment_type = ? $purchaseDateCond',
       ['cash', ...purchaseArgs],
     );
-    final purchasePaidCash = (purchaseRow.isNotEmpty && purchaseRow.first['purchase_paid_cash'] != null)
+    final purchasePaidCash = (purchaseRow.isNotEmpty &&
+            purchaseRow.first['purchase_paid_cash'] != null)
         ? (purchaseRow.first['purchase_paid_cash'] as num).toDouble()
         : 0.0;
 
@@ -1397,10 +1755,13 @@ class DBHelper {
       returnsArgs = [toDate];
     }
 
-    final returnsRow = await db.rawQuery('SELECT SUM(COALESCE(paid_delta,0)) as returns_delta FROM sale_returns $returnsDateCond', returnsArgs);
-    final returnsDelta = (returnsRow.isNotEmpty && returnsRow.first['returns_delta'] != null)
-        ? (returnsRow.first['returns_delta'] as num).toDouble()
-        : 0.0;
+    final returnsRow = await db.rawQuery(
+        'SELECT SUM(COALESCE(paid_delta,0)) as returns_delta FROM sale_returns $returnsDateCond',
+        returnsArgs);
+    final returnsDelta =
+        (returnsRow.isNotEmpty && returnsRow.first['returns_delta'] != null)
+            ? (returnsRow.first['returns_delta'] as num).toDouble()
+            : 0.0;
 
     return {
       'sales_net_cash': salesNetCash,
@@ -1410,7 +1771,8 @@ class DBHelper {
     };
   }
 
-  Future<double> computeCurrentDrawerAmount({String? fromDate, String? toDate}) async {
+  Future<double> computeCurrentDrawerAmount(
+      {String? fromDate, String? toDate}) async {
     final starting = await getLatestDrawerStartingAmount();
     final totals = await getDrawerTotals(fromDate: fromDate, toDate: toDate);
 
@@ -1425,11 +1787,13 @@ class DBHelper {
 
   Future<List<Map<String, dynamic>>> getCreditSales() async {
     final db = await instance.database;
-    final rows = await db.query('sales', where: 'is_credit = ?', whereArgs: [1], orderBy: 'date DESC');
+    final rows = await db.query('sales',
+        where: 'is_credit = ?', whereArgs: [1], orderBy: 'date DESC');
     return rows;
   }
 
-  Future<List<Map<String, dynamic>>> searchCreditSalesByCustomer(String query) async {
+  Future<List<Map<String, dynamic>>> searchCreditSalesByCustomer(
+      String query) async {
     final db = await instance.database;
     final q = query.trim();
     if (q.isEmpty) return getCreditSales();
@@ -1443,9 +1807,11 @@ class DBHelper {
     return rows;
   }
 
-  Future<int> markSaleAsPaid(int saleId, {String paymentMethod = 'cash', double? paidAmount}) async {
+  Future<int> markSaleAsPaid(int saleId,
+      {String paymentMethod = 'cash', double? paidAmount}) async {
     final db = await instance.database;
-    final rows = await db.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
+    final rows =
+        await db.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
     if (rows.isEmpty) throw 'Sale not found';
     final total = (rows.first['total'] as num?)?.toDouble() ?? 0.0;
     final paid = paidAmount ?? total;
@@ -1468,7 +1834,8 @@ class DBHelper {
     final cols = await db.rawQuery("PRAGMA table_info(users);");
     final has = cols.any((c) => c['name'] == 'is_current');
     if (!has) {
-      await db.execute('ALTER TABLE users ADD COLUMN is_current INTEGER NOT NULL DEFAULT 0;');
+      await db.execute(
+          'ALTER TABLE users ADD COLUMN is_current INTEGER NOT NULL DEFAULT 0;');
       await db.update('users', {'is_current': 0});
     }
   }
@@ -1482,14 +1849,20 @@ class DBHelper {
     final db = await instance.database;
     await db.transaction((txn) async {
       await txn.update('users', {'is_current': 0});
-      await txn.update('users', {'is_current': 1}, where: 'username = ?', whereArgs: [username]);
+      await txn.update('users', {'is_current': 1},
+          where: 'username = ?', whereArgs: [username]);
     });
   }
 
   Future<Map<String, dynamic>?> getCurrentUser() async {
     final db = await instance.database;
-    final rows = await db.query('users', where: 'is_current = ?', whereArgs: [1], limit: 1);
-    if (rows.isNotEmpty) return rows.first;
+    await _ensureUserAuthColumns(db);
+    await _ensureIsCurrentUserColumn(db);
+    final rows = await db.query('users',
+        where: 'is_current = ?', whereArgs: [1], limit: 1);
+    if (rows.isNotEmpty) {
+      return _normaliseUserRow(Map<String, dynamic>.from(rows.first));
+    }
     return null;
   }
 
@@ -1501,18 +1874,26 @@ class DBHelper {
   Future<int> renameUserAndPropagate(int userId, String newUsername) async {
     final db = await instance.database;
 
-    final rows = await db.query('users', where: 'id = ?', whereArgs: [userId], limit: 1);
+    final rows =
+        await db.query('users', where: 'id = ?', whereArgs: [userId], limit: 1);
     if (rows.isEmpty) throw 'User not found';
     final oldUsername = (rows.first['username'] ?? '').toString();
 
     if (oldUsername == newUsername) return 0;
 
     return await db.transaction<int>((txn) async {
-      final updatedUser = await txn.update('users', {'username': newUsername}, where: 'id = ?', whereArgs: [userId]);
-      await txn.update('sales', {'cashier_username': newUsername}, where: 'cashier_username = ?', whereArgs: [oldUsername]);
-      await txn.update('sale_returns', {'cashier_username': newUsername}, where: 'cashier_username = ?', whereArgs: [oldUsername]);
-      await txn.update('purchase_receipts', {'received_by': newUsername}, where: 'received_by = ?', whereArgs: [oldUsername]);
-      await txn.update('cash_drawer', {'updated_by': newUsername}, where: 'updated_by = ?', whereArgs: [oldUsername]);
+      final updatedUser = await txn.update('users', {'username': newUsername},
+          where: 'id = ?', whereArgs: [userId]);
+      await txn.update('sales', {'cashier_username': newUsername},
+          where: 'cashier_username = ?', whereArgs: [oldUsername]);
+      await txn.update('sale_returns', {'cashier_username': newUsername},
+          where: 'cashier_username = ?', whereArgs: [oldUsername]);
+      await txn.update('purchase_receipts',
+          {'received_by': newUsername, 'cashier_username': newUsername},
+          where: 'received_by = ? OR cashier_username = ?',
+          whereArgs: [oldUsername, oldUsername]);
+      await txn.update('cash_drawer', {'updated_by': newUsername},
+          where: 'updated_by = ?', whereArgs: [oldUsername]);
 
       return updatedUser;
     });
@@ -1522,7 +1903,8 @@ class DBHelper {
     final cols = await db.rawQuery("PRAGMA table_info(sales);");
     final has = cols.any((c) => c['name'] == 'payment_method');
     if (!has) {
-      await db.execute("ALTER TABLE sales ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'cash';");
+      await db.execute(
+          "ALTER TABLE sales ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'cash';");
       await db.update('sales', {'payment_method': 'cash'});
     }
   }
@@ -1536,7 +1918,8 @@ class DBHelper {
     final cols = await db.rawQuery("PRAGMA table_info(sales);");
     final has = cols.any((c) => c['name'] == 'card_transferred');
     if (!has) {
-      await db.execute('ALTER TABLE sales ADD COLUMN card_transferred INTEGER NOT NULL DEFAULT 0;');
+      await db.execute(
+          'ALTER TABLE sales ADD COLUMN card_transferred INTEGER NOT NULL DEFAULT 0;');
       await db.update('sales', {'card_transferred': 0});
     }
   }
@@ -1546,7 +1929,8 @@ class DBHelper {
     await _ensureSaleCardTransferredColumn(db);
   }
 
-  Future<double> getUntransferredCardAmount({String? fromDate, String? toDate}) async {
+  Future<double> getUntransferredCardAmount(
+      {String? fromDate, String? toDate}) async {
     final db = await instance.database;
 
     String dateCondition = '';
@@ -1572,7 +1956,8 @@ class DBHelper {
         : 0.0;
   }
 
-  Future<List<Map<String, dynamic>>> getProductsByBarcodeList(String barcode) async {
+  Future<List<Map<String, dynamic>>> getProductsByBarcodeList(
+      String barcode) async {
     final db = await instance.database;
     final b = barcode.trim();
     if (b.isEmpty) return [];
@@ -1627,12 +2012,16 @@ class DBHelper {
   }) async {
     final db = await instance.database;
     final rows = await db.rawQuery(
-      'SELECT * FROM purchase_receipts WHERE received_by = ? AND date(created_at) BETWEEN ? AND ? ORDER BY created_at ASC',
+      '''
+      SELECT * FROM purchase_receipts
+      WHERE cashier_username = ?
+        AND date(created_at) BETWEEN ? AND ?
+      ORDER BY created_at ASC
+      ''',
       [username, fromDate, toDate],
     );
     return rows;
   }
-
 
   Future<double> getCardAmountByCashierBetweenDates({
     required String cashierUsername,
@@ -1650,7 +2039,9 @@ class DBHelper {
     ''',
       [cashierUsername, fromDate, toDate],
     );
-    return (rows.isNotEmpty && rows.first['sum_card'] != null) ? (rows.first['sum_card'] as num).toDouble() : 0.0;
+    return (rows.isNotEmpty && rows.first['sum_card'] != null)
+        ? (rows.first['sum_card'] as num).toDouble()
+        : 0.0;
   }
 
   Future<double> getCreditOutstandingByCashierBetweenDates({
@@ -1669,7 +2060,9 @@ class DBHelper {
     ''',
       [cashierUsername, fromDate, toDate],
     );
-    final val = (rows.isNotEmpty && rows.first['credit_out'] != null) ? (rows.first['credit_out'] as num).toDouble() : 0.0;
+    final val = (rows.isNotEmpty && rows.first['credit_out'] != null)
+        ? (rows.first['credit_out'] as num).toDouble()
+        : 0.0;
     return val < 0 ? 0.0 : val;
   }
 
@@ -1683,163 +2076,14 @@ class DBHelper {
       '''
     SELECT SUM(COALESCE(due_amount,0)) as total_due
     FROM purchase_receipts
-    WHERE received_by = ?
+    WHERE cashier_username = ?
       AND date(created_at) BETWEEN ? AND ?
     ''',
       [username, fromDate, toDate],
     );
-    return (rows.isNotEmpty && rows.first['total_due'] != null) ? (rows.first['total_due'] as num).toDouble() : 0.0;
-  }
-
-  Future<double> getNetCardSales({String? fromDate, String? toDate, String? cashierUsername}) async {
-    final db = await instance.database;
-
-    String dateCondition = '';
-    final args = <Object?>['wallet'];
-
-    if (fromDate != null && toDate != null) {
-      dateCondition = ' AND date(date) BETWEEN ? AND ?';
-      args.addAll([fromDate, toDate]);
-    } else if (fromDate != null) {
-      dateCondition = ' AND date(date) >= ?';
-      args.add(fromDate);
-    } else if (toDate != null) {
-      dateCondition = ' AND date(date) <= ?';
-      args.add(toDate);
-    }
-
-    if (cashierUsername != null && cashierUsername.trim().isNotEmpty) {
-      dateCondition += ' AND cashier_username = ?';
-      args.add(cashierUsername.trim());
-    }
-
-    final rows = await db.rawQuery(
-      '''
-    SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as card_net
-    FROM sales
-    WHERE payment_method = ?
-    $dateCondition
-    ''',
-      args,
-    );
-
-    final val = (rows.isNotEmpty && rows.first['card_net'] != null)
-        ? (rows.first['card_net'] as num).toDouble()
+    return (rows.isNotEmpty && rows.first['total_due'] != null)
+        ? (rows.first['total_due'] as num).toDouble()
         : 0.0;
-    return val < 0 ? 0.0 : val;
-  }
-  Future<void> _ensureCardWalletTable(Database db) async {
-    final tables = await db.rawQuery(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='card_wallet';"
-    );
-    final exists = tables.isNotEmpty;
-    if (!exists) {
-      await db.execute('''
-      CREATE TABLE IF NOT EXISTS card_wallet (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        amount REAL NOT NULL,
-        updated_by TEXT,
-        note TEXT,
-        created_at TEXT NOT NULL
-      )
-    ''');
-    }
-  }
-
-  Future<void> ensureCardWalletTable() async {
-    final db = await instance.database;
-    await _ensureCardWalletTable(db);
-  }
-
-  Future<double> getLatestCardWalletAmount() async {
-    final db = await instance.database;
-    final rows = await db.rawQuery('SELECT SUM(COALESCE(amount,0)) as sum_amount FROM card_wallet');
-    if (rows.isEmpty) return 0.0;
-    final val = rows.first['sum_amount'];
-    return (val != null) ? (val as num).toDouble() : 0.0;
-  }
-
-  Future<int> setCardWalletAmount(double amount, String updatedBy, {String note = ''}) async {
-    final db = await instance.database;
-    await _ensureCardWalletTable(db);
-    final now = DateTime.now().toIso8601String();
-    return await db.insert('card_wallet', {
-      'amount': amount,
-      'updated_by': updatedBy,
-      'note': note,
-      'created_at': now,
-    });
-  }
-
-
-  Future<int> changeCardWalletBy(double delta, String updatedBy, {String note = ''}) async {
-    // ledger behavior: just insert the delta
-    if (delta == 0) return 0;
-    return await setCardWalletAmount(delta, updatedBy, note: note);
-  }
-  Future<void> transferUntransferredSalesAndWithdraw(double amount, String username, {String? note}) async {
-    final db = await instance.database;
-    await db.transaction((txn) async {
-      final rowsAvail = await txn.rawQuery(
-          '''SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as untransferred
-           FROM sales WHERE payment_method = 'card' AND COALESCE(card_transferred,0) = 0'''
-      );
-      final available = (rowsAvail.isNotEmpty && rowsAvail.first['untransferred'] != null)
-          ? (rowsAvail.first['untransferred'] as num).toDouble()
-          : 0.0;
-
-      if (available + 0.000001 < amount) {
-        throw 'لا يوجد ما يكفي من مبالغ الكارت غير المحولة (المتوفر: ${available.toStringAsFixed(2)})';
-      }
-
-      double remaining = amount;
-
-      final rows = await txn.rawQuery(
-          '''SELECT id, (COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS net FROM sales
-           WHERE payment_method = 'card' AND COALESCE(card_transferred,0) = 0
-           ORDER BY date ASC'''
-      );
-
-      final List<int> toMark = [];
-
-      for (final r in rows) {
-        final int id = (r['id'] as num).toInt();
-        final double net = (r['net'] as num).toDouble();
-        if (net <= 0) continue;
-        if (net <= remaining + 0.000001) {
-          toMark.add(id);
-          remaining -= net;
-          if (remaining <= 0) break;
-        } else {
-          throw 'قاعدة البيانات لا تسمح بتحويل جزء من فاتورة واحدة. الرجاء تحويل مبلغ أكبر أو ترقية السكيمة.';
-        }
-      }
-
-      if (remaining > 0.000001) {
-        throw 'فشل تغطية المبلغ من مبالغ الكارت الغير محوّلة';
-      }
-
-      for (final id in toMark) {
-        await txn.rawUpdate('UPDATE sales SET card_transferred = 1 WHERE id = ?', [id]);
-      }
-
-      final now = DateTime.now().toIso8601String();
-
-      await txn.insert('card_wallet', {
-        'amount': amount,
-        'updated_by': username,
-        'note': note ?? 'تحويل من مبالغ الكارت غير المحولة',
-        'created_at': now,
-      });
-
-      await txn.insert('card_wallet', {
-        'amount': -amount,
-        'updated_by': username,
-        'note': 'سحب بواسطة الكاشير (من مبالغ الكارت المحوّلة)',
-        'created_at': now,
-      });
-
-    });
   }
 
   Future<double> getLatestDrawerStartingAmountByUser(String username) async {
@@ -1905,7 +2149,7 @@ class DBHelper {
       '''
     SELECT SUM(COALESCE(paid_amount,0)) as purchase_paid
     FROM purchase_receipts
-    WHERE received_by = ?
+    WHERE cashier_username = ?
       AND date(created_at) BETWEEN ? AND ?
     ''',
       [username, fromDate, toDate],
@@ -1942,19 +2186,22 @@ class DBHelper {
     await _ensureSaleDiscountColumns(db);
   }
 
-
-
-
-  Future<Map<String, double>> computeSaleTotalWithDiscountFromItems(int saleId, {String? discountType, double? discountValue}) async {
+  Future<Map<String, double>> computeSaleTotalWithDiscountFromItems(int saleId,
+      {String? discountType, double? discountValue}) async {
     final db = await instance.database;
-    final rows = await db.rawQuery('SELECT SUM(quantity * price) as subtotal FROM sale_items WHERE sale_id = ?', [saleId]);
-    final subtotal = (rows.isNotEmpty && rows.first['subtotal'] != null) ? (rows.first['subtotal'] as num).toDouble() : 0.0;
+    final rows = await db.rawQuery(
+        'SELECT SUM(quantity * price) as subtotal FROM sale_items WHERE sale_id = ?',
+        [saleId]);
+    final subtotal = (rows.isNotEmpty && rows.first['subtotal'] != null)
+        ? (rows.first['subtotal'] as num).toDouble()
+        : 0.0;
 
     // إذا لم يُمرّر نوع/قيمة خصم، حاول قراءته من جدول sales
     String dType = discountType ?? 'fixed';
     double dValue = discountValue ?? 0.0;
     if (discountType == null || discountValue == null) {
-      final sRows = await db.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
+      final sRows = await db.query('sales',
+          where: 'id = ?', whereArgs: [saleId], limit: 1);
       if (sRows.isNotEmpty) {
         dType = (sRows.first['discount_type'] ?? 'fixed').toString();
         dValue = (sRows.first['discount_value'] as num?)?.toDouble() ?? 0.0;
@@ -1977,6 +2224,7 @@ class DBHelper {
       'total': finalTotal,
     };
   }
+
   Future<int> applyDiscountToSale({
     required int saleId,
     required String discountType, // 'fixed' | 'percent'
@@ -1984,15 +2232,20 @@ class DBHelper {
   }) async {
     final db = await instance.database;
     return await db.transaction((txn) async {
-      final saleRows = await txn.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
+      final saleRows = await txn.query('sales',
+          where: 'id = ?', whereArgs: [saleId], limit: 1);
       if (saleRows.isEmpty) throw 'Sale not found';
       final sale = saleRows.first;
       final oldPaid = (sale['paid_amount'] as num?)?.toDouble() ?? 0.0;
       final oldNote = (sale['return_note'] ?? '').toString();
 
       // حساب subtotal من sale_items
-      final sumRow = await txn.rawQuery('SELECT SUM(quantity * price) AS subtotal FROM sale_items WHERE sale_id = ?', [saleId]);
-      final subtotal = (sumRow.isNotEmpty && sumRow.first['subtotal'] != null) ? (sumRow.first['subtotal'] as num).toDouble() : 0.0;
+      final sumRow = await txn.rawQuery(
+          'SELECT SUM(quantity * price) AS subtotal FROM sale_items WHERE sale_id = ?',
+          [saleId]);
+      final subtotal = (sumRow.isNotEmpty && sumRow.first['subtotal'] != null)
+          ? (sumRow.first['subtotal'] as num).toDouble()
+          : 0.0;
 
       // حساب قيمة الخصم
       double discountAmount = 0.0;
@@ -2019,20 +2272,22 @@ class DBHelper {
         isCredit = 1;
       }
 
-      final updated = await txn.update('sales', {
-        'total': newTotal,
-        'discount_type': discountType,
-        'discount_value': discountValue,
-        'paid_amount': newPaid,
-        'change_amount': newChange,
-        'is_credit': isCredit,
-      }, where: 'id = ?', whereArgs: [saleId]);
+      final updated = await txn.update(
+          'sales',
+          {
+            'total': newTotal,
+            'discount_type': discountType,
+            'discount_value': discountValue,
+            'paid_amount': newPaid,
+            'change_amount': newChange,
+            'is_credit': isCredit,
+          },
+          where: 'id = ?',
+          whereArgs: [saleId]);
 
       return updated;
     });
   }
-
-
 
   // Ensure column exists (run-once safe)
   Future<void> ensureDrawerWithdrawnColumnExists() async {
@@ -2040,34 +2295,39 @@ class DBHelper {
     final cols = await db.rawQuery("PRAGMA table_info(sales);");
     final has = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
     if (!has) {
-      await db.execute("ALTER TABLE sales ADD COLUMN drawer_withdrawn INTEGER DEFAULT 0;");
+      await db.execute(
+          "ALTER TABLE sales ADD COLUMN drawer_withdrawn INTEGER DEFAULT 0;");
     }
   }
 
 // Mark all eligible cash sales as withdrawn (optionally filter by cashier)
-  Future<void> markAllCashSalesAsDrawerWithdrawn({String? cashierUsername}) async {
+  Future<void> markAllCashSalesAsDrawerWithdrawn(
+      {String? cashierUsername}) async {
     await ensureDrawerWithdrawnColumnExists();
     final db = await database;
-    String where = "payment_method = 'cash' AND COALESCE(drawer_withdrawn,0) = 0";
+    String where =
+        "payment_method = 'cash' AND COALESCE(drawer_withdrawn,0) = 0";
     List<dynamic> args = [];
     if (cashierUsername != null && cashierUsername.isNotEmpty) {
       where += " AND cashier_username = ?";
       args.add(cashierUsername);
     }
-    await db.update('sales', {'drawer_withdrawn': 1}, where: where, whereArgs: args);
+    await db.update('sales', {'drawer_withdrawn': 1},
+        where: where, whereArgs: args);
   }
-
 
   /// حساب ملخّص يومي *بلا تخزين* (on-the-fly)
   /// date: التاريخ المطلوب (ستُحوَّل إلى YYYY-MM-DD)
   /// excludeDrawerWithdrawn: لو true (افتراضي) سيتم استثناء الفواتير التي وُسِمَت drawer_withdrawn = 1
-  Future<Map<String, double>> computeDailySummary(DateTime date, {bool excludeDrawerWithdrawn = true}) async {
+  Future<Map<String, double>> computeDailySummary(DateTime date,
+      {bool excludeDrawerWithdrawn = true}) async {
     final db = await instance.database;
     final dateOnly = date.toIso8601String().split('T').first; // YYYY-MM-DD
 
     // هل العمود drawer_withdrawn موجود؟
     final cols = await db.rawQuery("PRAGMA table_info(sales);");
-    final hasDrawerWithdrawn = cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
+    final hasDrawerWithdrawn =
+        cols.any((c) => (c['name'] as String) == 'drawer_withdrawn');
 
     // شرط الفلاتر حسب وجود العمود ورغبتك
     String cashWhere = "payment_method = 'cash'";
@@ -2080,26 +2340,29 @@ class DBHelper {
       "SELECT SUM(COALESCE(total,0)) as sales_total FROM sales WHERE date(date) = ?",
       [dateOnly],
     );
-    final salesTotal = (salesTotalRow.isNotEmpty && salesTotalRow.first['sales_total'] != null)
-        ? (salesTotalRow.first['sales_total'] as num).toDouble()
-        : 0.0;
+    final salesTotal =
+        (salesTotalRow.isNotEmpty && salesTotalRow.first['sales_total'] != null)
+            ? (salesTotalRow.first['sales_total'] as num).toDouble()
+            : 0.0;
 
     // ما تم تحصيله نقدًا (net = paid_amount - change_amount) مع إمكانية استثناء drawer_withdrawn
     final salesPaidCashRow = await db.rawQuery(
       "SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_paid_cash FROM sales WHERE $cashWhere AND date(date) = ?",
       [dateOnly],
     );
-    final salesPaidCash = (salesPaidCashRow.isNotEmpty && salesPaidCashRow.first['sales_paid_cash'] != null)
+    final salesPaidCash = (salesPaidCashRow.isNotEmpty &&
+            salesPaidCashRow.first['sales_paid_cash'] != null)
         ? (salesPaidCashRow.first['sales_paid_cash'] as num).toDouble()
         : 0.0;
 
-    // ما تم تحصيله كـ كارد/محفظة (نعتمد على payment_method 'card' أو 'wallet')
+    // ما تم تحصيله بوسائل دفع غير نقدية (payment_method 'card' أو 'wallet')
     final salesPaidCardRow = await db.rawQuery(
       "SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as sales_paid_card "
-          "FROM sales WHERE (payment_method = 'card' OR payment_method = 'wallet' OR lower(payment_method) LIKE '%card%') AND date(date) = ?",
+      "FROM sales WHERE (payment_method = 'card' OR payment_method = 'wallet' OR lower(payment_method) LIKE '%card%') AND date(date) = ?",
       [dateOnly],
     );
-    final salesPaidCard = (salesPaidCardRow.isNotEmpty && salesPaidCardRow.first['sales_paid_card'] != null)
+    final salesPaidCard = (salesPaidCardRow.isNotEmpty &&
+            salesPaidCardRow.first['sales_paid_card'] != null)
         ? (salesPaidCardRow.first['sales_paid_card'] as num).toDouble()
         : 0.0;
 
@@ -2108,7 +2371,8 @@ class DBHelper {
       "SELECT SUM(COALESCE(paid_amount,0)) as purchases_paid_cash FROM purchase_receipts WHERE payment_type = 'cash' AND date(created_at) = ?",
       [dateOnly],
     );
-    final purchasesPaidCash = (purchasesRow.isNotEmpty && purchasesRow.first['purchases_paid_cash'] != null)
+    final purchasesPaidCash = (purchasesRow.isNotEmpty &&
+            purchasesRow.first['purchases_paid_cash'] != null)
         ? (purchasesRow.first['purchases_paid_cash'] as num).toDouble()
         : 0.0;
 
@@ -2117,13 +2381,12 @@ class DBHelper {
       "SELECT SUM(COALESCE(paid_delta,0)) as returns_delta FROM sale_returns WHERE date(date) = ?",
       [dateOnly],
     );
-    final returnsDelta = (returnsRow.isNotEmpty && returnsRow.first['returns_delta'] != null)
-        ? (returnsRow.first['returns_delta'] as num).toDouble()
-        : 0.0;
+    final returnsDelta =
+        (returnsRow.isNotEmpty && returnsRow.first['returns_delta'] != null)
+            ? (returnsRow.first['returns_delta'] as num).toDouble()
+            : 0.0;
 
-    // نرجع خريطة منظمة قابلة للاستخدام فورًا
     return {
-      'date': 0.0, // placeholder — لا تعيد التاريخ هنا كرقم، استخدم dateOnly من الطرف المستدعي
       'sales_total': salesTotal,
       'sales_paid_cash': salesPaidCash,
       'sales_paid_card': salesPaidCard,
@@ -2132,11 +2395,11 @@ class DBHelper {
     };
   }
 
-
 // examples to add into DBHelper class
 
 // getProducts with offset+limit (pagination)
-  Future<List<Map<String, dynamic>>> getProducts({int offset = 0, int limit = 50}) async {
+  Future<List<Map<String, dynamic>>> getProducts(
+      {int offset = 0, int limit = 50}) async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.query(
       'products',
@@ -2157,13 +2420,13 @@ class DBHelper {
     );
     return maps;
   }
+
   /// داخل class DBHelper { ... }
   Future<void> wipeAllExceptProducts({bool keepUsers = false}) async {
     final db = await database; // <-- هنا getter موجود لأن إحنا داخل الكلاس
     await db.transaction((txn) async {
       final tablesRes = await txn.rawQuery(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
-      );
+          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
       final allTables = tablesRes.map((r) => r['name'] as String).toList();
 
       final keep = <String>{'products'};
@@ -2176,7 +2439,6 @@ class DBHelper {
         'sales',
         'purchase_receipts',
         'cash_drawer',
-        'card_wallet',
         'users',
       ];
 
@@ -2189,7 +2451,8 @@ class DBHelper {
           } catch (_) {}
         }
         try {
-          await txn.execute('DELETE FROM sqlite_sequence WHERE name = ?;', [tableName]);
+          await txn.execute(
+              'DELETE FROM sqlite_sequence WHERE name = ?;', [tableName]);
         } catch (_) {}
       }
 
@@ -2216,7 +2479,8 @@ class DBHelper {
     final has = cols.any((c) => c['name'] == 'drawer_withdrawn_amount');
     if (!has) {
       // إضافة العمود كـ REAL أو NUMERIC حسب حاجتك؛ افتراضي 0
-      await db.execute("ALTER TABLE sales ADD COLUMN drawer_withdrawn_amount REAL NOT NULL DEFAULT 0;");
+      await db.execute(
+          "ALTER TABLE sales ADD COLUMN drawer_withdrawn_amount REAL NOT NULL DEFAULT 0;");
       // (اختياري) نملأ القيم القديمة بصفر
       await db.update('sales', {'drawer_withdrawn_amount': 0});
     }
@@ -2227,7 +2491,6 @@ class DBHelper {
     await _ensureDrawerWithdrawnAmountColumn(db);
   }
 
-
 // ضمن class DBHelper { ... }
 
   /// نفّذ هذا مرة عند init لنتأكد أن العمود synced موجود
@@ -2236,13 +2499,10 @@ class DBHelper {
     final info = await db.rawQuery("PRAGMA table_info(products)");
     final hasSynced = info.any((col) => (col['name'] as String) == 'synced');
     if (!hasSynced) {
-      await db.execute("ALTER TABLE products ADD COLUMN synced INTEGER DEFAULT 0");
+      await db
+          .execute("ALTER TABLE products ADD COLUMN synced INTEGER DEFAULT 0");
     }
   }
-
-
-
-
 
   /// علّم المنتج كمُزامَن بعد نجاح الرفع (set synced = 1)
   Future<int> markProductSynced(int id) async {
@@ -2255,6 +2515,402 @@ class DBHelper {
     );
   }
 
+  Future<int> insertCloseShift({
+    required String cashierName,
+    required String startTime,
+    required String endTime,
+    double openingBalance = 0.0,
+    double totalSales = 0.0,
+    double totalExpenses = 0.0,
+    double netProfit = 0.0,
+    double closingBalance = 0.0,
+    String? note,
+  }) async {
+    final db = await database;
+    await _ensureCloseShiftsTable(db);
+    return await db.insert('close_shifts', {
+      'cashier_name': cashierName,
+      'start_time': startTime,
+      'end_time': endTime,
+      'opening_balance': openingBalance,
+      'total_sales': totalSales,
+      'total_expenses': totalExpenses,
+      'net_profit': netProfit,
+      'closing_balance': closingBalance,
+      'note': note,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
 
+  double _numFromRow(Map<String, Object?> row, String key) {
+    final value = row[key];
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0.0;
+  }
+
+  Future<void> setFixedShiftOpeningBalance(double amount) async {
+    final db = await database;
+    await _ensureShiftSettingsTable(db);
+    await _ensureCashDrawerTable(db);
+    final now = DateTime.now().toIso8601String();
+    await db.insert(
+      'shift_settings',
+      {
+        'key': 'opening_balance',
+        'value': amount,
+        'updated_at': now,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<double> getFixedShiftOpeningBalance() async {
+    final db = await database;
+    await _ensureShiftSettingsTable(db);
+    final rows = await db.query(
+      'shift_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: ['opening_balance'],
+      limit: 1,
+    );
+    if (rows.isNotEmpty) return _numFromRow(rows.first, 'value');
+
+    final fallbackRows = await db
+        .rawQuery('SELECT amount FROM cash_drawer ORDER BY id DESC LIMIT 1');
+    return fallbackRows.isNotEmpty
+        ? _numFromRow(fallbackRows.first, 'amount')
+        : 0.0;
+  }
+
+  Future<Map<String, double>> computeCloseShiftSummary({
+    required String cashierName,
+    required String fromDateTime,
+    required String toDateTime,
+  }) async {
+    final db = await database;
+    await _ensureCashDrawerTable(db);
+    await _ensureDrawerWithdrawnAmountColumn(db);
+    await _ensureShiftSettingsTable(db);
+
+    final openingBalance = await getFixedShiftOpeningBalance();
+
+    final cashRows = await db.rawQuery(
+      '''
+      SELECT SUM(
+        CASE
+          WHEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0
+          THEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0))
+          ELSE 0
+        END
+      ) AS cash_sales
+      FROM sales
+      WHERE payment_method = 'cash'
+        AND cashier_username = ?
+        AND datetime(date) BETWEEN datetime(?) AND datetime(?)
+      ''',
+      [cashierName, fromDateTime, toDateTime],
+    );
+    final cashSales =
+        cashRows.isNotEmpty ? _numFromRow(cashRows.first, 'cash_sales') : 0.0;
+
+    final salesRows = await db.rawQuery(
+      '''
+      SELECT SUM(COALESCE(total,0)) AS gross_sales
+      FROM sales
+      WHERE cashier_username = ?
+        AND COALESCE(is_return,0) = 0
+        AND datetime(date) BETWEEN datetime(?) AND datetime(?)
+      ''',
+      [cashierName, fromDateTime, toDateTime],
+    );
+    final grossSales = salesRows.isNotEmpty
+        ? _numFromRow(salesRows.first, 'gross_sales')
+        : 0.0;
+
+    final returnsRows = await db.rawQuery(
+      '''
+      SELECT SUM(COALESCE(paid_delta,0)) AS returns_delta
+      FROM sale_returns
+      WHERE cashier_username = ?
+        AND datetime(date) BETWEEN datetime(?) AND datetime(?)
+      ''',
+      [cashierName, fromDateTime, toDateTime],
+    );
+    final returnsDelta = returnsRows.isNotEmpty
+        ? _numFromRow(returnsRows.first, 'returns_delta')
+        : 0.0;
+
+    final expenseRows = await db.rawQuery(
+      '''
+      SELECT SUM(COALESCE(paid_amount,0) + COALESCE(due_amount,0)) AS total_expenses,
+             SUM(CASE WHEN payment_type = 'cash' THEN COALESCE(paid_amount,0) ELSE 0 END) AS cash_expenses
+      FROM purchase_receipts
+      WHERE cashier_username = ?
+        AND datetime(created_at) > datetime(?)
+        AND datetime(created_at) <= datetime(?)
+      ''',
+      [cashierName, fromDateTime, toDateTime],
+    );
+    final totalExpenses = expenseRows.isNotEmpty
+        ? _numFromRow(expenseRows.first, 'total_expenses')
+        : 0.0;
+    final cashExpenses = expenseRows.isNotEmpty
+        ? _numFromRow(expenseRows.first, 'cash_expenses')
+        : 0.0;
+
+    final totalSales = grossSales + returnsDelta;
+    final netProfit = totalSales - totalExpenses;
+    final closingBalance =
+        openingBalance + cashSales + returnsDelta - cashExpenses;
+
+    return {
+      'opening_balance': openingBalance,
+      'cash_sales': cashSales,
+      'gross_sales': grossSales,
+      'returns_delta': returnsDelta,
+      'cash_expenses': cashExpenses,
+      'total_sales': totalSales,
+      'total_expenses': totalExpenses,
+      'net_profit': netProfit,
+      'closing_balance': closingBalance,
+    };
+  }
+
+  Future<int> closeShiftAndResetDrawer({
+    required String cashierName,
+    required String startTime,
+    required String endTime,
+    required double openingBalance,
+    required double totalSales,
+    required double totalExpenses,
+    required double netProfit,
+    required double closingBalance,
+    required String fromDateTime,
+    required String toDateTime,
+  }) async {
+    final db = await database;
+    await _ensureCloseShiftsTable(db);
+    await _ensureCashDrawerTable(db);
+    await ensureDrawerWithdrawnColumnExists();
+    await _ensureDrawerWithdrawnAmountColumn(db);
+
+    return await db.transaction<int>((txn) async {
+      final now = DateTime.now().toIso8601String();
+      final shiftId = await txn.insert('close_shifts', {
+        'cashier_name': cashierName,
+        'start_time': startTime,
+        'end_time': endTime,
+        'opening_balance': openingBalance,
+        'total_sales': totalSales,
+        'total_expenses': totalExpenses,
+        'net_profit': netProfit,
+        'closing_balance': closingBalance,
+        'note': 'Closed locally and reset drawer to opening balance',
+        'created_at': now,
+      });
+
+      await txn.rawUpdate(
+        '''
+        UPDATE sales
+        SET drawer_withdrawn = 1,
+            drawer_withdrawn_amount = COALESCE(paid_amount,0) - COALESCE(change_amount,0)
+        WHERE payment_method = 'cash'
+          AND cashier_username = ?
+          AND datetime(date) BETWEEN datetime(?) AND datetime(?)
+          AND COALESCE(drawer_withdrawn,0) = 0
+        ''',
+        [cashierName, fromDateTime, toDateTime],
+      );
+
+      await txn.insert('cash_drawer', {
+        'amount': openingBalance,
+        'updated_by': cashierName,
+        'note': 'Reset after close shift #$shiftId',
+        'created_at': now,
+      });
+
+      return shiftId;
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getCloseShifts(
+      {String? cashierName}) async {
+    final db = await database;
+    await _ensureCloseShiftsTable(db);
+    if (cashierName != null && cashierName.trim().isNotEmpty) {
+      return await db.query(
+        'close_shifts',
+        where: 'cashier_name = ?',
+        whereArgs: [cashierName.trim()],
+        orderBy: 'end_time DESC',
+      );
+    }
+    return await db.query('close_shifts', orderBy: 'end_time DESC');
+  }
+
+  Future<String> getCurrentShiftStartDateTime(String cashierName) async {
+    final db = await database;
+    await _ensureCloseShiftsTable(db);
+    final rows = await db.query(
+      'close_shifts',
+      columns: ['end_time'],
+      where: 'cashier_name = ?',
+      whereArgs: [cashierName],
+      orderBy: 'datetime(end_time) DESC',
+      limit: 1,
+    );
+    if (rows.isNotEmpty && rows.first['end_time'] != null) {
+      return rows.first['end_time'].toString();
+    }
+    return '2000-01-01 00:00:00';
+  }
+
+  Future<double> computeCurrentShiftDrawerBalance(String cashierName) async {
+    final db = await database;
+    final username = cashierName.trim();
+    if (username.isEmpty) return await getFixedShiftOpeningBalance();
+
+    await _ensureCloseShiftsTable(db);
+    await _ensureShiftSettingsTable(db);
+
+    final openingBalance = await getFixedShiftOpeningBalance();
+    final shiftStart = await getCurrentShiftStartDateTime(username);
+    final now = DateTime.now().toIso8601String();
+
+    final rows = await db.rawQuery(
+      '''
+      SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS cash_sales
+      FROM sales
+      WHERE cashier_username = ?
+        AND LOWER(COALESCE(payment_method,'')) = 'cash'
+        AND COALESCE(is_credit,0) = 0
+        AND datetime(date) > datetime(?)
+        AND datetime(date) <= datetime(?)
+      ''',
+      [username, shiftStart, now],
+    );
+    final cashSales =
+        rows.isNotEmpty ? _numFromRow(rows.first, 'cash_sales') : 0.0;
+
+    return openingBalance + cashSales;
+  }
+
+  Future<void> setAppSetting(String key, String value) async {
+    final db = await database;
+    await _ensureAppSettingsTable(db);
+    await db.insert(
+      'app_settings',
+      {'key': key, 'value': value},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<String?> getAppSetting(String key) async {
+    final db = await database;
+    await _ensureAppSettingsTable(db);
+    final rows = await db.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['value']?.toString();
+  }
+
+  Future<Map<String, String>> getShopSettings() async {
+    return {
+      'shop_name': await getAppSetting('shop_name') ?? 'CashGo',
+      'shop_address': await getAppSetting('shop_address') ?? '',
+      'shop_phone': await getAppSetting('shop_phone') ?? '',
+    };
+  }
+
+  Future<void> saveShopSettings({
+    required String shopName,
+    required String address,
+    required String phone,
+  }) async {
+    await setAppSetting(
+        'shop_name', shopName.trim().isEmpty ? 'CashGo' : shopName.trim());
+    await setAppSetting('shop_address', address.trim());
+    await setAppSetting('shop_phone', phone.trim());
+  }
+
+  Future<String> getThemePreference() async {
+    return await getAppSetting('theme_mode') ?? 'dark';
+  }
+
+  Future<void> saveThemePreference(String mode) async {
+    await setAppSetting('theme_mode', mode == 'light' ? 'light' : 'dark');
+  }
+
+  Future<List<Map<String, dynamic>>> getProfitReport({
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    final db = await database;
+    final fromStr = DateTime(from.year, from.month, from.day).toIso8601String();
+    final toStr =
+        DateTime(to.year, to.month, to.day, 23, 59, 59).toIso8601String();
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        p.id AS product_id,
+        p.name AS product_name,
+        p.barcode AS barcode,
+        COALESCE(p.purchase_price,0) AS purchase_price,
+        COALESCE(p.selling_price,0) AS selling_price,
+        COALESCE(p.units_in_carton,1) AS units_in_carton,
+        SUM(COALESCE(si.quantity,0)) AS quantity_sold,
+        SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0)) AS revenue,
+        SUM(
+          (COALESCE(si.price,0) -
+            CASE
+              WHEN COALESCE(p.units_in_carton,0) > 0
+              THEN COALESCE(p.purchase_price,0) / p.units_in_carton
+              ELSE COALESCE(p.purchase_price,0)
+            END
+          ) * COALESCE(si.quantity,0)
+        ) AS profit
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      JOIN products p ON p.id = si.product_id
+      WHERE COALESCE(s.is_return,0) = 0
+        AND datetime(s.date) >= datetime(?)
+        AND datetime(s.date) <= datetime(?)
+      GROUP BY p.id, p.name, p.barcode, p.purchase_price, p.selling_price, p.units_in_carton
+      ORDER BY profit DESC
+      ''',
+      [fromStr, toStr],
+    );
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> getStockReport() async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        *,
+        (COALESCE(quantity,0) * COALESCE(units_in_carton,1) + COALESCE(units_remainder,0)) AS total_units,
+        CASE
+          WHEN COALESCE(units_in_carton,0) > 0
+          THEN COALESCE(purchase_price,0) / units_in_carton
+          ELSE COALESCE(purchase_price,0)
+        END AS unit_purchase_price,
+        ((COALESCE(quantity,0) * COALESCE(units_in_carton,1) + COALESCE(units_remainder,0)) *
+          CASE
+            WHEN COALESCE(units_in_carton,0) > 0
+            THEN COALESCE(purchase_price,0) / units_in_carton
+            ELSE COALESCE(purchase_price,0)
+          END
+        ) AS inventory_value
+      FROM products
+      ORDER BY name COLLATE NOCASE ASC
+      ''',
+    );
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+  }
 }
-
