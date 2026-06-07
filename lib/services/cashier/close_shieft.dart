@@ -78,15 +78,17 @@ class ApiServiceClose_shieft {
     required dynamic endTime,
     Duration timeout = const Duration(seconds: 15),
   }) async {
+    final username = cashierName.trim();
     final sessionStart = _format(startTimeParam);
     final end = _format(endTime);
-    final lastClosedShiftEnd =
-        await DBHelper.instance.getCurrentShiftStartDateTime(cashierName);
-    final start = lastClosedShiftEnd == '2000-01-01 00:00:00'
-        ? sessionStart
-        : lastClosedShiftEnd;
+    await DBHelper.instance.ensureCurrentShiftStartDateTime(
+      cashierName: username,
+      fallbackStartTime: sessionStart,
+    );
+    final start =
+        await DBHelper.instance.getCurrentShiftStartDateTime(username);
     final summary = await DBHelper.instance.computeCloseShiftSummary(
-      cashierName: cashierName,
+      cashierName: username,
       fromDateTime: start,
       toDateTime: end,
     );
@@ -97,7 +99,7 @@ class ApiServiceClose_shieft {
     final closingBalance = summary['closing_balance'] ?? openingBalance;
 
     final id = await DBHelper.instance.closeShiftAndResetDrawer(
-      cashierName: cashierName,
+      cashierName: username,
       startTime: start,
       endTime: end,
       openingBalance: openingBalance,

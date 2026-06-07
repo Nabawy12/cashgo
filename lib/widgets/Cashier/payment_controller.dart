@@ -11,9 +11,9 @@ class PaymentControls extends StatefulWidget {
   final void Function(double) setQuickPaid;
   final double total;
   final bool saving;
-  final VoidCallback onPayAndSave;
-  final VoidCallback onSaveAsLater;
-  final VoidCallback onSaveAsCard;
+  final Future<void> Function() onPayAndSave;
+  final Future<void> Function() onSaveAsLater;
+  final Future<void> Function() onSaveAsCard;
 
   const PaymentControls({
     super.key,
@@ -38,12 +38,28 @@ class _PaymentControlsState extends State<PaymentControls> {
   // possible values: "cash", "wallet", "delayed"
   String? savingButton;
 
+  Future<void> _runPaymentAction(
+    String buttonKey,
+    Future<void> Function() action,
+  ) async {
+    if (savingButton != null || widget.saving) return;
+    setState(() => savingButton = buttonKey);
+    try {
+      await action();
+    } catch (e, st) {
+      debugPrint('Payment action failed: $e\n$st');
+    } finally {
+      if (mounted) setState(() => savingButton = null);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: widget.paidController,
       builder: (context, _) {
         final paid = _parsePaid();
+        final isSaving = widget.saving || savingButton != null;
         final canPayFully = paid >= widget.total && widget.total > 0;
         final remaining = (paid >= widget.total)
             ? (paid - widget.total)
@@ -101,24 +117,16 @@ class _PaymentControlsState extends State<PaymentControls> {
               children: [
                 CustomButton(
                   text: 'دفع نقدي',
-                  onPressed: canPayFully && savingButton == null
-                      ? () {
-                          setState(() => savingButton = "cash");
-                          widget.onPayAndSave();
-                          setState(() => savingButton = null);
-                        }
+                  onPressed: canPayFully && !isSaving
+                      ? () => _runPaymentAction("cash", widget.onPayAndSave)
                       : null,
                   isLoading: savingButton == "cash",
                   infinity: false,
                 ),
                 CustomButton(
                   text: 'دفع بالمحفظة',
-                  onPressed: widget.total > 0 && savingButton == null
-                      ? () {
-                          setState(() => savingButton = "wallet");
-                          widget.onSaveAsCard();
-                          setState(() => savingButton = null);
-                        }
+                  onPressed: widget.total > 0 && !isSaving
+                      ? () => _runPaymentAction("wallet", widget.onSaveAsCard)
                       : null,
                   isLoading: savingButton == "wallet",
                   infinity: false,
@@ -127,12 +135,11 @@ class _PaymentControlsState extends State<PaymentControls> {
                   visible: Session.pay_credit,
                   child: CustomButton(
                     text: 'حفظ كآجل',
-                    onPressed: widget.total > 0 && savingButton == null
-                        ? () {
-                            setState(() => savingButton = "delayed");
-                            widget.onSaveAsLater();
-                            setState(() => savingButton = null);
-                          }
+                    onPressed: widget.total > 0 && !isSaving
+                        ? () => _runPaymentAction(
+                              "delayed",
+                              widget.onSaveAsLater,
+                            )
                         : null,
                     isLoading: savingButton == "delayed",
                     infinity: false,

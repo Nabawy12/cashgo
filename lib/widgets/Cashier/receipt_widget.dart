@@ -228,8 +228,6 @@ class ReceiptWidget extends StatelessWidget {
                         style: textStyle),
                   ]),
             ),
-            const SizedBox(height: 10),
-            Center(child: Text('شكراً لزيارتكم', style: textStyle)),
           ],
         ),
       ),

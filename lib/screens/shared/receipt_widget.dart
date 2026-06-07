@@ -167,8 +167,6 @@ class ReceiptWidget extends StatelessWidget {
               _line('الإجمالي', total.toStringAsFixed(2), bold: true),
               _line('المدفوع', paid.toStringAsFixed(2)),
               _line('الباقي', change.toStringAsFixed(2), bold: true),
-              const SizedBox(height: 8),
-              const Text('شكراً لزيارتكم', textAlign: TextAlign.center),
             ],
           ),
         ),

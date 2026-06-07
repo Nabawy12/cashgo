@@ -99,12 +99,6 @@
 //                   Text(_total.toStringAsFixed(2), style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
 //                 ],
 //               ),
-//               const SizedBox(height: 14),
-//               const Text(
-//                 'شكراً لزيارتكم!',
-//                 textAlign: TextAlign.center,
-//                 style: TextStyle(fontSize: 16, fontStyle: FontStyle.italic, color: Colors.green),
-//               ),
 //             ],
 //           ),
 //         ),

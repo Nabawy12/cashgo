@@ -760,39 +760,70 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                                 ),
                                                               );
                                                               if (ok == true) {
-                                                                final deleted =
-                                                                    await ProductApi
-                                                                        .deleteProduct(
-                                                                            p['id']);
-                                                                if (deleted) {
-                                                                  ScaffoldMessenger.of(
-                                                                          context)
-                                                                      .showSnackBar(
-                                                                          const SnackBar(
-                                                                    content:
-                                                                        Directionality(
-                                                                      textDirection:
-                                                                          TextDirection
-                                                                              .rtl,
-                                                                      child: Text(
-                                                                          'تم الحذف بنجاح'),
+                                                                try {
+                                                                  final deleted =
+                                                                      await ProductApi
+                                                                          .deleteProduct(
+                                                                              p['id']);
+                                                                  if (!context
+                                                                      .mounted) {
+                                                                    return;
+                                                                  }
+                                                                  if (deleted) {
+                                                                    ScaffoldMessenger.of(
+                                                                            context)
+                                                                        .showSnackBar(
+                                                                            const SnackBar(
+                                                                      content:
+                                                                          Directionality(
+                                                                        textDirection:
+                                                                            TextDirection.rtl,
+                                                                        child: Text(
+                                                                            'تم الحذف بنجاح'),
+                                                                      ),
+                                                                    ));
+                                                                    await refreshProducts();
+                                                                  } else {
+                                                                    ScaffoldMessenger.of(
+                                                                            context)
+                                                                        .showSnackBar(
+                                                                            const SnackBar(
+                                                                      content:
+                                                                          Directionality(
+                                                                        textDirection:
+                                                                            TextDirection.rtl,
+                                                                        child: Text(
+                                                                            'فشل الحذف'),
+                                                                      ),
+                                                                    ));
+                                                                  }
+                                                                } catch (e) {
+                                                                  if (!context
+                                                                      .mounted) {
+                                                                    return;
+                                                                  }
+                                                                  await showDialog<
+                                                                      void>(
+                                                                    context:
+                                                                        context,
+                                                                    builder:
+                                                                        (dialogContext) =>
+                                                                            AlertDialog(
+                                                                      title: const Text(
+                                                                          'تعذر الحذف'),
+                                                                      content:
+                                                                          const Text(
+                                                                              'لا يمكن حذف هذا المنتج لأن له سجل مبيعات أو مشتريات.\nيمكنك تعديل الكمية بدلاً من الحذف.'),
+                                                                      actions: [
+                                                                        TextButton(
+                                                                          onPressed: () =>
+                                                                              Navigator.pop(dialogContext),
+                                                                          child:
+                                                                              const Text('حسناً'),
+                                                                        ),
+                                                                      ],
                                                                     ),
-                                                                  ));
-                                                                  await refreshProducts();
-                                                                } else {
-                                                                  ScaffoldMessenger.of(
-                                                                          context)
-                                                                      .showSnackBar(
-                                                                          const SnackBar(
-                                                                    content:
-                                                                        Directionality(
-                                                                      textDirection:
-                                                                          TextDirection
-                                                                              .rtl,
-                                                                      child: Text(
-                                                                          'فشل الحذف'),
-                                                                    ),
-                                                                  ));
+                                                                  );
                                                                 }
                                                               }
                                                             },

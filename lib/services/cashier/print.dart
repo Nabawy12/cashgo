@@ -1,5 +1,6 @@
 // print_service.dart
 // PrintService: capture RepaintBoundary -> PNG -> Flutter preview dialog.
+import 'dart:async';
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -103,20 +104,25 @@ class PrintService {
                 style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
             pw.Text('المدفوع: ${paid.toStringAsFixed(2)}'),
             pw.Text('الباقي: ${change.toStringAsFixed(2)}'),
-            pw.SizedBox(height: 8),
-            pw.Center(child: pw.Text('شكراً لزيارتكم')),
           ],
         ),
       ),
     );
 
-    await Printing.layoutPdf(
-      name: 'cashgo_receipt',
-      format: const PdfPageFormat(
-          80 * PdfPageFormat.mm, 1000 * PdfPageFormat.mm,
-          marginAll: 4 * PdfPageFormat.mm),
-      onLayout: (_) => doc.save(),
-    );
+    debugPrint('[PrintService] opening thermal receipt print job');
+    await Future.any<void>([
+      Printing.layoutPdf(
+        name: 'cashgo_receipt',
+        format: const PdfPageFormat(
+            80 * PdfPageFormat.mm, 1000 * PdfPageFormat.mm,
+            marginAll: 4 * PdfPageFormat.mm),
+        onLayout: (_) => doc.save(),
+      ),
+      Future<void>.delayed(const Duration(seconds: 3), () {
+        throw TimeoutException('Printing.layoutPdf timed out');
+      }),
+    ]);
+    debugPrint('[PrintService] thermal receipt print job completed');
   }
 
   /// Capture a RepaintBoundary referenced by [key] into PNG bytes.

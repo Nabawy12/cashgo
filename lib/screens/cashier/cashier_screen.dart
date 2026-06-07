@@ -786,7 +786,12 @@ class _CashierScreenState extends State<CashierScreen> {
       _currentUsername = resolvedUsername;
     });
     if ((resolvedUsername ?? '').isNotEmpty) {
-      Session.currentUsername = resolvedUsername;
+      final activeUsername = resolvedUsername!;
+      Session.currentUsername = activeUsername;
+      unawaited(DBHelper.instance.ensureCurrentShiftStartDateTime(
+        cashierName: activeUsername,
+        fallbackStartTime: DateTime.now().toIso8601String(),
+      ));
       unawaited(_loadDrawerBalance());
     }
 
@@ -1715,6 +1720,7 @@ class _CashierScreenState extends State<CashierScreen> {
   Future<void> _saveSale(
       {required bool requireFullPayment, String paymentMethod = 'cash'}) async {
     if (_cart.isEmpty) return;
+    if (_saving) return;
 
     Future<void> recordSaleTotals(double amount, String pm) async {
       final meta = await Hive.openBox('meta');
@@ -1750,26 +1756,27 @@ class _CashierScreenState extends State<CashierScreen> {
     }
     final total = (subtotal - discountAmount).clamp(0.0, double.infinity);
 
-    String? customerName;
-    if (paymentMethod == 'credit') {
-      customerName = await _askForCustomerName();
-      if (customerName == null || customerName.isEmpty) {
-        _showSnackSafe(
-            'تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة');
-        return;
-      }
-    }
-
-    final paid =
-        (paymentMethod == 'card' || paymentMethod == 'wallet') ? total : _paid;
-    if (requireFullPayment && paid < total) {
-      _showSnackSafe('العميل لم يدفع كامل المبلغ');
-      return;
-    }
-
     if (mounted) setState(() => _saving = true);
 
     try {
+      String? customerName;
+      if (paymentMethod == 'credit') {
+        customerName = await _askForCustomerName();
+        if (customerName == null || customerName.isEmpty) {
+          _showSnackSafe(
+              'تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة');
+          return;
+        }
+      }
+
+      final paid = (paymentMethod == 'card' || paymentMethod == 'wallet')
+          ? total
+          : _paid;
+      if (requireFullPayment && paid < total) {
+        _showSnackSafe('العميل لم يدفع كامل المبلغ');
+        return;
+      }
+
       final cashierNameToUse =
           Session.currentUsername ?? widget.cashierUsername;
       final cartPayload = <Map<String, dynamic>>[];
@@ -1797,28 +1804,8 @@ class _CashierScreenState extends State<CashierScreen> {
       );
       debugPrint('[saveSale] saved locally with saleId=$saleId');
 
-      if (paymentMethod == 'credit') {
-        _showSnackSafe(
-            'تم حفظ الفاتورة كآجل باسم $customerName — المتبقي: ${(total - paid).toStringAsFixed(2)}');
-      } else if (paymentMethod == 'card') {
-        _showSnackSafe('تم الحفظ — تم الدفع بالكارت بالكامل');
-      } else if (paymentMethod == 'wallet') {
-        _showSnackSafe('تم الحفظ محلياً');
-      } else {
-        _showSnackSafe(
-            'تم الحفظ — الإجمالي قبل الخصم: ${subtotal.toStringAsFixed(2)}  — بعد الخصم: ${total.toStringAsFixed(2)}  — الباقي: ${(paid - total).toStringAsFixed(2)}');
-      }
-
       await recordSaleTotals(total, paymentMethod);
       await _loadDrawerBalance();
-      final printedCart = Map<int, CartItem>.from(_cart);
-      unawaited(_printReceiptInBackground(
-        printedCart: printedCart,
-        paid: paid,
-        cashierName: cashierNameToUse,
-        discountType: normalizedDiscountType,
-        discountValue: _discountValue,
-      ));
 
       if (mounted) {
         setState(() {
@@ -1826,8 +1813,11 @@ class _CashierScreenState extends State<CashierScreen> {
           _paidController.clear();
           _discountValue = 0.0;
           _discountType = 'percent';
+          _saving = false;
         });
+        FocusScope.of(context).requestFocus(_barcodeFocus);
       }
+      _showSnackSafe('تم الحفظ بنجاح');
     } catch (e, st) {
       debugPrint('Failed to save sale locally: $e\n$st');
       if (mounted) {
@@ -1847,31 +1837,7 @@ class _CashierScreenState extends State<CashierScreen> {
       _showSnackSafe('فشل حفظ الفاتورة: $e');
     } finally {
       if (mounted) setState(() => _saving = false);
-      FocusScope.of(context).requestFocus(_barcodeFocus);
-    }
-  }
-
-  Future<void> _printReceiptInBackground({
-    required Map<int, CartItem> printedCart,
-    required double paid,
-    required String cashierName,
-    required String discountType,
-    required double discountValue,
-  }) async {
-    try {
-      await Future.delayed(const Duration(milliseconds: 100));
-      if (!mounted) return;
-      await PrintService.printThermalReceipt(
-        cart: printedCart,
-        paid: paid,
-        cashierUsername: cashierName,
-        discountType: discountType,
-        discountValue: discountValue,
-      );
-      debugPrint('Receipt print completed.');
-    } catch (e, st) {
-      debugPrint('Receipt print failed/background timeout: $e\n$st');
-      _showSnackSafe('تم حفظ الفاتورة، لكن الطباعة لم تكتمل. يمكنك المتابعة.');
+      if (mounted) FocusScope.of(context).requestFocus(_barcodeFocus);
     }
   }
 
@@ -2733,9 +2699,9 @@ class _CashierScreenState extends State<CashierScreen> {
                           setQuickPaid: _setQuickPaid,
                           total: _effectiveTotal,
                           saving: _saving,
-                          onPayAndSave: () {
+                          onPayAndSave: () async {
                             setState(() {});
-                            _saveSale(
+                            await _saveSale(
                                 requireFullPayment: true,
                                 paymentMethod: 'cash');
                             Future.microtask(() {
@@ -2744,8 +2710,8 @@ class _CashierScreenState extends State<CashierScreen> {
                                   .requestFocus(_barcodeFocus);
                             });
                           },
-                          onSaveAsLater: () {
-                            _saveSale(
+                          onSaveAsLater: () async {
+                            await _saveSale(
                                 requireFullPayment: false,
                                 paymentMethod: 'credit');
                             Future.microtask(() {
@@ -2754,8 +2720,8 @@ class _CashierScreenState extends State<CashierScreen> {
                                   .requestFocus(_barcodeFocus);
                             });
                           },
-                          onSaveAsCard: () {
-                            _saveSale(
+                          onSaveAsCard: () async {
+                            await _saveSale(
                                 requireFullPayment: true,
                                 paymentMethod: 'wallet');
                             Future.microtask(() {

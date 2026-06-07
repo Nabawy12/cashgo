@@ -2605,11 +2605,11 @@ class DBHelper {
         END
       ) AS cash_sales
       FROM sales
-      WHERE payment_method = 'cash'
-        AND cashier_username = ?
+      WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
+        AND TRIM(COALESCE(cashier_username,'')) = ?
         AND datetime(date) BETWEEN datetime(?) AND datetime(?)
       ''',
-      [cashierName, fromDateTime, toDateTime],
+      [cashierName.trim(), fromDateTime, toDateTime],
     );
     final cashSales =
         cashRows.isNotEmpty ? _numFromRow(cashRows.first, 'cash_sales') : 0.0;
@@ -2618,11 +2618,11 @@ class DBHelper {
       '''
       SELECT SUM(COALESCE(total,0)) AS gross_sales
       FROM sales
-      WHERE cashier_username = ?
+      WHERE TRIM(COALESCE(cashier_username,'')) = ?
         AND COALESCE(is_return,0) = 0
         AND datetime(date) BETWEEN datetime(?) AND datetime(?)
       ''',
-      [cashierName, fromDateTime, toDateTime],
+      [cashierName.trim(), fromDateTime, toDateTime],
     );
     final grossSales = salesRows.isNotEmpty
         ? _numFromRow(salesRows.first, 'gross_sales')
@@ -2632,10 +2632,10 @@ class DBHelper {
       '''
       SELECT SUM(COALESCE(paid_delta,0)) AS returns_delta
       FROM sale_returns
-      WHERE cashier_username = ?
+      WHERE TRIM(COALESCE(cashier_username,'')) = ?
         AND datetime(date) BETWEEN datetime(?) AND datetime(?)
       ''',
-      [cashierName, fromDateTime, toDateTime],
+      [cashierName.trim(), fromDateTime, toDateTime],
     );
     final returnsDelta = returnsRows.isNotEmpty
         ? _numFromRow(returnsRows.first, 'returns_delta')
@@ -2646,11 +2646,11 @@ class DBHelper {
       SELECT SUM(COALESCE(paid_amount,0) + COALESCE(due_amount,0)) AS total_expenses,
              SUM(CASE WHEN payment_type = 'cash' THEN COALESCE(paid_amount,0) ELSE 0 END) AS cash_expenses
       FROM purchase_receipts
-      WHERE cashier_username = ?
+      WHERE TRIM(COALESCE(cashier_username,'')) = ?
         AND datetime(created_at) > datetime(?)
         AND datetime(created_at) <= datetime(?)
       ''',
-      [cashierName, fromDateTime, toDateTime],
+      [cashierName.trim(), fromDateTime, toDateTime],
     );
     final totalExpenses = expenseRows.isNotEmpty
         ? _numFromRow(expenseRows.first, 'total_expenses')
@@ -2663,6 +2663,9 @@ class DBHelper {
     final netProfit = totalSales - totalExpenses;
     final closingBalance =
         openingBalance + cashSales + returnsDelta - cashExpenses;
+
+    debugPrint(
+        '[CloseShiftSummary] cashier=${cashierName.trim()} from=$fromDateTime to=$toDateTime gross=$grossSales cash=$cashSales expenses=$totalExpenses returns=$returnsDelta closing=$closingBalance');
 
     return {
       'opening_balance': openingBalance,
@@ -2694,6 +2697,7 @@ class DBHelper {
     await _ensureCashDrawerTable(db);
     await ensureDrawerWithdrawnColumnExists();
     await _ensureDrawerWithdrawnAmountColumn(db);
+    await _ensureAppSettingsTable(db);
 
     return await db.transaction<int>((txn) async {
       final now = DateTime.now().toIso8601String();
@@ -2715,12 +2719,12 @@ class DBHelper {
         UPDATE sales
         SET drawer_withdrawn = 1,
             drawer_withdrawn_amount = COALESCE(paid_amount,0) - COALESCE(change_amount,0)
-        WHERE payment_method = 'cash'
-          AND cashier_username = ?
+        WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
+          AND TRIM(COALESCE(cashier_username,'')) = ?
           AND datetime(date) BETWEEN datetime(?) AND datetime(?)
           AND COALESCE(drawer_withdrawn,0) = 0
         ''',
-        [cashierName, fromDateTime, toDateTime],
+        [cashierName.trim(), fromDateTime, toDateTime],
       );
 
       await txn.insert('cash_drawer', {
@@ -2729,6 +2733,15 @@ class DBHelper {
         'note': 'Reset after close shift #$shiftId',
         'created_at': now,
       });
+
+      await txn.insert(
+        'app_settings',
+        {
+          'key': _currentShiftStartSettingKey(cashierName),
+          'value': endTime,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
 
       return shiftId;
     });
@@ -2749,21 +2762,93 @@ class DBHelper {
     return await db.query('close_shifts', orderBy: 'end_time DESC');
   }
 
+  String _currentShiftStartSettingKey(String cashierName) {
+    return 'current_shift_start_${cashierName.trim().toLowerCase()}';
+  }
+
+  DateTime? _parseDbDateTime(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return null;
+    return DateTime.tryParse(trimmed) ??
+        DateTime.tryParse(trimmed.replaceFirst(' ', 'T'));
+  }
+
   Future<String> getCurrentShiftStartDateTime(String cashierName) async {
     final db = await database;
+    final username = cashierName.trim();
     await _ensureCloseShiftsTable(db);
+    await _ensureAppSettingsTable(db);
     final rows = await db.query(
       'close_shifts',
       columns: ['end_time'],
-      where: 'cashier_name = ?',
-      whereArgs: [cashierName],
+      where: "TRIM(COALESCE(cashier_name, '')) = ?",
+      whereArgs: [username],
+      orderBy: 'datetime(end_time) DESC',
+      limit: 1,
+    );
+    final lastClosedEnd = rows.isNotEmpty && rows.first['end_time'] != null
+        ? rows.first['end_time'].toString()
+        : '2000-01-01 00:00:00';
+
+    final storedStart = await getAppSetting(_currentShiftStartSettingKey(
+      username,
+    ));
+    if (storedStart == null || storedStart.trim().isEmpty) {
+      return lastClosedEnd;
+    }
+
+    final storedDate = _parseDbDateTime(storedStart);
+    final lastClosedDate = _parseDbDateTime(lastClosedEnd);
+    if (storedDate == null || lastClosedDate == null) {
+      return lastClosedEnd;
+    }
+    return storedDate.isAfter(lastClosedDate) ? storedStart : lastClosedEnd;
+  }
+
+  Future<void> ensureCurrentShiftStartDateTime({
+    required String cashierName,
+    required String fallbackStartTime,
+  }) async {
+    final db = await database;
+    final username = cashierName.trim();
+    if (username.isEmpty) return;
+
+    await _ensureCloseShiftsTable(db);
+    await _ensureAppSettingsTable(db);
+    await ensureDrawerWithdrawnColumnExists();
+
+    final key = _currentShiftStartSettingKey(username);
+    final existing = await getAppSetting(key);
+    if (existing != null && existing.trim().isNotEmpty) return;
+
+    final rows = await db.query(
+      'close_shifts',
+      columns: ['end_time'],
+      where: "TRIM(COALESCE(cashier_name, '')) = ?",
+      whereArgs: [username],
       orderBy: 'datetime(end_time) DESC',
       limit: 1,
     );
     if (rows.isNotEmpty && rows.first['end_time'] != null) {
-      return rows.first['end_time'].toString();
+      await setAppSetting(key, rows.first['end_time'].toString());
+      return;
     }
-    return '2000-01-01 00:00:00';
+
+    final unclosedSales = await db.rawQuery(
+      '''
+      SELECT COUNT(*) AS count
+      FROM sales
+      WHERE TRIM(COALESCE(cashier_username,'')) = ?
+        AND COALESCE(drawer_withdrawn,0) = 0
+      ''',
+      [username],
+    );
+    final count = unclosedSales.isNotEmpty
+        ? (unclosedSales.first['count'] as num?)?.toInt() ?? 0
+        : 0;
+    if (count > 0) return;
+
+    await setAppSetting(key, fallbackStartTime);
   }
 
   Future<double> computeCurrentShiftDrawerBalance(String cashierName) async {
