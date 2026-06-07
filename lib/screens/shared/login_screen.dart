@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../models/login.dart'; // يحتوي على Session class (currentUsername, currentRole, optional token)
 // استبدل المسار إذا كانت ApiService في ملف آخر عندك
 import '../../services/Api/Admin/settings.dart';
+import '../../services/db/db_helper.dart';
 import '../../utils/colors.dart';
 import '../../widgets/Loading/Shared/login.dart';
 import '../../widgets/custom_button.dart';
@@ -379,6 +380,13 @@ class _LoginScreenState extends State<LoginScreen> {
 
         // --- تخزين الـ Session ---
         Session.currentUsername = returnedUsername;
+        Session.updateDateTime(); // record exact login time as shift start
+        await DBHelper.instance.setAppSetting(
+          'current_shift_start_${returnedUsername.trim().toLowerCase()}',
+          DateTime.now().toIso8601String(),
+        );
+        debugPrint(
+            '[Login] shift start saved for ${returnedUsername.trim()} at ${Session.currentDateTime}');
         Session.currentRole = returnedRole;
         Session.canViewCredit = canViewCredit;
         if (token != null && token.isNotEmpty) Session.currentToken = token;

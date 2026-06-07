@@ -1967,7 +1967,6 @@ class _CashierScreenState extends State<CashierScreen> {
             TextButton(
               onPressed: () {
                 Navigator.of(context).pop(true);
-                Session.updateDateTime_end();
               },
               child: Text(
                 'تأكيد',
@@ -1995,8 +1994,15 @@ class _CashierScreenState extends State<CashierScreen> {
     );
 
     if (shouldExit == true && mounted) {
-      await _closeShift(); // الآن ننفّذ الإغلاق فعليًا بعد غلق الدايالوج
+      debugPrint('[CloseShiftUI] close shift confirmed, starting close flow');
+      final success = await _closeShift();
       if (!mounted) return;
+      debugPrint('[CloseShiftUI] close shift finished success=$success');
+      if (!success) {
+        debugPrint(
+            '[CloseShiftUI] close shift failed, staying on cashier screen');
+        return;
+      }
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (_) => const LoginScreen()),
@@ -2058,15 +2064,18 @@ class _CashierScreenState extends State<CashierScreen> {
     }
   }
 
-  Future<void> _closeShift() async {
+  Future<bool> _closeShift() async {
+    debugPrint('[CloseShiftUI] _closeShift entered');
     setState(() => _closingShift = true);
     try {
       if (Session.currentDateTime == null) {
         Session.updateDateTime();
+        debugPrint(
+            '[CloseShiftUI] Session.currentDateTime was null, set to ${Session.currentDateTime}');
       }
-      if (Session.endDateTime == null) {
-        Session.updateDateTime_end();
-      }
+      Session.updateDateTime_end(); // always capture NOW as end time
+      debugPrint(
+          '[CloseShiftUI] Session.endDateTime captured now as ${Session.endDateTime}');
 
       final cashierName = Session.currentUsername ?? '';
       if (cashierName.trim().isEmpty) {
@@ -2075,6 +2084,8 @@ class _CashierScreenState extends State<CashierScreen> {
 
       final dynamic startTimeValue = Session.currentDateTime!;
       final dynamic endTimeValue = Session.endDateTime!;
+      debugPrint(
+          '[CloseShiftUI] calling closeShift cashier=$cashierName start=$startTimeValue end=$endTimeValue');
       final apiResp = await _apiService.closeShift(
         cashierName: cashierName,
         startTimeParam: startTimeValue,
@@ -2092,7 +2103,9 @@ class _CashierScreenState extends State<CashierScreen> {
           ),
           backgroundColor: Colors.red[700],
         ));
-        return;
+        debugPrint(
+            '[CloseShiftUI] closeShift response failed, returning false');
+        return false;
       }
 
       if (mounted) {
@@ -2109,6 +2122,9 @@ class _CashierScreenState extends State<CashierScreen> {
           child: Text('تم حفظ تقفيل الشيفت محليًا'),
         ),
       ));
+      debugPrint(
+          '[CloseShiftUI] close shift saved id=${apiResp.insertId} totalSales=${apiResp.totalSales} closingBalance=${apiResp.closingBalance}');
+      return true;
     } catch (e, st) {
       debugPrint('Error while closing shift: $e\n$st');
       _showSnackBarSafe(SnackBar(
@@ -2117,8 +2133,10 @@ class _CashierScreenState extends State<CashierScreen> {
           child: Text('فشل تقفيل الشفت: $e'),
         ),
       ));
+      return false;
     } finally {
       if (mounted) setState(() => _closingShift = false);
+      debugPrint('[CloseShiftUI] _closeShift finished');
     }
   }
 

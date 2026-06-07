@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.151');
+    _database = await _initDB('pos_system.db_v2.155');
     return _database!;
   }
 
@@ -2575,12 +2575,7 @@ class DBHelper {
       limit: 1,
     );
     if (rows.isNotEmpty) return _numFromRow(rows.first, 'value');
-
-    final fallbackRows = await db
-        .rawQuery('SELECT amount FROM cash_drawer ORDER BY id DESC LIMIT 1');
-    return fallbackRows.isNotEmpty
-        ? _numFromRow(fallbackRows.first, 'amount')
-        : 0.0;
+    return 0.0;
   }
 
   Future<Map<String, double>> computeCloseShiftSummary({
@@ -2594,6 +2589,16 @@ class DBHelper {
     await _ensureShiftSettingsTable(db);
 
     final openingBalance = await getFixedShiftOpeningBalance();
+    final diagnosticRows = await db.rawQuery(
+      '''
+      SELECT COUNT(*) AS sales_count, MIN(date) AS min_date, MAX(date) AS max_date
+      FROM sales
+      WHERE TRIM(COALESCE(cashier_username,'')) = ?
+      ''',
+      [cashierName.trim()],
+    );
+    debugPrint(
+        '[CloseShiftSummaryDiagnostic] cashier=${cashierName.trim()} fromDateTime=$fromDateTime toDateTime=$toDateTime salesRange=${diagnosticRows.isNotEmpty ? diagnosticRows.first : {}}');
 
     final cashRows = await db.rawQuery(
       '''
@@ -2776,6 +2781,8 @@ class DBHelper {
   Future<String> getCurrentShiftStartDateTime(String cashierName) async {
     final db = await database;
     final username = cashierName.trim();
+    final ultimateFallback =
+        DateTime.now().subtract(const Duration(hours: 24)).toIso8601String();
     await _ensureCloseShiftsTable(db);
     await _ensureAppSettingsTable(db);
     final rows = await db.query(
@@ -2794,15 +2801,38 @@ class DBHelper {
       username,
     ));
     if (storedStart == null || storedStart.trim().isEmpty) {
+      if (lastClosedEnd.startsWith('2000-')) {
+        debugPrint(
+            '[ShiftStart] cashier=$cashierName storedStart=$storedStart lastClosedEnd=$lastClosedEnd returning=$ultimateFallback source=ultimate_24h_fallback reason=no_app_settings_or_close_shift');
+        return ultimateFallback;
+      }
+      debugPrint(
+          '[ShiftStart] cashier=$cashierName storedStart=$storedStart lastClosedEnd=$lastClosedEnd returning=$lastClosedEnd source=close_shifts reason=no_app_settings_start');
       return lastClosedEnd;
     }
 
     final storedDate = _parseDbDateTime(storedStart);
     final lastClosedDate = _parseDbDateTime(lastClosedEnd);
     if (storedDate == null || lastClosedDate == null) {
+      if (lastClosedEnd.startsWith('2000-')) {
+        debugPrint(
+            '[ShiftStart] cashier=$cashierName storedStart=$storedStart lastClosedEnd=$lastClosedEnd returning=$ultimateFallback source=ultimate_24h_fallback reason=parse_failed_and_no_close_shift');
+        return ultimateFallback;
+      }
+      debugPrint(
+          '[ShiftStart] cashier=$cashierName storedStart=$storedStart lastClosedEnd=$lastClosedEnd returning=$lastClosedEnd source=close_shifts reason=parse_failed');
       return lastClosedEnd;
     }
-    return storedDate.isAfter(lastClosedDate) ? storedStart : lastClosedEnd;
+    final returning =
+        storedDate.isAfter(lastClosedDate) ? storedStart : lastClosedEnd;
+    if (returning.startsWith('2000-')) {
+      debugPrint(
+          '[ShiftStart] cashier=$cashierName storedStart=$storedStart lastClosedEnd=$lastClosedEnd returning=$ultimateFallback source=ultimate_24h_fallback reason=resolved_to_2000');
+      return ultimateFallback;
+    }
+    debugPrint(
+        '[ShiftStart] cashier=$cashierName storedStart=$storedStart lastClosedEnd=$lastClosedEnd returning=$returning source=${storedDate.isAfter(lastClosedDate) ? 'app_settings' : 'close_shifts'}');
+    return returning;
   }
 
   Future<void> ensureCurrentShiftStartDateTime({
