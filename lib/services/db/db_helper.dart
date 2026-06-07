@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.155');
+    _database = await _initDB('pos_system.db_v2.156');
     return _database!;
   }
 
@@ -2639,12 +2639,31 @@ class DBHelper {
     final cashSales =
         cashRows.isNotEmpty ? _numFromRow(cashRows.first, 'cash_sales') : 0.0;
 
+    final unpaidCreditRows = await db.rawQuery(
+      '''
+      SELECT COUNT(*) AS excluded_unpaid_credit
+      FROM sales
+      WHERE TRIM(COALESCE(cashier_username,'')) = ?
+        AND COALESCE(is_return,0) = 0
+        AND COALESCE(is_credit,0) = 1
+        AND COALESCE(paid_amount,0) < COALESCE(total,0)
+        AND datetime(date) BETWEEN datetime(?) AND datetime(?)
+      ''',
+      [cashierName.trim(), fromDateTime, toDateTime],
+    );
+    final excludedUnpaidCredit = unpaidCreditRows.isNotEmpty
+        ? _numFromRow(unpaidCreditRows.first, 'excluded_unpaid_credit').toInt()
+        : 0;
+    debugPrint(
+        '[CloseShiftSummary] cashier=${cashierName.trim()} excludedUnpaidCreditSales=$excludedUnpaidCredit from=$fromDateTime to=$toDateTime');
+
     final salesRows = await db.rawQuery(
       '''
       SELECT SUM(COALESCE(total,0)) AS gross_sales
       FROM sales
       WHERE TRIM(COALESCE(cashier_username,'')) = ?
         AND COALESCE(is_return,0) = 0
+        AND NOT (COALESCE(is_credit,0) = 1 AND COALESCE(paid_amount,0) < COALESCE(total,0))
         AND datetime(date) BETWEEN datetime(?) AND datetime(?)
       ''',
       [cashierName.trim(), fromDateTime, toDateTime],

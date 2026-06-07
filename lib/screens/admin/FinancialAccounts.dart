@@ -320,8 +320,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       final purchaseCashRows = await db.rawQuery('''
         SELECT SUM(COALESCE(paid_amount,0)) as purchase_cash
         FROM purchase_receipts
-        WHERE LOWER(TRIM(COALESCE(payment_type,''))) = 'cash'
-          AND date(created_at) = ?
+        WHERE date(created_at) = ?
       ''', [dateStr]);
       final purchaseCash = purchaseCashRows.isNotEmpty &&
               purchaseCashRows.first['purchase_cash'] != null
@@ -329,22 +328,33 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           : 0.0;
 
       final purchaseCreditRows = await db.rawQuery('''
-        SELECT SUM(COALESCE(paid_amount,0)) as purchase_credit
+        SELECT SUM(COALESCE(due_amount,0)) as purchase_due
         FROM purchase_receipts
-        WHERE LOWER(TRIM(COALESCE(payment_type,''))) != 'cash'
-          AND date(created_at) = ?
+        WHERE date(created_at) = ?
       ''', [dateStr]);
       final purchaseCredit = purchaseCreditRows.isNotEmpty &&
-              purchaseCreditRows.first['purchase_credit'] != null
-          ? (purchaseCreditRows.first['purchase_credit'] as num).toDouble()
+              purchaseCreditRows.first['purchase_due'] != null
+          ? (purchaseCreditRows.first['purchase_due'] as num).toDouble()
+          : 0.0;
+
+      final creditRows = await db.rawQuery('''
+        SELECT SUM(COALESCE(total,0) - COALESCE(paid_amount,0)) as credit_outstanding
+        FROM sales
+        WHERE COALESCE(is_credit,0) = 1
+          AND COALESCE(is_return,0) = 0
+          AND date(date) = ?
+      ''', [dateStr]);
+      final creditOutstanding = creditRows.isNotEmpty &&
+              creditRows.first['credit_outstanding'] != null
+          ? (creditRows.first['credit_outstanding'] as num).toDouble()
           : 0.0;
 
       final openingBalance =
           await DBHelper.instance.getFixedShiftOpeningBalance();
-      final drawerNow = openingBalance + cashNet;
+      final drawerNow = openingBalance + cashNet - purchaseCash;
 
       debugPrint(
-          '[AllShiftsSummary] date=$dateStr cash=$cashNet wallet=$walletNet purchaseCash=$purchaseCash purchaseCredit=$purchaseCredit opening=$openingBalance drawer=$drawerNow');
+          '[AllShiftsSummary] date=$dateStr cash=$cashNet wallet=$walletNet purchaseCash=$purchaseCash purchaseCredit=$purchaseCredit creditOutstanding=$creditOutstanding opening=$openingBalance drawer=$drawerNow');
 
       if (!mounted) return;
       setState(() {
@@ -352,6 +362,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         _salesWallet = walletNet;
         _purchasePaidCash = purchaseCash;
         _purchasePaidOnCredit = purchaseCredit;
+        _creditOutstanding = creditOutstanding;
         _startingAmount = openingBalance;
         _totalInDrawer = drawerNow;
         _startingController.text = _startingAmount.toStringAsFixed(2);
@@ -901,7 +912,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     final List<List<String>> fields = [
       ['date', 'تاريخ التقفيل'],
       ['opening_balance', 'رصيد بداية الشيفت'],
-      ['total_sales', 'إجمالي المبيعات (قبل الاسترجاع)'],
+      ['total_sales', 'إجمالي المبيعات (نقدي + محفظة + آجل مدفوع)'],
       ['returns_value', 'قيمة المرتجعات'],
       ['net_sales', 'صافي المبيعات (بعد الاسترجاع)'],
       ['total_expenses', 'إجمالي المصروفات'],
