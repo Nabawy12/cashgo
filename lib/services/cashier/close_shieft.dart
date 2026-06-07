@@ -132,9 +132,15 @@ class ApiServiceClose_shieft {
     );
     final openingBalance = summary['opening_balance'] ?? 0.0;
     final totalSales = summary['total_sales'] ?? 0.0;
+    final cashSales = summary['cash_sales'] ?? 0.0;
+    final grossSales = summary['gross_sales'] ?? totalSales;
+    final returnsDelta = summary['returns_delta'] ?? 0.0;
     final totalExpenses = summary['total_expenses'] ?? 0.0;
+    final cashExpenses = summary['cash_expenses'] ?? 0.0;
     final netProfit = summary['net_profit'] ?? (totalSales - totalExpenses);
     final closingBalance = summary['closing_balance'] ?? openingBalance;
+    debugPrint(
+        '[CloseShift] summary totalSales=$totalSales cashSales=$cashSales grossSales=$grossSales returnsDelta=$returnsDelta expenses=$totalExpenses cashExpenses=$cashExpenses closing=$closingBalance');
 
     final id = await DBHelper.instance.closeShiftAndResetDrawer(
       cashierName: username,
@@ -142,7 +148,11 @@ class ApiServiceClose_shieft {
       endTime: end,
       openingBalance: openingBalance,
       totalSales: totalSales,
+      cashSales: cashSales,
+      grossSales: grossSales,
+      returnsDelta: returnsDelta,
       totalExpenses: totalExpenses,
+      cashExpenses: cashExpenses,
       netProfit: netProfit,
       closingBalance: closingBalance,
       fromDateTime: start,

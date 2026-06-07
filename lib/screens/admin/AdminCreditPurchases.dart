@@ -290,7 +290,7 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Directionality(
             textDirection: TextDirection.rtl,
-            child: Text('تمت المعالجة محلياً'),
+            child: Text('تمت المعالجةً'),
           ),
         ));
       await _load(date: selectedDate);

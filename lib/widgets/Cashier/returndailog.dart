@@ -360,7 +360,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Directionality(
             textDirection: TextDirection.rtl,
-            child: Text('تمت العملية محلياً بنجاح'),
+            child: Text('تمت العملية بنجاح'),
           ),
         ));
         Navigator.pop(context, widget.originalSaleId);

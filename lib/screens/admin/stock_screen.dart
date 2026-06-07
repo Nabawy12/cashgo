@@ -474,7 +474,7 @@ class _CreditsScreenState extends State<CreditsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Directionality(
           textDirection: TextDirection.rtl,
-          child: Text('تم تسجيل الدفع محلياً.'),
+          child: Text('تم تسجيل الدفع '),
         ),
       ));
     } catch (e) {

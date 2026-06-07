@@ -345,7 +345,7 @@ class _SettingsPageState extends State<SettingsPage>
                     value: perms['pay_credit'],
                     onChanged: (v) =>
                         setStateDialog(() => perms['pay_credit'] = v ?? false),
-                    title: Text('دفع الكريدت',
+                    title: Text('دفع الآجل',
                         style: TextStyle(color: AppColorsDark.mainTextDark)),
                     controlAffinity: ListTileControlAffinity.leading,
                     tileColor: Colors.transparent,
@@ -545,7 +545,7 @@ class _SettingsPageState extends State<SettingsPage>
                                       value: perms['pay_credit'],
                                       onChanged: (v) => setStatePerm(() =>
                                           perms['pay_credit'] = v ?? false),
-                                      title: Text('دفع الكريدت',
+                                      title: Text('دفع الآجل',
                                           style: TextStyle(
                                               color:
                                                   AppColorsDark.mainTextDark)),

@@ -41,9 +41,12 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   double _maxLimit = 0.0;
   double _totalInDrawer = 0.0;
   double _salesNet = 0.0;
+  double _salesWallet = 0.0; // sales paid by wallet/card
   double _purchasePaidCash = 0.0;
   double _creditOutstanding = 0.0;
   double _purchasePaidOnCredit = 0.0;
+  double _totalSalesAllShifts = 0.0;
+  double _totalClosingBalanceAllShifts = 0.0;
 
   final InsertFinancialAccountService _service =
       InsertFinancialAccountService();
@@ -56,7 +59,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   @override
   void initState() {
     super.initState();
-    _loadData().then((_) => _loadCurrentShiftFinancialSummary());
+    _loadData().then((_) => _loadAllShiftsSummary());
     _loadShifts(date: _selectedDate);
   }
 
@@ -285,37 +288,76 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     });
   }
 
-  Future<void> _loadCurrentShiftFinancialSummary() async {
-    final cashierUsername = (Session.currentUsername ?? '').trim();
-    if (cashierUsername.isEmpty) return;
-
+  Future<void> _loadAllShiftsSummary() async {
+    if (!mounted) return;
     try {
-      final shiftStart =
-          await DBHelper.instance.getCurrentShiftStartDateTime(cashierUsername);
-      final shiftEnd = DateTime.now().toIso8601String();
-      final summary = await DBHelper.instance.computeCloseShiftSummary(
-        cashierName: cashierUsername,
-        fromDateTime: shiftStart,
-        toDateTime: shiftEnd,
-      );
+      final dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
+      final db = await DBHelper.instance.database;
 
-      final totalExpenses = summary['total_expenses'] ?? 0.0;
-      final cashExpenses = summary['cash_expenses'] ?? 0.0;
-      final creditExpenses = (totalExpenses - cashExpenses).isNegative
-          ? 0.0
-          : totalExpenses - cashExpenses;
+      final cashRows = await db.rawQuery('''
+        SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as cash_net
+        FROM sales
+        WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
+          AND COALESCE(is_return,0) = 0
+          AND date(date) = ?
+      ''', [dateStr]);
+      final cashNet = cashRows.isNotEmpty && cashRows.first['cash_net'] != null
+          ? (cashRows.first['cash_net'] as num).toDouble()
+          : 0.0;
+
+      final walletRows = await db.rawQuery('''
+        SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as wallet_net
+        FROM sales
+        WHERE LOWER(TRIM(COALESCE(payment_method,''))) IN ('wallet','card')
+          AND COALESCE(is_return,0) = 0
+          AND date(date) = ?
+      ''', [dateStr]);
+      final walletNet =
+          walletRows.isNotEmpty && walletRows.first['wallet_net'] != null
+              ? (walletRows.first['wallet_net'] as num).toDouble()
+              : 0.0;
+
+      final purchaseCashRows = await db.rawQuery('''
+        SELECT SUM(COALESCE(paid_amount,0)) as purchase_cash
+        FROM purchase_receipts
+        WHERE LOWER(TRIM(COALESCE(payment_type,''))) = 'cash'
+          AND date(created_at) = ?
+      ''', [dateStr]);
+      final purchaseCash = purchaseCashRows.isNotEmpty &&
+              purchaseCashRows.first['purchase_cash'] != null
+          ? (purchaseCashRows.first['purchase_cash'] as num).toDouble()
+          : 0.0;
+
+      final purchaseCreditRows = await db.rawQuery('''
+        SELECT SUM(COALESCE(paid_amount,0)) as purchase_credit
+        FROM purchase_receipts
+        WHERE LOWER(TRIM(COALESCE(payment_type,''))) != 'cash'
+          AND date(created_at) = ?
+      ''', [dateStr]);
+      final purchaseCredit = purchaseCreditRows.isNotEmpty &&
+              purchaseCreditRows.first['purchase_credit'] != null
+          ? (purchaseCreditRows.first['purchase_credit'] as num).toDouble()
+          : 0.0;
+
+      final openingBalance =
+          await DBHelper.instance.getFixedShiftOpeningBalance();
+      final drawerNow = openingBalance + cashNet;
+
+      debugPrint(
+          '[AllShiftsSummary] date=$dateStr cash=$cashNet wallet=$walletNet purchaseCash=$purchaseCash purchaseCredit=$purchaseCredit opening=$openingBalance drawer=$drawerNow');
 
       if (!mounted) return;
       setState(() {
-        _startingAmount = summary['opening_balance'] ?? _startingAmount;
-        _totalInDrawer = summary['closing_balance'] ?? _totalInDrawer;
-        _salesNet = summary['total_sales'] ?? _salesNet;
-        _purchasePaidCash = cashExpenses;
-        _purchasePaidOnCredit = creditExpenses;
+        _salesNet = cashNet;
+        _salesWallet = walletNet;
+        _purchasePaidCash = purchaseCash;
+        _purchasePaidOnCredit = purchaseCredit;
+        _startingAmount = openingBalance;
+        _totalInDrawer = drawerNow;
         _startingController.text = _startingAmount.toStringAsFixed(2);
       });
     } catch (e, st) {
-      debugPrint('Failed to load current shift financial summary: $e\n$st');
+      debugPrint('Failed to load all shifts financial summary: $e\n$st');
     }
   }
 
@@ -494,10 +536,36 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           raw: raw,
         );
       }).toList();
+      final totalSalesAllShifts = filtered.fold(
+          0.0,
+          (sum, row) =>
+              sum +
+              (_pickDoubleFromMap(
+                      Map<String, dynamic>.from(row.raw ?? const {}),
+                      ['total_sales']) ??
+                  row.totalSales));
+      final totalExpensesAllShifts = filtered.fold(
+          0.0,
+          (sum, row) =>
+              sum +
+              (_pickDoubleFromMap(
+                      Map<String, dynamic>.from(row.raw ?? const {}),
+                      ['total_expenses']) ??
+                  row.totalExpenses));
+      var totalClosingBalanceAllShifts =
+          totalSalesAllShifts - totalExpensesAllShifts;
+      if (totalClosingBalanceAllShifts < 0) {
+        totalClosingBalanceAllShifts = 0.0;
+      }
+      debugPrint(
+          '[FinancialAccounts] loaded ${filtered.length} shifts for ${_dateFormat.format(d)} totalSalesAll=$totalSalesAllShifts totalExpensesAll=$totalExpensesAllShifts totalClosingAll=$totalClosingBalanceAllShifts');
       if (mounted) {
         setState(() {
           _shifts = filtered;
+          _totalSalesAllShifts = totalSalesAllShifts;
+          _totalClosingBalanceAllShifts = totalClosingBalanceAllShifts;
         });
+        await _loadAllShiftsSummary();
       }
     } catch (e, st) {
       debugPrint('Failed to load close shifts: $e\n$st');
@@ -833,7 +901,9 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     final List<List<String>> fields = [
       ['date', 'تاريخ التقفيل'],
       ['opening_balance', 'رصيد بداية الشيفت'],
-      ['total_sales', 'إجمالي المبيعات'],
+      ['total_sales', 'إجمالي المبيعات (قبل الاسترجاع)'],
+      ['returns_value', 'قيمة المرتجعات'],
+      ['net_sales', 'صافي المبيعات (بعد الاسترجاع)'],
       ['total_expenses', 'إجمالي المصروفات'],
       ['net_profit', 'الربح'],
       ['closing_balance', 'رصيد نهاية الشيفت'],
@@ -894,7 +964,22 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         return s.date == null ? '-' : _dateFormat.format(s.date!);
       }
       if (key == 'opening_balance') return _formatMoney(s.openingBalance);
-      if (key == 'total_sales') return _formatMoney(s.totalSales);
+      if (key == 'total_sales') {
+        final raw2 = s.raw ?? {};
+        final gross = _pickDoubleFromMap(raw2, ['gross_sales']) ?? s.totalSales;
+        return _formatMoney(gross < 0 ? 0 : gross);
+      }
+      if (key == 'returns_value') {
+        final raw2 = s.raw ?? {};
+        final delta = _pickDoubleFromMap(raw2, ['returns_delta']) ?? 0.0;
+        return _formatMoney(delta.abs());
+      }
+      if (key == 'net_sales') {
+        final raw2 = s.raw ?? {};
+        final delta = _pickDoubleFromMap(raw2, ['returns_delta']) ?? 0.0;
+        final net = s.totalSales + delta;
+        return _formatMoney(net < 0 ? 0 : net);
+      }
       if (key == 'total_expenses') return _formatMoney(s.totalExpenses);
       if (key == 'net_profit') return _formatWithSign(s.netProfit);
       if (key == 'closing_balance') return _formatMoney(s.closingBalance);
@@ -1070,6 +1155,9 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                           _buildSummaryRow('صافي مبيعات نقدي', _salesNet),
                           const SizedBox(height: 10),
                           _buildSummaryRow(
+                              'إجمالي المحفظة / البطاقة', _salesWallet),
+                          const SizedBox(height: 10),
+                          _buildSummaryRow(
                               'مدفوعات مشتريات (نقدي)', _purchasePaidCash),
                           const SizedBox(height: 8),
                           _buildSummaryRow(
@@ -1101,7 +1189,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                         CrossAxisAlignment.start,
                                     children: [
                                       Center(
-                                          child: Text('المبلغ البدايه للدرج',
+                                          child: Text(
+                                              'المبلغ في الدرج الآن = مبدئي + نقدي',
                                               style: Theme.of(context)
                                                   .textTheme
                                                   .titleLarge!
@@ -1127,8 +1216,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                                             .mainTextDark)),
                                             const SizedBox(width: 10),
                                             Text(
-                                                _formatWithSign(
-                                                    _startingAmount),
+                                                _formatWithSign(_totalInDrawer),
                                                 style: Theme.of(context)
                                                     .textTheme
                                                     .displaySmall
@@ -1236,7 +1324,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                     IconButton(
                                       onPressed: () {
                                         _loadShifts(date: _selectedDate);
-                                        _loadCurrentShiftFinancialSummary();
+                                        _loadAllShiftsSummary();
                                       },
                                       icon: Icon(Icons.refresh,
                                           color: Theme.of(context)
@@ -1264,60 +1352,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                         Expanded(
                           child: SizedBox(
                             height: 200,
-                            child: Card(
-                              elevation: 3,
-                              color: AppColorsDark.bgCardColor,
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: 24.0, horizontal: 20.0),
-                                child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Center(
-                                          child: Text(
-                                        'الاجمالي في الدرج لكل الشيفتات',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleLarge!
-                                            .copyWith(
-                                                color:
-                                                    AppColorsDark.mainTextDark,
-                                                height: 1.5),
-                                        textAlign: TextAlign.center,
-                                      )),
-                                      const SizedBox(height: 12),
-                                      Expanded(
-                                          child: Row(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.center,
-                                              children: [
-                                            Text("جنيه",
-                                                style: Theme.of(context)
-                                                    .textTheme
-                                                    .displaySmall
-                                                    ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: AppColorsDark
-                                                            .mainTextDark)),
-                                            const SizedBox(width: 10),
-                                            Text(
-                                                _formatWithSign(_totalInDrawer),
-                                                style: Theme.of(context)
-                                                    .textTheme
-                                                    .displaySmall
-                                                    ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: AppColorsDark
-                                                            .mainTextDark)),
-                                          ])),
-                                    ]),
-                              ),
-                            ),
+                            child: _allShiftsTotalsCard(),
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -1484,6 +1519,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                             'المبلغ في الدرج الآن', _totalInDrawer),
                         _buildSummaryRow('صافي مبيعات نقدي', _salesNet),
                         _buildSummaryRow(
+                            'إجمالي المحفظة / البطاقة', _salesWallet),
+                        _buildSummaryRow(
                             'مدفوعات مشتريات (نقدي)', _purchasePaidCash),
                         _buildSummaryRow(
                             "المدفوع (مشتريات آجلة)", _purchasePaidOnCredit),
@@ -1497,8 +1534,9 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
               Row(
                 children: [
                   Expanded(
-                      child: _smallInfoCard('المبلغ البدايه للدرج',
-                          _formatWithSign(_startingAmount))),
+                      child: _smallInfoCard(
+                          'المبلغ في الدرج الآن = مبدئي + نقدي',
+                          _formatWithSign(_totalInDrawer))),
                   const SizedBox(width: 8),
                   Expanded(
                       child: _smallInfoCard('الحد الادني لبدايه كل شيفت',
@@ -1538,7 +1576,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                               IconButton(
                                 onPressed: () {
                                   _loadShifts(date: _selectedDate);
-                                  _loadCurrentShiftFinancialSummary();
+                                  _loadAllShiftsSummary();
                                 },
                                 icon: Icon(Icons.refresh,
                                     color: Theme.of(context).iconTheme.color),
@@ -1557,9 +1595,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
               // اجماليات سفلية
               Row(
                 children: [
-                  Expanded(
-                      child: _smallInfoCard('الاجمالي في الدرج لكل الشيفتات',
-                          _formatWithSign(_totalInDrawer))),
+                  Expanded(child: _allShiftsTotalsCard()),
                 ],
               ),
               const SizedBox(height: 12),
@@ -1607,6 +1643,62 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     );
   }
 
+  Widget _allShiftsTotalsCard() {
+    Widget amountLine(String label, double value) {
+      return Expanded(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              label,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppColorsDark.mainTextLight,
+                    fontWeight: FontWeight.w700,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _formatWithSign(value),
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: AppColorsDark.mainTextDark,
+                    fontWeight: FontWeight.bold,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 170,
+      child: Card(
+        color: AppColorsDark.bgCardColor,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+          child: Column(
+            children: [
+              Text(
+                'الاجمالي في الدرج لكل الشيفتات',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: AppColorsDark.mainTextDark,
+                      fontWeight: FontWeight.bold,
+                    ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 6),
+              amountLine('إجمالي المبيعات', _totalSalesAllShifts),
+              const Divider(height: 14),
+              amountLine('صافي بعد المصروفات (رصيد نهاية الشيفت)',
+                  _totalClosingBalanceAllShifts),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1623,8 +1715,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           IconButton(
             onPressed: () async {
               await _loadData();
-              await _loadCurrentShiftFinancialSummary();
-              _loadShifts(date: _selectedDate);
+              await _loadShifts(date: _selectedDate);
+              await _loadAllShiftsSummary();
             },
             icon: const Icon(Icons.refresh),
           )

@@ -318,7 +318,11 @@ class DBHelper {
         end_time TEXT NOT NULL,
         opening_balance REAL NOT NULL DEFAULT 0,
         total_sales REAL NOT NULL DEFAULT 0,
+        cash_sales REAL NOT NULL DEFAULT 0,
+        gross_sales REAL NOT NULL DEFAULT 0,
+        returns_delta REAL NOT NULL DEFAULT 0,
         total_expenses REAL NOT NULL DEFAULT 0,
+        cash_expenses REAL NOT NULL DEFAULT 0,
         net_profit REAL NOT NULL DEFAULT 0,
         closing_balance REAL NOT NULL DEFAULT 0,
         note TEXT,
@@ -337,8 +341,16 @@ class DBHelper {
         'ALTER TABLE close_shifts ADD COLUMN opening_balance REAL NOT NULL DEFAULT 0;');
     await addIfMissing('total_sales',
         'ALTER TABLE close_shifts ADD COLUMN total_sales REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('cash_sales',
+        'ALTER TABLE close_shifts ADD COLUMN cash_sales REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('gross_sales',
+        'ALTER TABLE close_shifts ADD COLUMN gross_sales REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('returns_delta',
+        'ALTER TABLE close_shifts ADD COLUMN returns_delta REAL NOT NULL DEFAULT 0;');
     await addIfMissing('total_expenses',
         'ALTER TABLE close_shifts ADD COLUMN total_expenses REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('cash_expenses',
+        'ALTER TABLE close_shifts ADD COLUMN cash_expenses REAL NOT NULL DEFAULT 0;');
     await addIfMissing('net_profit',
         'ALTER TABLE close_shifts ADD COLUMN net_profit REAL NOT NULL DEFAULT 0;');
     await addIfMissing('closing_balance',
@@ -2521,7 +2533,11 @@ class DBHelper {
     required String endTime,
     double openingBalance = 0.0,
     double totalSales = 0.0,
+    double cashSales = 0.0,
+    double grossSales = 0.0,
+    double returnsDelta = 0.0,
     double totalExpenses = 0.0,
+    double cashExpenses = 0.0,
     double netProfit = 0.0,
     double closingBalance = 0.0,
     String? note,
@@ -2534,7 +2550,11 @@ class DBHelper {
       'end_time': endTime,
       'opening_balance': openingBalance,
       'total_sales': totalSales,
+      'cash_sales': cashSales,
+      'gross_sales': grossSales,
+      'returns_delta': returnsDelta,
       'total_expenses': totalExpenses,
+      'cash_expenses': cashExpenses,
       'net_profit': netProfit,
       'closing_balance': closingBalance,
       'note': note,
@@ -2691,7 +2711,11 @@ class DBHelper {
     required String endTime,
     required double openingBalance,
     required double totalSales,
+    required double cashSales,
+    required double grossSales,
+    required double returnsDelta,
     required double totalExpenses,
+    required double cashExpenses,
     required double netProfit,
     required double closingBalance,
     required String fromDateTime,
@@ -2706,13 +2730,19 @@ class DBHelper {
 
     return await db.transaction<int>((txn) async {
       final now = DateTime.now().toIso8601String();
+      debugPrint(
+          '[CloseShiftSave] cashier=$cashierName totalSales=$totalSales cashSales=$cashSales grossSales=$grossSales returnsDelta=$returnsDelta expenses=$totalExpenses cashExpenses=$cashExpenses closing=$closingBalance');
       final shiftId = await txn.insert('close_shifts', {
         'cashier_name': cashierName,
         'start_time': startTime,
         'end_time': endTime,
         'opening_balance': openingBalance,
         'total_sales': totalSales,
+        'cash_sales': cashSales,
+        'gross_sales': grossSales,
+        'returns_delta': returnsDelta,
         'total_expenses': totalExpenses,
+        'cash_expenses': cashExpenses,
         'net_profit': netProfit,
         'closing_balance': closingBalance,
         'note': 'Closed locally and reset drawer to opening balance',
