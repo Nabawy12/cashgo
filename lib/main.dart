@@ -27,6 +27,7 @@ Future<void> main() async {
     const allowedHostnames = [
       'macbook-air-with-zeyad.local',
       'desktop-463r073',
+      'DESKTOP-6P83KJ5'
     ];
     isAllowed = allowedHostnames.contains(hostname);
   } catch (_) {
