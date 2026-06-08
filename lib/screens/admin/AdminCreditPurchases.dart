@@ -316,7 +316,7 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
         final productName = receiptRow?['product_name']?.toString() ??
             receiptRow?['barcode']?.toString() ??
             'دفع فاتورة آجلة';
-        await DBHelper.instance.createSale(
+        final newSaleId = await DBHelper.instance.createSale(
           total: amount,
           cashierUsername: currentUser,
           paidAmount: amount,
@@ -327,8 +327,24 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
           discountType: 'fixed',
           discountValue: 0.0,
         );
+
+        final productId = (receiptRow?['product_id'] as num?)?.toInt() ?? 0;
+        final cartons = (receiptRow?['cartons'] as num?)?.toInt() ?? 0;
+        final units = (receiptRow?['units'] as num?)?.toInt() ?? 0;
+        final unitsInCarton =
+            (receiptRow?['units_in_carton'] as num?)?.toInt() ?? 0;
+        final quantity = (cartons * unitsInCarton) + units;
+        final price = quantity > 0 ? amount / quantity : amount;
+        if (productId > 0 && quantity > 0) {
+          await DBHelper.instance.insertSaleItem(
+            saleId: newSaleId,
+            productId: productId,
+            quantity: quantity,
+            price: price,
+          );
+        }
         debugPrint(
-            '[CreditPayment] recorded as sale: amount=$amount method=$method cashier=$currentUser product=$productName');
+            '[CreditPayment] recorded as sale: amount=$amount method=$method cashier=$currentUser product=$productName itemProductId=$productId quantity=$quantity');
       }
 
       if (mounted)

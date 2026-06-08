@@ -381,12 +381,34 @@ class _LoginScreenState extends State<LoginScreen> {
         // --- تخزين الـ Session ---
         Session.currentUsername = returnedUsername;
         Session.updateDateTime(); // record exact login time as shift start
-        await DBHelper.instance.setAppSetting(
-          'current_shift_start_${returnedUsername.trim().toLowerCase()}',
-          DateTime.now().toIso8601String(),
+        final shiftKey =
+            'current_shift_start_${returnedUsername.trim().toLowerCase()}';
+        final db = await DBHelper.instance.database;
+        final unclosed = await db.rawQuery(
+          '''
+          SELECT COUNT(*) as cnt
+          FROM sales
+          WHERE TRIM(COALESCE(cashier_username,'')) = ?
+            AND COALESCE(drawer_withdrawn,0) = 0
+          ''',
+          [returnedUsername.trim()],
         );
-        debugPrint(
-            '[Login] shift start saved for ${returnedUsername.trim()} at ${Session.currentDateTime}');
+        final hasUnclosedSales =
+            ((unclosed.first['cnt'] as num?)?.toInt() ?? 0) > 0;
+
+        if (!hasUnclosedSales) {
+          await DBHelper.instance.setAppSetting(
+            shiftKey,
+            DateTime.now().toIso8601String(),
+          );
+          debugPrint('[Login] new shift start saved for $returnedUsername');
+        } else {
+          final existingShiftStart = await DBHelper.instance.getAppSetting(
+            shiftKey,
+          );
+          debugPrint(
+              '[Login] keeping existing shift start for $returnedUsername (has unclosed sales) existing=$existingShiftStart');
+        }
         Session.currentRole = returnedRole;
         Session.canViewCredit = canViewCredit;
         if (token != null && token.isNotEmpty) Session.currentToken = token;

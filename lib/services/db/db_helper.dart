@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.171');
+    _database = await _initDB('pos_system.db_v2.172');
     return _database!;
   }
 
@@ -2975,18 +2975,23 @@ class DBHelper {
     final username = cashierName.trim();
     if (username.isEmpty) return await getFixedShiftOpeningBalance();
 
-    await _ensureCloseShiftsTable(db);
-    await _ensureShiftSettingsTable(db);
-
     final openingBalance = await getFixedShiftOpeningBalance();
     final shiftStart = await getCurrentShiftStartDateTime(username);
     final now = DateTime.now().toIso8601String();
 
+    // Sum all cash sales since shift start. Do not filter by drawer_withdrawn,
+    // because a cashier may log out and back in before closing the shift.
     final rows = await db.rawQuery(
       '''
-      SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) AS cash_sales
+      SELECT SUM(
+        CASE
+          WHEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0
+          THEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0))
+          ELSE 0
+        END
+      ) AS cash_sales
       FROM sales
-      WHERE cashier_username = ?
+      WHERE TRIM(COALESCE(cashier_username,'')) = ?
         AND LOWER(COALESCE(payment_method,'')) = 'cash'
         AND COALESCE(is_credit,0) = 0
         AND datetime(date) > datetime(?)
@@ -2996,6 +3001,8 @@ class DBHelper {
     );
     final cashSales =
         rows.isNotEmpty ? _numFromRow(rows.first, 'cash_sales') : 0.0;
+    debugPrint(
+        '[DrawerBalance] cashier=$username shiftStart=$shiftStart now=$now opening=$openingBalance cashSales=$cashSales');
 
     return openingBalance + cashSales;
   }

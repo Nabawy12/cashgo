@@ -478,7 +478,7 @@ class _CreditsScreenState extends State<CreditsScreen> {
       final currentUser = (Session.currentUsername ?? '').trim();
       if (currentRole != 'admin' && currentUser.isNotEmpty) {
         final customerName = (saleRow['customer_name'] ?? '').toString();
-        await DBHelper.instance.createSale(
+        final newSaleId = await DBHelper.instance.createSale(
           total: amountToPay,
           cashierUsername: currentUser,
           paidAmount: amountToPay,
@@ -490,8 +490,27 @@ class _CreditsScreenState extends State<CreditsScreen> {
           discountType: 'fixed',
           discountValue: 0.0,
         );
+
+        final originalItems = saleItemsCache[saleId] ??
+            await DBHelper.instance.getSaleItemsBySaleId(saleId);
+        saleItemsCache[saleId] = originalItems;
+        for (final item in originalItems) {
+          final productId = (item['product_id'] as num?)?.toInt() ?? 0;
+          final qty = (item['quantity'] as num?)?.toInt() ??
+              (item['qty'] as num?)?.toInt() ??
+              0;
+          final price = (item['price'] as num?)?.toDouble() ?? 0.0;
+          if (productId > 0 && qty > 0) {
+            await DBHelper.instance.insertSaleItem(
+              saleId: newSaleId,
+              productId: productId,
+              quantity: qty,
+              price: price,
+            );
+          }
+        }
         debugPrint(
-            '[CreditSalePayment] recorded as sale: amount=$amountToPay method=$method cashier=$currentUser');
+            '[CreditSalePayment] recorded as sale: amount=$amountToPay method=$method cashier=$currentUser copiedItems=${originalItems.length}');
       }
 
       setState(() {
