@@ -1104,30 +1104,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                               infinity: true,
                               color: AppColorsDark.mainColor.withOpacity(0.9)),
                           const SizedBox(height: 20),
-                          Center(
-                              child: Text(
-                                  'وضع الحد الاقسي لبدايه الدرج بعد تقفيل الشيفت',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .titleLarge!
-                                      .copyWith(
-                                          color: AppColorsDark.mainTextDark),
-                                  textAlign: TextAlign.center)),
-                          const SizedBox(height: 20),
-                          CustomFormField(
-                            controller: _maxLimitController,
-                            hint:
-                                'وضع الحد الاقصي لبدايه الدرج بعد تقفيل الشيفت',
-                            keyboardType: const TextInputType.numberWithOptions(
-                                decimal: true),
-                          ),
-                          const SizedBox(height: 20),
-                          CustomButton(
-                              text: 'حفظ الحد الأقصى',
-                              onPressed: _saveMaxLimit,
-                              infinity: true,
-                              color: AppColorsDark.mainColor.withOpacity(0.7)),
-                          const SizedBox(height: 20),
                           Divider(height: 30, color: AppColorsDark.mainColor),
                           Center(
                               child: Text('ملخص سريع',
