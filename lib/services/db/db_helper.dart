@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.172');
+    _database = await _initDB('pos_system.db_v2.174');
     return _database!;
   }
 
@@ -188,6 +188,8 @@ class DBHelper {
     payment_method TEXT NOT NULL DEFAULT 'cash',
     discount_type TEXT NOT NULL DEFAULT 'fixed',
     discount_value REAL NOT NULL DEFAULT 0,
+    credit_paid_by TEXT,
+    credit_paid_at TEXT,
     -- new columns to track drawer clearing
     drawer_withdrawn INTEGER NOT NULL DEFAULT 0,
     drawer_withdrawn_amount REAL NOT NULL DEFAULT 0
@@ -419,6 +421,10 @@ class DBHelper {
     // new: customer_name column
     await addIfMissing(
         'customer_name', "ALTER TABLE sales ADD COLUMN customer_name TEXT;");
+    await addIfMissing(
+        'credit_paid_by', "ALTER TABLE sales ADD COLUMN credit_paid_by TEXT;");
+    await addIfMissing(
+        'credit_paid_at', "ALTER TABLE sales ADD COLUMN credit_paid_at TEXT;");
   }
 
   Future<void> ensureSaleColumns() async {
@@ -1859,9 +1865,15 @@ class DBHelper {
     return rows;
   }
 
-  Future<int> markSaleAsPaid(int saleId,
-      {String paymentMethod = 'cash', double? paidAmount}) async {
+  Future<int> markSaleAsPaid(
+    int saleId, {
+    String paymentMethod = 'cash',
+    double? paidAmount,
+    String? paidBy,
+    DateTime? paidAt,
+  }) async {
     final db = await instance.database;
+    await _ensureSaleColumns(db);
     final rows =
         await db.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
     if (rows.isEmpty) throw 'Sale not found';
@@ -1875,6 +1887,8 @@ class DBHelper {
         'paid_amount': paid,
         'change_amount': change,
         'payment_method': paymentMethod,
+        'credit_paid_by': paidBy,
+        'credit_paid_at': paidAt?.toIso8601String(),
       },
       where: 'id = ?',
       whereArgs: [saleId],
@@ -2644,6 +2658,7 @@ class DBHelper {
     required String toDateTime,
   }) async {
     final db = await database;
+    await _ensureSaleColumns(db);
     await _ensureCashDrawerTable(db);
     await _ensureDrawerWithdrawnAmountColumn(db);
     await _ensureShiftSettingsTable(db);
@@ -2668,13 +2683,31 @@ class DBHelper {
           THEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0))
           ELSE 0
         END
-      ) AS cash_sales
-      FROM sales
-      WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
-        AND TRIM(COALESCE(cashier_username,'')) = ?
-        AND datetime(date) BETWEEN datetime(?) AND datetime(?)
-      ''',
-      [cashierName.trim(), fromDateTime, toDateTime],
+	      ) AS cash_sales
+	      FROM sales
+	      WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
+	        AND COALESCE(is_return,0) = 0
+	        AND (
+	          (
+	            TRIM(COALESCE(cashier_username,'')) = ?
+	            AND (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
+	            AND datetime(date) BETWEEN datetime(?) AND datetime(?)
+	          )
+	          OR
+	          (
+	            TRIM(COALESCE(credit_paid_by,'')) = ?
+	            AND datetime(credit_paid_at) BETWEEN datetime(?) AND datetime(?)
+	          )
+	        )
+	      ''',
+      [
+        cashierName.trim(),
+        fromDateTime,
+        toDateTime,
+        cashierName.trim(),
+        fromDateTime,
+        toDateTime,
+      ],
     );
     final cashSales =
         cashRows.isNotEmpty ? _numFromRow(cashRows.first, 'cash_sales') : 0.0;
@@ -2699,14 +2732,31 @@ class DBHelper {
 
     final salesRows = await db.rawQuery(
       '''
-      SELECT SUM(COALESCE(total,0)) AS gross_sales
-      FROM sales
-      WHERE TRIM(COALESCE(cashier_username,'')) = ?
-        AND COALESCE(is_return,0) = 0
-        AND NOT (COALESCE(is_credit,0) = 1 AND COALESCE(paid_amount,0) < COALESCE(total,0))
-        AND datetime(date) BETWEEN datetime(?) AND datetime(?)
-      ''',
-      [cashierName.trim(), fromDateTime, toDateTime],
+	      SELECT SUM(COALESCE(total,0)) AS gross_sales
+	      FROM sales
+	      WHERE COALESCE(is_return,0) = 0
+	        AND NOT (COALESCE(is_credit,0) = 1 AND COALESCE(paid_amount,0) < COALESCE(total,0))
+	        AND (
+	          (
+	            TRIM(COALESCE(cashier_username,'')) = ?
+	            AND (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
+	            AND datetime(date) BETWEEN datetime(?) AND datetime(?)
+	          )
+	          OR
+	          (
+	            TRIM(COALESCE(credit_paid_by,'')) = ?
+	            AND datetime(credit_paid_at) BETWEEN datetime(?) AND datetime(?)
+	          )
+	        )
+	      ''',
+      [
+        cashierName.trim(),
+        fromDateTime,
+        toDateTime,
+        cashierName.trim(),
+        fromDateTime,
+        toDateTime,
+      ],
     );
     final grossSales = salesRows.isNotEmpty
         ? _numFromRow(salesRows.first, 'gross_sales')
@@ -2815,7 +2865,21 @@ class DBHelper {
             drawer_withdrawn_amount = COALESCE(paid_amount,0) - COALESCE(change_amount,0)
         WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
           AND TRIM(COALESCE(cashier_username,'')) = ?
+          AND (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
           AND datetime(date) BETWEEN datetime(?) AND datetime(?)
+          AND COALESCE(drawer_withdrawn,0) = 0
+        ''',
+        [cashierName.trim(), fromDateTime, toDateTime],
+      );
+
+      await txn.rawUpdate(
+        '''
+        UPDATE sales
+        SET drawer_withdrawn = 1,
+            drawer_withdrawn_amount = COALESCE(paid_amount,0) - COALESCE(change_amount,0)
+        WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
+          AND TRIM(COALESCE(credit_paid_by,'')) = ?
+          AND datetime(credit_paid_at) BETWEEN datetime(?) AND datetime(?)
           AND COALESCE(drawer_withdrawn,0) = 0
         ''',
         [cashierName.trim(), fromDateTime, toDateTime],
@@ -2972,6 +3036,7 @@ class DBHelper {
 
   Future<double> computeCurrentShiftDrawerBalance(String cashierName) async {
     final db = await database;
+    await _ensureSaleColumns(db);
     final username = cashierName.trim();
     if (username.isEmpty) return await getFixedShiftOpeningBalance();
 
@@ -2991,13 +3056,23 @@ class DBHelper {
         END
       ) AS cash_sales
       FROM sales
-      WHERE TRIM(COALESCE(cashier_username,'')) = ?
-        AND LOWER(COALESCE(payment_method,'')) = 'cash'
-        AND COALESCE(is_credit,0) = 0
-        AND datetime(date) > datetime(?)
-        AND datetime(date) <= datetime(?)
+      WHERE LOWER(COALESCE(payment_method,'')) = 'cash'
+        AND (
+          (
+            TRIM(COALESCE(cashier_username,'')) = ?
+            AND COALESCE(is_credit,0) = 0
+            AND (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
+            AND datetime(date) > datetime(?)
+            AND datetime(date) <= datetime(?)
+          )
+          OR (
+            TRIM(COALESCE(credit_paid_by,'')) = ?
+            AND datetime(credit_paid_at) > datetime(?)
+            AND datetime(credit_paid_at) <= datetime(?)
+          )
+        )
       ''',
-      [username, shiftStart, now],
+      [username, shiftStart, now, username, shiftStart, now],
     );
     final cashSales =
         rows.isNotEmpty ? _numFromRow(rows.first, 'cash_sales') : 0.0;

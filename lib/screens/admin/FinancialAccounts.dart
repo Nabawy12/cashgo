@@ -294,14 +294,21 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     try {
       final dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
       final db = await DBHelper.instance.database;
+      await DBHelper.instance.ensureSaleColumns();
 
       final cashRows = await db.rawQuery('''
         SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as cash_net
         FROM sales
         WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
           AND COALESCE(is_return,0) = 0
-          AND date(date) = ?
-      ''', [dateStr]);
+          AND (
+            (
+              (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
+              AND date(date) = ?
+            )
+            OR date(credit_paid_at) = ?
+          )
+      ''', [dateStr, dateStr]);
       final cashNet = cashRows.isNotEmpty && cashRows.first['cash_net'] != null
           ? (cashRows.first['cash_net'] as num).toDouble()
           : 0.0;
@@ -311,8 +318,14 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         FROM sales
         WHERE LOWER(TRIM(COALESCE(payment_method,''))) IN ('wallet','card')
           AND COALESCE(is_return,0) = 0
-          AND date(date) = ?
-      ''', [dateStr]);
+          AND (
+            (
+              (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
+              AND date(date) = ?
+            )
+            OR date(credit_paid_at) = ?
+          )
+      ''', [dateStr, dateStr]);
       final walletNet =
           walletRows.isNotEmpty && walletRows.first['wallet_net'] != null
               ? (walletRows.first['wallet_net'] as num).toDouble()

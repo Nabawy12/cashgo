@@ -309,42 +309,11 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
         paymentMethod: method,
       );
 
-      // If cashier (not admin), record as a sale so it appears in sales totals and drawer
       final currentRole = (Session.currentRole ?? '').toLowerCase().trim();
       final currentUser = (Session.currentUsername ?? '').trim();
       if (currentRole != 'admin' && currentUser.isNotEmpty) {
-        final productName = receiptRow?['product_name']?.toString() ??
-            receiptRow?['barcode']?.toString() ??
-            'دفع فاتورة آجلة';
-        final newSaleId = await DBHelper.instance.createSale(
-          total: amount,
-          cashierUsername: currentUser,
-          paidAmount: amount,
-          changeAmount: 0.0,
-          isCredit: false,
-          paymentMethod: method,
-          customerName: productName,
-          discountType: 'fixed',
-          discountValue: 0.0,
-        );
-
-        final productId = (receiptRow?['product_id'] as num?)?.toInt() ?? 0;
-        final cartons = (receiptRow?['cartons'] as num?)?.toInt() ?? 0;
-        final units = (receiptRow?['units'] as num?)?.toInt() ?? 0;
-        final unitsInCarton =
-            (receiptRow?['units_in_carton'] as num?)?.toInt() ?? 0;
-        final quantity = (cartons * unitsInCarton) + units;
-        final price = quantity > 0 ? amount / quantity : amount;
-        if (productId > 0 && quantity > 0) {
-          await DBHelper.instance.insertSaleItem(
-            saleId: newSaleId,
-            productId: productId,
-            quantity: quantity,
-            price: price,
-          );
-        }
         debugPrint(
-            '[CreditPayment] recorded as sale: amount=$amount method=$method cashier=$currentUser product=$productName itemProductId=$productId quantity=$quantity');
+            '[CreditPayment] payment recorded on original purchase receipt only: amount=$amount method=$method cashier=$currentUser receiptId=$receiptId');
       }
 
       if (mounted)

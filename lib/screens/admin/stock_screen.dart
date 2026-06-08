@@ -470,48 +470,19 @@ class _CreditsScreenState extends State<CreditsScreen> {
     if (confirmed != true) return;
 
     try {
-      await DBHelper.instance.markSaleAsPaid(saleId,
-          paymentMethod: method, paidAmount: amountToPay);
-
-      // If cashier (not admin), record as a new sale so it appears in sales totals and drawer
       final currentRole = (Session.currentRole ?? '').toLowerCase().trim();
       final currentUser = (Session.currentUsername ?? '').trim();
-      if (currentRole != 'admin' && currentUser.isNotEmpty) {
-        final customerName = (saleRow['customer_name'] ?? '').toString();
-        final newSaleId = await DBHelper.instance.createSale(
-          total: amountToPay,
-          cashierUsername: currentUser,
-          paidAmount: amountToPay,
-          changeAmount: 0.0,
-          isCredit: false,
+      await DBHelper.instance.markSaleAsPaid(saleId,
           paymentMethod: method,
-          customerName:
-              customerName.isNotEmpty ? customerName : 'دفع فاتورة آجلة',
-          discountType: 'fixed',
-          discountValue: 0.0,
-        );
-
-        final originalItems = saleItemsCache[saleId] ??
-            await DBHelper.instance.getSaleItemsBySaleId(saleId);
-        saleItemsCache[saleId] = originalItems;
-        for (final item in originalItems) {
-          final productId = (item['product_id'] as num?)?.toInt() ?? 0;
-          final qty = (item['quantity'] as num?)?.toInt() ??
-              (item['qty'] as num?)?.toInt() ??
-              0;
-          final price = (item['price'] as num?)?.toDouble() ?? 0.0;
-          if (productId > 0 && qty > 0) {
-            await DBHelper.instance.insertSaleItem(
-              saleId: newSaleId,
-              productId: productId,
-              quantity: qty,
-              price: price,
-            );
-          }
-        }
-        debugPrint(
-            '[CreditSalePayment] recorded as sale: amount=$amountToPay method=$method cashier=$currentUser copiedItems=${originalItems.length}');
-      }
+          paidAmount: amountToPay,
+          paidBy: currentRole != 'admin' && currentUser.isNotEmpty
+              ? currentUser
+              : null,
+          paidAt: currentRole != 'admin' && currentUser.isNotEmpty
+              ? DateTime.now()
+              : null);
+      debugPrint(
+          '[CreditSalePayment] updated original sale: saleId=$saleId amount=$amountToPay method=$method paidBy=${currentRole != 'admin' ? currentUser : 'admin'}');
 
       setState(() {
         credits.removeWhere((r) => (r['id'] as num).toInt() == saleId);
