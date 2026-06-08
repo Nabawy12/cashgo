@@ -43,6 +43,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   double _salesNet = 0.0;
   double _salesWallet = 0.0; // sales paid by wallet/card
   double _purchasePaidCash = 0.0;
+  double _purchasePaidWallet = 0.0;
   double _creditOutstanding = 0.0;
   double _purchasePaidOnCredit = 0.0;
   double _totalSalesAllShifts = 0.0;
@@ -317,14 +318,46 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
               ? (walletRows.first['wallet_net'] as num).toDouble()
               : 0.0;
 
+      // diagnostic
+      final allPurchases = await db.rawQuery(
+          'SELECT id, payment_type, paid_amount, created_at FROM purchase_receipts ORDER BY created_at DESC LIMIT 10');
+      debugPrint('[Purchases] all recent: $allPurchases');
+      debugPrint('[Purchases] filtering by dateStr=$dateStr');
+
+      final cashCheck = await db.rawQuery('''
+        SELECT COUNT(*) as cnt, SUM(paid_amount) as total
+        FROM purchase_receipts
+        WHERE LOWER(TRIM(COALESCE(payment_type,''))) = 'cash'
+      ''');
+      debugPrint('[Purchases] cash without date filter: ${cashCheck.first}');
+
+      final cashCheckWithDate = await db.rawQuery('''
+        SELECT COUNT(*) as cnt, SUM(paid_amount) as total
+        FROM purchase_receipts
+        WHERE LOWER(TRIM(COALESCE(payment_type,''))) = 'cash'
+          AND date(created_at) = ?
+      ''', [dateStr]);
+      debugPrint(
+          '[Purchases] cash WITH date filter ($dateStr): ${cashCheckWithDate.first}');
+
       final purchaseCashRows = await db.rawQuery('''
-        SELECT SUM(COALESCE(paid_amount,0)) as purchase_cash
+        SELECT SUM(COALESCE(paid_cash, 0)) as purchase_cash
         FROM purchase_receipts
         WHERE date(created_at) = ?
       ''', [dateStr]);
       final purchaseCash = purchaseCashRows.isNotEmpty &&
               purchaseCashRows.first['purchase_cash'] != null
           ? (purchaseCashRows.first['purchase_cash'] as num).toDouble()
+          : 0.0;
+
+      final purchaseWalletRows = await db.rawQuery('''
+        SELECT SUM(COALESCE(paid_wallet, 0)) as purchase_wallet
+        FROM purchase_receipts
+        WHERE date(created_at) = ?
+      ''', [dateStr]);
+      final purchaseWallet = purchaseWalletRows.isNotEmpty &&
+              purchaseWalletRows.first['purchase_wallet'] != null
+          ? (purchaseWalletRows.first['purchase_wallet'] as num).toDouble()
           : 0.0;
 
       final purchaseCreditRows = await db.rawQuery('''
@@ -352,15 +385,17 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       final openingBalance =
           await DBHelper.instance.getFixedShiftOpeningBalance();
       final drawerNow = openingBalance + cashNet - purchaseCash;
+      final walletTotal = walletNet - purchaseWallet;
 
       debugPrint(
-          '[AllShiftsSummary] date=$dateStr cash=$cashNet wallet=$walletNet purchaseCash=$purchaseCash purchaseCredit=$purchaseCredit creditOutstanding=$creditOutstanding opening=$openingBalance drawer=$drawerNow');
+          '[AllShiftsSummary] date=$dateStr cash=$cashNet wallet=$walletNet purchaseWallet=$purchaseWallet walletTotal=$walletTotal purchaseCash=$purchaseCash purchaseCredit=$purchaseCredit creditOutstanding=$creditOutstanding opening=$openingBalance drawer=$drawerNow');
 
       if (!mounted) return;
       setState(() {
         _salesNet = cashNet;
-        _salesWallet = walletNet;
+        _salesWallet = walletTotal;
         _purchasePaidCash = purchaseCash;
+        _purchasePaidWallet = purchaseWallet;
         _purchasePaidOnCredit = purchaseCredit;
         _creditOutstanding = creditOutstanding;
         _startingAmount = openingBalance;
@@ -1171,6 +1206,9 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                           _buildSummaryRow(
                               'مدفوعات مشتريات (نقدي)', _purchasePaidCash),
                           const SizedBox(height: 8),
+                          _buildSummaryRow('مدفوعات مشتريات (محفظة/بطاقة)',
+                              _purchasePaidWallet),
+                          const SizedBox(height: 8),
                           _buildSummaryRow(
                               "المدفوع (مشتريات آجلة)", _purchasePaidOnCredit),
                           const SizedBox(height: 10),
@@ -1533,6 +1571,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                             'إجمالي المحفظة / البطاقة', _salesWallet),
                         _buildSummaryRow(
                             'مدفوعات مشتريات (نقدي)', _purchasePaidCash),
+                        _buildSummaryRow('مدفوعات مشتريات (محفظة/بطاقة)',
+                            _purchasePaidWallet),
                         _buildSummaryRow(
                             "المدفوع (مشتريات آجلة)", _purchasePaidOnCredit),
                       ],

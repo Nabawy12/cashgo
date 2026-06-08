@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.156');
+    _database = await _initDB('pos_system.db_v2.167');
     return _database!;
   }
 
@@ -525,6 +525,10 @@ class DBHelper {
         "ALTER TABLE purchase_receipts ADD COLUMN payment_type TEXT NOT NULL DEFAULT 'cash';");
     await addIfMissing('paid_amount',
         "ALTER TABLE purchase_receipts ADD COLUMN paid_amount REAL NOT NULL DEFAULT 0;");
+    await addIfMissing('paid_cash',
+        'ALTER TABLE purchase_receipts ADD COLUMN paid_cash REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('paid_wallet',
+        'ALTER TABLE purchase_receipts ADD COLUMN paid_wallet REAL NOT NULL DEFAULT 0;');
     await addIfMissing('due_amount',
         "ALTER TABLE purchase_receipts ADD COLUMN due_amount REAL NOT NULL DEFAULT 0;");
     await addIfMissing('cashier_username',
@@ -1508,6 +1512,10 @@ class DBHelper {
         'purchase_price_per_unit': unitPrice > 0 ? unitPrice : null,
         'payment_type': paymentType,
         'paid_amount': paidAmount,
+        'paid_cash': (paymentType == 'cash') ? paidAmount : 0.0,
+        'paid_wallet': (paymentType == 'wallet' || paymentType == 'card')
+            ? paidAmount
+            : 0.0,
         'due_amount': due,
         'created_at': now,
       });
@@ -1576,6 +1584,10 @@ class DBHelper {
         'purchase_price_per_unit': unitPrice > 0 ? unitPrice : null,
         'payment_type': paymentType,
         'paid_amount': paidAmount,
+        'paid_cash': (paymentType == 'cash') ? paidAmount : 0.0,
+        'paid_wallet': (paymentType == 'wallet' || paymentType == 'card')
+            ? paidAmount
+            : 0.0,
         'due_amount': due,
         'created_at': now,
       });
@@ -1608,9 +1620,11 @@ class DBHelper {
     return rows;
   }
 
-  Future<int> addPaymentToPurchase(int receiptId, double amount) async {
+  Future<int> addPaymentToPurchase(int receiptId, double amount,
+      {String paymentMethod = 'cash'}) async {
     if (amount <= 0) return 0;
     final db = await instance.database;
+    await _ensurePurchaseReceiptsColumns(db);
     return await db.transaction((txn) async {
       final rows = await txn.query('purchase_receipts',
           where: 'id = ?', whereArgs: [receiptId], limit: 1);
@@ -1618,12 +1632,38 @@ class DBHelper {
       final r = Map<String, dynamic>.from(rows.first);
       final currentPaid = (r['paid_amount'] as num?)?.toDouble() ?? 0.0;
       final currentDue = (r['due_amount'] as num?)?.toDouble() ?? 0.0;
+      final currentPaidCash = (r['paid_cash'] as num?)?.toDouble() ?? 0.0;
+      final currentPaidWallet = (r['paid_wallet'] as num?)?.toDouble() ?? 0.0;
+      final normalizedMethod = paymentMethod.trim().toLowerCase();
+      final newPaidCash = normalizedMethod == 'cash'
+          ? currentPaidCash + amount
+          : currentPaidCash;
+      final newPaidWallet =
+          normalizedMethod == 'wallet' || normalizedMethod == 'card'
+              ? currentPaidWallet + amount
+              : currentPaidWallet;
       final newPaid = currentPaid + amount;
       double newDue = currentDue - amount;
       if (newDue < 0) newDue = 0.0;
+      String newPaymentType;
+      if (newPaidCash > 0 && newPaidWallet > 0) {
+        newPaymentType = 'mixed';
+      } else if (newPaidWallet > 0) {
+        newPaymentType = 'wallet';
+      } else {
+        newPaymentType = 'cash';
+      }
       final updated = await txn.update(
-          'purchase_receipts', {'paid_amount': newPaid, 'due_amount': newDue},
-          where: 'id = ?', whereArgs: [receiptId]);
+          'purchase_receipts',
+          {
+            'paid_amount': newPaid,
+            'due_amount': newDue,
+            'paid_cash': newPaidCash,
+            'paid_wallet': newPaidWallet,
+            'payment_type': newPaymentType,
+          },
+          where: 'id = ?',
+          whereArgs: [receiptId]);
       return updated;
     });
   }
@@ -2687,8 +2727,9 @@ class DBHelper {
 
     final expenseRows = await db.rawQuery(
       '''
-      SELECT SUM(COALESCE(paid_amount,0) + COALESCE(due_amount,0)) AS total_expenses,
-             SUM(CASE WHEN payment_type = 'cash' THEN COALESCE(paid_amount,0) ELSE 0 END) AS cash_expenses
+      SELECT SUM(COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) AS total_expenses,
+             SUM(COALESCE(paid_cash,0)) AS cash_expenses,
+             SUM(COALESCE(paid_wallet,0)) AS wallet_expenses
       FROM purchase_receipts
       WHERE TRIM(COALESCE(cashier_username,'')) = ?
         AND datetime(created_at) > datetime(?)

@@ -20,8 +20,13 @@ import 'screens/admin/stock_screen.dart';
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
-  /// استدعي هذي الوظيفة مرة واحدة (مثلاً من main أثناء التطوير) لتصحيح ops القديمة.
 
+
+  print(
+    LicenseService.activationCodeForHostname(
+      'DESKTOP-463R073~',
+    ),
+  );
   WidgetsFlutterBinding.ensureInitialized();
   await Hive.initFlutter();
   // open boxes used by the code

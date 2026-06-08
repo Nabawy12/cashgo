@@ -288,6 +288,8 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
       // compute credit (what remains to be paid)
       final double creditAmount =
           (totalCost - paid) < 0 ? 0.0 : (totalCost - paid);
+      final String paymentTypeToSave =
+          _paymentType == 'wallet' ? 'wallet' : (paid > 0 ? 'cash' : 'credit');
 
       final data = await DBHelper.instance.receiveFromSupplier(
         barcode: barcode,
@@ -299,7 +301,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         sellingPricePerUnitIfNew: sellingIfNew,
         unitsInCartonIfNew: unitsInCartonInput,
         receivedBy: Session.currentUsername ?? 'unknown',
-        paymentType: creditAmount > 0 ? 'credit' : _paymentType,
+        paymentType: paymentTypeToSave,
         paidAmount: paid,
       );
 

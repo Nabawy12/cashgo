@@ -285,7 +285,11 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
   }) async {
     setState(() => _loading = true);
     try {
-      await DBHelper.instance.addPaymentToPurchase(receiptId, amount);
+      await DBHelper.instance.addPaymentToPurchase(
+        receiptId,
+        amount,
+        paymentMethod: method,
+      );
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Directionality(
