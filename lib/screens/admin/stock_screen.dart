@@ -10,6 +10,7 @@ import 'package:intl/intl.dart' hide TextDirection;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
+import '../../models/login.dart';
 import '../../services/db/db_helper.dart';
 import '../../widgets/Loading/Admin/invoice_cash.dart';
 import '../../widgets/empty_state_card.dart';
@@ -471,6 +472,28 @@ class _CreditsScreenState extends State<CreditsScreen> {
     try {
       await DBHelper.instance.markSaleAsPaid(saleId,
           paymentMethod: method, paidAmount: amountToPay);
+
+      // If cashier (not admin), record as a new sale so it appears in sales totals and drawer
+      final currentRole = (Session.currentRole ?? '').toLowerCase().trim();
+      final currentUser = (Session.currentUsername ?? '').trim();
+      if (currentRole != 'admin' && currentUser.isNotEmpty) {
+        final customerName = (saleRow['customer_name'] ?? '').toString();
+        await DBHelper.instance.createSale(
+          total: amountToPay,
+          cashierUsername: currentUser,
+          paidAmount: amountToPay,
+          changeAmount: 0.0,
+          isCredit: false,
+          paymentMethod: method,
+          customerName:
+              customerName.isNotEmpty ? customerName : 'دفع فاتورة آجلة',
+          discountType: 'fixed',
+          discountValue: 0.0,
+        );
+        debugPrint(
+            '[CreditSalePayment] recorded as sale: amount=$amountToPay method=$method cashier=$currentUser');
+      }
+
       setState(() {
         credits.removeWhere((r) => (r['id'] as num).toInt() == saleId);
         saleItemsCache.remove(saleId);

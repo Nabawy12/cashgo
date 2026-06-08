@@ -3,6 +3,7 @@ import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 
+import '../../models/login.dart';
 import '../../services/db/db_helper.dart';
 import '../../utils/colors.dart';
 import '../../widgets/Loading/Admin/invoice_cash.dart';
@@ -297,7 +298,8 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
   Future<void> _processPaymentOnServer({
     required int receiptId,
     required double amount,
-    required String method, // 'cash'|'wallet'
+    required String method,
+    Map<String, dynamic>? receiptRow,
   }) async {
     setState(() => _loading = true);
     try {
@@ -306,6 +308,29 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
         amount,
         paymentMethod: method,
       );
+
+      // If cashier (not admin), record as a sale so it appears in sales totals and drawer
+      final currentRole = (Session.currentRole ?? '').toLowerCase().trim();
+      final currentUser = (Session.currentUsername ?? '').trim();
+      if (currentRole != 'admin' && currentUser.isNotEmpty) {
+        final productName = receiptRow?['product_name']?.toString() ??
+            receiptRow?['barcode']?.toString() ??
+            'دفع فاتورة آجلة';
+        await DBHelper.instance.createSale(
+          total: amount,
+          cashierUsername: currentUser,
+          paidAmount: amount,
+          changeAmount: 0.0,
+          isCredit: false,
+          paymentMethod: method,
+          customerName: productName,
+          discountType: 'fixed',
+          discountValue: 0.0,
+        );
+        debugPrint(
+            '[CreditPayment] recorded as sale: amount=$amount method=$method cashier=$currentUser product=$productName');
+      }
+
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Directionality(
@@ -315,7 +340,7 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
         ));
       await _load(date: selectedDate);
     } catch (e) {
-      debugPrint('Error processing payment on server: $e');
+      debugPrint('Error processing payment: $e');
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Directionality(
@@ -361,7 +386,8 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
 
     final method = await _askForPaymentMethod(isFullPayment: true);
     if (method == null) return;
-    await _processPaymentOnServer(receiptId: id, amount: due, method: method);
+    await _processPaymentOnServer(
+        receiptId: id, amount: due, method: method, receiptRow: r);
   }
 
   // Partial payment: ask amount then method then send
@@ -439,7 +465,7 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
     if (method == null) return;
 
     await _processPaymentOnServer(
-        receiptId: id, amount: amount, method: method);
+        receiptId: id, amount: amount, method: method, receiptRow: r);
   }
 
   // ====== تاريخ ======
