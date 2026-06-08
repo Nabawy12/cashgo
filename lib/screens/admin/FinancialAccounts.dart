@@ -944,47 +944,58 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   }
 
   Widget _buildCashierCard(CloseShift s) {
-    final List<List<String>> fields = [
-      ['date', 'تاريخ التقفيل'],
-      ['opening_balance', 'رصيد بداية الشيفت'],
-      ['total_sales', 'إجمالي المبيعات (نقدي + محفظة + آجل مدفوع)'],
-      ['returns_value', 'قيمة المرتجعات'],
-      ['net_sales', 'صافي المبيعات (بعد الاسترجاع)'],
-      ['total_expenses', 'إجمالي المصروفات'],
-      ['net_profit', 'الربح'],
-      ['closing_balance', 'رصيد نهاية الشيفت'],
-      ['start_time', 'بداية الشيفت'],
-      ['end_time', 'نهاية الشيفت'],
-    ];
+    final raw = s.raw ?? {};
+    final cashierName = s.cashierName.isNotEmpty
+        ? s.cashierName
+        : (_pickStringFromMap(
+                raw, ['cashier_name', 'cashier', 'name', 'username', 'user']) ??
+            'غير معروف');
+    final openingBalance =
+        _pickDoubleFromMap(raw, ['opening_balance']) ?? s.openingBalance;
+    final cashSales = _pickDoubleFromMap(
+            raw, ['cash_sales_total', 'cash_sales', 'sales_cash']) ??
+        0.0;
+    final totalSales = _pickDoubleFromMap(raw, ['total_sales']) ?? s.totalSales;
+    final walletSales = _pickDoubleFromMap(
+            raw, ['wallet_sales_total', 'wallet_sales', 'sales_wallet']) ??
+        (totalSales - cashSales).clamp(0.0, double.infinity);
+    final cashExpenses =
+        _pickDoubleFromMap(raw, ['cash_purchases', 'cash_expenses']) ?? 0.0;
+    final totalExpenses =
+        _pickDoubleFromMap(raw, ['total_expenses']) ?? s.totalExpenses;
+    final returnsValue =
+        (_pickDoubleFromMap(raw, ['returns_delta', 'returns_value']) ?? 0.0)
+            .abs();
+    final walletExpenses =
+        _pickDoubleFromMap(raw, ['wallet_purchases', 'wallet_expenses']) ??
+            (totalExpenses - cashExpenses).clamp(0.0, double.infinity);
+    final totalReturns = returnsValue;
+    final netProfit = totalSales - totalExpenses;
+    final drawerBalance = cashSales - cashExpenses;
 
-    Widget buildRow(String label, String value, {bool isNumber = false}) {
-      final isClosing = label == "رصيد نهاية الشيفت";
-      final labelStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
-          color: isClosing
-              ? Colors.green
-              : label == "إجمالي المبيعات"
-                  ? Colors.blueAccent
-                  : AppColorsDark.mainTextLight,
-          fontSize: 17);
+    String money(double value) => value.toStringAsFixed(2);
+
+    String signedMoney(double value) {
+      if (value > 0) return '+${money(value)}';
+      if (value < 0) return '-${money(value.abs())}';
+      return money(0);
+    }
+
+    Color signColor(double value) =>
+        value >= 0 ? Colors.green : Colors.redAccent;
+
+    Widget buildRow(String label, String value, {Color? valueColor}) {
+      final labelStyle = Theme.of(context)
+          .textTheme
+          .bodyMedium
+          ?.copyWith(color: AppColorsDark.mainTextLight, fontSize: 14);
       final valueStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: isClosing
-                ? Colors.green
-                : label == "إجمالي المبيعات"
-                    ? Colors.blueAccent
-                    : AppColorsDark.mainTextLight,
-            fontWeight: isClosing
-                ? FontWeight.bold
-                : label == "إجمالي المبيعات"
-                    ? FontWeight.bold
-                    : FontWeight.normal,
-            fontSize: isClosing
-                ? 15
-                : label == "إجمالي المبيعات"
-                    ? 15
-                    : 13,
+            color: valueColor ?? AppColorsDark.mainTextDark,
+            fontWeight: FontWeight.w500,
+            fontSize: 14,
           );
       return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2.0),
+        padding: const EdgeInsets.symmetric(vertical: 3.0),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -992,91 +1003,19 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                 child: Text(
               label,
               style: labelStyle,
-              overflow: TextOverflow.ellipsis,
+              softWrap: true,
+              overflow: TextOverflow.visible,
             )),
             const SizedBox(width: 8),
             Flexible(
                 child: Text(value,
                     style: valueStyle,
                     textAlign: TextAlign.right,
-                    overflow: TextOverflow.ellipsis)),
+                    softWrap: true,
+                    overflow: TextOverflow.visible)),
           ],
         ),
       );
-    }
-
-    String _valueForKey(String key) {
-      if (key == 'date') {
-        return s.date == null ? '-' : _dateFormat.format(s.date!);
-      }
-      if (key == 'opening_balance') return _formatMoney(s.openingBalance);
-      if (key == 'total_sales') {
-        final raw2 = s.raw ?? {};
-        final gross = _pickDoubleFromMap(raw2, ['gross_sales']) ?? s.totalSales;
-        return _formatMoney(gross < 0 ? 0 : gross);
-      }
-      if (key == 'returns_value') {
-        final raw2 = s.raw ?? {};
-        final delta = _pickDoubleFromMap(raw2, ['returns_delta']) ?? 0.0;
-        return _formatMoney(delta.abs());
-      }
-      if (key == 'net_sales') {
-        final raw2 = s.raw ?? {};
-        final delta = _pickDoubleFromMap(raw2, ['returns_delta']) ?? 0.0;
-        final net = s.totalSales + delta;
-        return _formatMoney(net < 0 ? 0 : net);
-      }
-      if (key == 'total_expenses') return _formatMoney(s.totalExpenses);
-      if (key == 'net_profit') return _formatWithSign(s.netProfit);
-      if (key == 'closing_balance') return _formatMoney(s.closingBalance);
-      if (key == 'start_time') {
-        return s.formattedStartTime;
-      }
-      if (key == 'end_time') {
-        return s.formattedEndTime;
-      }
-
-      final raw = s.raw ?? {};
-      if (raw.containsKey(key) && raw[key] != null) {
-        final v = raw[key];
-
-        if (v is num) return _formatMoney(v.toDouble());
-        if (v is String) {
-          final cleaned = v.replaceAll(',', '');
-          final asNum = double.tryParse(cleaned);
-          if (asNum != null) return _formatMoney(asNum);
-
-          DateTime? dt;
-          try {
-            dt = DateTime.parse(v);
-          } catch (_) {
-            dt = null;
-          }
-
-          if (dt == null) {
-            try {
-              dt = DateFormat('HH:mm:ss').parseStrict(v);
-            } catch (_) {
-              try {
-                dt = DateFormat('HH:mm').parseStrict(v);
-              } catch (_) {
-                dt = null;
-              }
-            }
-          }
-
-          if (dt != null) {
-            if (key == 'start_time' || key == 'end_time') {
-              return DateFormat('hh:mm a').format(dt);
-            } else {
-              return DateFormat('yyyy-MM-dd HH:mm').format(dt);
-            }
-          }
-
-          return v;
-        }
-      }
-      return '-';
     }
 
     return Card(
@@ -1089,29 +1028,32 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                s.cashierName.isNotEmpty
-                    ? s.cashierName
-                    : (_pickStringFromMap(s.raw ?? {}, [
-                          'cashier_name',
-                          'cashier',
-                          'name',
-                          'username',
-                          'user'
-                        ]) ??
-                        'غير معروف'),
+                cashierName,
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     color: AppColorsDark.mainTextDark,
                     fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
-              Column(
-                children: fields.map((pair) {
-                  final key = pair[0];
-                  final label = pair[1];
-                  final value = _valueForKey(key);
-                  return buildRow(label, value);
-                }).toList(),
-              ),
+              buildRow('اسم الكاشير', cashierName),
+              buildRow('بداية الشيفت', s.formattedStartTime),
+              buildRow('نهاية الشيفت', s.formattedEndTime),
+              buildRow('المبلغ المبدئي', money(openingBalance)),
+              buildRow('صافي المبيعات النقدي', money(cashSales),
+                  valueColor: Colors.blueAccent),
+              buildRow('صافي المبيعات بالمحفظة', money(walletSales),
+                  valueColor: Colors.blueAccent),
+              buildRow('إجمالي المبيعات', money(totalSales),
+                  valueColor: Colors.blueAccent),
+              const Divider(height: 12),
+              buildRow('المشتريات (النقدي)', money(cashExpenses)),
+              buildRow('المشتريات (المحفظة)', money(walletExpenses)),
+              buildRow('إجمالي المرتجعات', money(totalReturns)),
+              buildRow('إجمالي المصروفات', money(totalExpenses)),
+              const Divider(height: 12),
+              buildRow('الربح', signedMoney(netProfit),
+                  valueColor: signColor(netProfit)),
+              buildRow('رصيد الدرج الآن', signedMoney(drawerBalance),
+                  valueColor: signColor(drawerBalance)),
               const SizedBox(height: 8),
             ],
           ),

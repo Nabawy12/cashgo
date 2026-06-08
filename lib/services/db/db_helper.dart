@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.167');
+    _database = await _initDB('pos_system.db_v2.168');
     return _database!;
   }
 
@@ -2743,7 +2743,6 @@ class DBHelper {
     final cashExpenses = expenseRows.isNotEmpty
         ? _numFromRow(expenseRows.first, 'cash_expenses')
         : 0.0;
-
     final totalSales = grossSales + returnsDelta;
     final netProfit = totalSales - totalExpenses;
     final closingBalance =
