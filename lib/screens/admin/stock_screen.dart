@@ -427,14 +427,20 @@ class _CreditsScreenState extends State<CreditsScreen> {
         backgroundColor: AppColorsDark.bgCardColor,
         title: Center(
             child: Text('تأكيد الدفع',
-                style: TextStyle(color: AppColorsDark.mainTextDark))),
+                style: TextStyle(
+                    color: Theme.of(context).brightness == Brightness.light
+                        ? Colors.black87
+                        : Colors.white))),
         content: Directionality(
           textDirection: TextDirection.rtl,
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 8.0),
             child: Text(
               'سيتم تسجيل الفاتورة كمُسدّدة بواسطة "$method" بمبلغ ${amountToPay.toStringAsFixed(2)}. هل تريد المتابعة؟',
-              style: TextStyle(color: AppColorsDark.mainTextDark),
+              style: TextStyle(
+                  color: Theme.of(context).brightness == Brightness.light
+                      ? Colors.black87
+                      : Colors.white),
             ),
           ),
         ),
@@ -495,10 +501,16 @@ class _CreditsScreenState extends State<CreditsScreen> {
         backgroundColor: AppColorsDark.bgCardColor,
         title: Center(
             child: Text('حذف الفاتورة',
-                style: TextStyle(color: AppColorsDark.mainTextDark))),
+                style: TextStyle(
+                    color: Theme.of(context).brightness == Brightness.light
+                        ? Colors.black87
+                        : Colors.white))),
         content: Text(
           'هل تريد حذف الفاتورة #$saleId؟',
-          style: TextStyle(color: AppColorsDark.mainTextDark),
+          style: TextStyle(
+              color: Theme.of(context).brightness == Brightness.light
+                  ? Colors.black87
+                  : Colors.white),
         ),
         actions: [
           TextButton(
@@ -798,8 +810,11 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                 children: [
                                                                   Text(customer,
                                                                       style: TextStyle(
-                                                                          color: Colors
-                                                                              .white,
+                                                                          color: Theme.of(context).brightness == Brightness.light
+                                                                              ? Colors
+                                                                                  .black87
+                                                                              : Colors
+                                                                                  .white,
                                                                           fontSize:
                                                                               16,
                                                                           fontWeight: FontWeight
@@ -826,7 +841,7 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                       Text(
                                                                           cashierName,
                                                                           style: TextStyle(
-                                                                              color: AppColorsDark.mainTextLight,
+                                                                              color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight,
                                                                               fontSize: 12)),
                                                                       const SizedBox(
                                                                           width:
@@ -844,7 +859,7 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                               6),
                                                                       Text(time,
                                                                           style: TextStyle(
-                                                                              color: AppColorsDark.mainTextLight,
+                                                                              color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight,
                                                                               fontSize: 12)),
                                                                     ],
                                                                   )
@@ -861,8 +876,11 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                         .toStringAsFixed(
                                                                             2),
                                                                     style: TextStyle(
-                                                                        color: Colors
-                                                                            .white,
+                                                                        color: Theme.of(context).brightness == Brightness.light
+                                                                            ? Colors
+                                                                                .black87
+                                                                            : Colors
+                                                                                .white,
                                                                         fontSize:
                                                                             16,
                                                                         fontWeight:
@@ -1052,7 +1070,7 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                         Expanded(
                                                                           child: Text(
                                                                               name,
-                                                                              style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 14),
+                                                                              style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight, fontSize: 14),
                                                                               overflow: TextOverflow.ellipsis),
                                                                         ),
                                                                         const SizedBox(
@@ -1061,7 +1079,7 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                         Text(
                                                                             '$qty x',
                                                                             style:
-                                                                                TextStyle(color: AppColorsDark.mainTextLight, fontSize: 13)),
+                                                                                TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight, fontSize: 13)),
                                                                         const SizedBox(
                                                                             width:
                                                                                 8),
@@ -1069,7 +1087,7 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                             price.toStringAsFixed(
                                                                                 2),
                                                                             style:
-                                                                                TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.w700)),
+                                                                                TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black87 : Colors.white, fontWeight: FontWeight.w700)),
                                                                       ],
                                                                     ),
                                                                   );
@@ -1094,10 +1112,10 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                               CrossAxisAlignment.start,
                                                                           children: [
                                                                             Text('مجموع العناصر',
-                                                                                style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 12)),
+                                                                                style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight, fontSize: 12)),
                                                                             const SizedBox(height: 6),
                                                                             Text(itemsTotal.toStringAsFixed(2),
-                                                                                style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                                style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black87 : Colors.white, fontWeight: FontWeight.bold)),
                                                                           ],
                                                                         ),
                                                                       ),
@@ -1108,10 +1126,10 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                               CrossAxisAlignment.end,
                                                                           children: [
                                                                             Text('بعد الخصم',
-                                                                                style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 12)),
+                                                                                style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight, fontSize: 12)),
                                                                             const SizedBox(height: 6),
                                                                             Text(effectiveTotalLocal.toStringAsFixed(2),
-                                                                                style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                                style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black87 : Colors.white, fontWeight: FontWeight.bold)),
                                                                           ],
                                                                         ),
                                                                       ),
@@ -1146,7 +1164,7 @@ class _CreditsScreenState extends State<CreditsScreen> {
                                                                             backgroundColor:
                                                                                 AppColorsDark.bgCardColor,
                                                                             title:
-                                                                                Center(child: Text('بماذا تم الدفع؟', style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 22))),
+                                                                                Center(child: Text('بماذا تم الدفع؟', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black87 : Colors.white, fontSize: 22))),
                                                                             actions: [
                                                                               TextButton(style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor), onPressed: () => Navigator.pop(ctx, null), child: Text('إلغاء', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black : Colors.white))),
                                                                               TextButton(style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor), onPressed: () => Navigator.pop(ctx, 'card'), child: Text('كارت', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black : Colors.white))),

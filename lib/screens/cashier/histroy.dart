@@ -25,6 +25,14 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
   Map<String, List<Map<String, dynamic>>> groupedSales = {};
   DateTime selectedDate = DateTime.now();
 
+  Color get _cardTextColor => Theme.of(context).brightness == Brightness.light
+      ? Colors.black87
+      : Colors.white;
+
+  Color get _cardLabelColor => Theme.of(context).brightness == Brightness.light
+      ? Colors.grey[700]!
+      : AppColorsDark.mainTextLight;
+
   @override
   void initState() {
     super.initState();
@@ -182,11 +190,9 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text('#فاتورة رقم : $saleId',
-                style:
-                    TextStyle(fontSize: 18, color: AppColorsDark.mainTextDark)),
+                style: TextStyle(fontSize: 18, color: _cardTextColor)),
             Text(actorCashier,
-                style: TextStyle(
-                    fontSize: 13, color: AppColorsDark.mainTextLight)),
+                style: TextStyle(fontSize: 13, color: _cardLabelColor)),
           ],
         ),
         content: SizedBox(
@@ -195,14 +201,13 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text('الإجمالي: ${(sale['total'] as num?)?.toDouble() ?? 0.0}',
-                  style: TextStyle(color: AppColorsDark.mainTextDark)),
+                  style: TextStyle(color: _cardTextColor)),
               const SizedBox(height: 8),
               Text(
                   'المدفوع: ${(sale['paid_amount'] as num?)?.toDouble() ?? 0.0}',
-                  style: TextStyle(color: AppColorsDark.mainTextLight)),
+                  style: TextStyle(color: _cardLabelColor)),
               const SizedBox(height: 12),
-              Text(':العناصر',
-                  style: TextStyle(color: AppColorsDark.mainTextDark)),
+              Text(':العناصر', style: TextStyle(color: _cardTextColor)),
               const SizedBox(height: 8),
               Builder(builder: (_) {
                 final items = saleItems[saleId] ?? [];
@@ -232,13 +237,11 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
                           0;
                       final price = (it['price'] as num?)?.toDouble() ?? 0.0;
                       return ListTile(
-                        title: Text(name,
-                            style:
-                                TextStyle(color: AppColorsDark.mainTextDark)),
+                        title:
+                            Text(name, style: TextStyle(color: _cardTextColor)),
                         subtitle: Text(
                             'الكمية: $qty × ${price.toStringAsFixed(2)}',
-                            style:
-                                TextStyle(color: AppColorsDark.mainTextLight)),
+                            style: TextStyle(color: _cardLabelColor)),
                       );
                     },
                   ),
@@ -397,8 +400,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
                     absorbing: true,
                     child: Text(
                       '$cashierName (${list.length})',
-                      style: TextStyle(
-                          color: AppColorsDark.mainTextDark, fontSize: 20),
+                      style: TextStyle(color: _cardTextColor, fontSize: 20),
                     ),
                   ),
                   content: Column(
@@ -430,8 +432,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
                                 Expanded(
                                   child: Text(
                                     '#$saleId — $dayMonth',
-                                    style: TextStyle(
-                                        color: AppColorsDark.mainTextDark),
+                                    style: TextStyle(color: _cardTextColor),
                                   ),
                                 ),
                                 if (type == 'return')
@@ -445,8 +446,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
                             ),
                             subtitle: Text(
                               'الإجمالي: ${total.toStringAsFixed(2)} — المدفوع: ${paid.toStringAsFixed(2)}',
-                              style:
-                                  TextStyle(color: AppColorsDark.mainTextLight),
+                              style: TextStyle(color: _cardLabelColor),
                             ),
                             trailing: Icon(
                               Icons.arrow_forward_ios,

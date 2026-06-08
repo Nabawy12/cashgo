@@ -115,6 +115,28 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
     }
   }
 
+  Color get _dialogTextColor => Theme.of(context).brightness == Brightness.light
+      ? Colors.black
+      : Colors.white;
+
+  Color get _cardTextColor => Theme.of(context).brightness == Brightness.light
+      ? Colors.black87
+      : Colors.white;
+
+  Color get _cardLabelColor => Theme.of(context).brightness == Brightness.light
+      ? Colors.grey[700]!
+      : Colors.grey[400]!;
+
+  Color get _dialogBackgroundColor =>
+      Theme.of(context).brightness == Brightness.light
+          ? Colors.white
+          : AppColorsDark.bgCardColor;
+
+  Color get _dialogSecondaryButtonColor =>
+      Theme.of(context).brightness == Brightness.light
+          ? Colors.grey.shade200
+          : AppColorsDark.bgColor;
+
   DateTime? _parseDateOnly(String raw) {
     if (raw.isEmpty) return null;
     try {
@@ -201,7 +223,7 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
           creditAmount > 0 && paymentType == 'credit'
               ? '$label (${creditAmount.toStringAsFixed(2)})'
               : label,
-          style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 12),
+          style: TextStyle(color: _cardTextColor, fontSize: 12),
         ),
       ),
     );
@@ -218,19 +240,19 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
           textDirection: TextDirection.rtl,
           child: StatefulBuilder(builder: (ctx2, setState2) {
             return AlertDialog(
-              backgroundColor: AppColorsDark.bgCardColor,
+              backgroundColor: _dialogBackgroundColor,
               title: Center(
                   child: Text(
                       isFullPayment ? 'دفع المبلغ كاملاً' : 'دفع جزء من المبلغ',
-                      style: TextStyle(color: AppColorsDark.mainTextDark))),
+                      style: TextStyle(color: _dialogTextColor))),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   RadioListTile<String>(
                     value: 'cash',
                     groupValue: selected,
-                    title: Text('نقدي',
-                        style: TextStyle(color: AppColorsDark.mainTextDark)),
+                    title:
+                        Text('نقدي', style: TextStyle(color: _dialogTextColor)),
                     activeColor: AppColorsDark.mainColor,
                     onChanged: (v) => setState2(() => selected = v ?? 'cash'),
                   ),
@@ -238,7 +260,7 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
                     value: 'wallet',
                     groupValue: selected,
                     title: Text('دفع بالمحفظة',
-                        style: TextStyle(color: AppColorsDark.mainTextDark)),
+                        style: TextStyle(color: _dialogTextColor)),
                     activeColor: AppColorsDark.mainColor,
                     onChanged: (v) => setState2(() => selected = v ?? 'wallet'),
                   ),
@@ -247,25 +269,19 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
               actions: [
                 TextButton(
                   style: TextButton.styleFrom(
-                      backgroundColor: AppColorsDark.bgColor),
+                    backgroundColor: _dialogSecondaryButtonColor,
+                    foregroundColor: _dialogTextColor,
+                  ),
                   onPressed: () => Navigator.of(ctx2).pop(null),
-                  child: Text('إلغاء',
-                      style: TextStyle(
-                          color:
-                              Theme.of(context).brightness == Brightness.light
-                                  ? Colors.black
-                                  : Colors.white)),
+                  child: const Text('إلغاء'),
                 ),
                 TextButton(
                   style: TextButton.styleFrom(
-                      backgroundColor: AppColorsDark.mainColor),
+                    backgroundColor: AppColorsDark.mainColor,
+                    foregroundColor: Colors.white,
+                  ),
                   onPressed: () => Navigator.of(ctx2).pop(selected),
-                  child: Text('إتمام',
-                      style: TextStyle(
-                          color:
-                              Theme.of(context).brightness == Brightness.light
-                                  ? Colors.black
-                                  : Colors.white)),
+                  child: const Text('إتمام'),
                 ),
               ],
             );
@@ -383,10 +399,10 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
     final ok = await showDialog<bool?>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: AppColorsDark.bgCardColor,
+        backgroundColor: _dialogBackgroundColor,
         title: Center(
             child: Text('دفع جزء من المبلغ',
-                style: TextStyle(color: AppColorsDark.mainTextDark))),
+                style: TextStyle(color: _dialogTextColor))),
         content: CustomFormField(
           controller: ctrl,
           hint: 'المبلغ (<= ${due.toStringAsFixed(2)})',
@@ -394,22 +410,20 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
         ),
         actions: [
           TextButton(
-            style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+            style: TextButton.styleFrom(
+              backgroundColor: _dialogSecondaryButtonColor,
+              foregroundColor: _dialogTextColor,
+            ),
             onPressed: () => Navigator.pop(context, false),
-            child: Text('إلغاء',
-                style: TextStyle(
-                    color: Theme.of(context).brightness == Brightness.light
-                        ? Colors.black
-                        : Colors.white)),
+            child: const Text('إلغاء'),
           ),
           TextButton(
-            style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
+            style: TextButton.styleFrom(
+              backgroundColor: AppColorsDark.mainColor,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () => Navigator.pop(context, true),
-            child: Text('التالي',
-                style: TextStyle(
-                    color: Theme.of(context).brightness == Brightness.light
-                        ? Colors.black
-                        : Colors.white)),
+            child: const Text('التالي'),
           ),
         ],
       ),
@@ -598,8 +612,8 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
                                                                 TextOverflow
                                                                     .ellipsis,
                                                             style: TextStyle(
-                                                                color: AppColorsDark
-                                                                    .mainTextDark,
+                                                                color:
+                                                                    _cardTextColor,
                                                                 fontSize: 18,
                                                                 fontWeight:
                                                                     FontWeight
@@ -670,12 +684,11 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
           children: [
             TextSpan(
                 text: "$label ",
-                style: TextStyle(color: Colors.grey[400], fontSize: 14)),
+                style: TextStyle(color: _cardLabelColor, fontSize: 14)),
             TextSpan(
                 text: value,
                 style: TextStyle(
-                    color: valueColor ?? AppColorsDark.mainTextDark,
-                    fontSize: 14)),
+                    color: valueColor ?? _cardTextColor, fontSize: 14)),
           ],
         ),
       ),

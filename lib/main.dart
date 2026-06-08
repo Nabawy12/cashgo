@@ -1,17 +1,16 @@
 // lib/main.dart
-import 'dart:async';
+import 'dart:io';
 
 import 'package:cashgo/services/Api/Admin/Products.dart';
 import 'package:cashgo/services/app_settings_controller.dart';
 import 'package:cashgo/services/cashier/close_shieft.dart';
-import 'package:cashgo/services/license_service.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
+import 'screens/shared/device_locked_screen.dart';
 import 'screens/shared/login_screen.dart';
-import 'screens/shared/license_screen.dart';
 import 'screens/admin/dashboard_screen.dart';
 import 'screens/cashier/cashier_screen.dart';
 import 'screens/admin/receipts.dart';
@@ -20,14 +19,20 @@ import 'screens/admin/stock_screen.dart';
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
-
-
-  print(
-    LicenseService.activationCodeForHostname(
-      'DESKTOP-463R073~',
-    ),
-  );
   WidgetsFlutterBinding.ensureInitialized();
+
+  bool isAllowed = false;
+  try {
+    final hostname = Platform.localHostname.trim().toLowerCase();
+    const allowedHostnames = [
+      'macbook-air-with-zeyad.local',
+      'desktop-463r073',
+    ];
+    isAllowed = allowedHostnames.contains(hostname);
+  } catch (_) {
+    isAllowed = false;
+  }
+
   await Hive.initFlutter();
   // open boxes used by the code
   await Hive.openBox('products');
@@ -55,71 +60,19 @@ Future<void> main() async {
   SyncManager.start();
   await initializeDateFormatting('ar');
   await AppSettingsController.loadThemeMode();
-  runApp(const MyApp());
+  runApp(MyApp(isAllowed: isAllowed));
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  final bool isAllowed;
+
+  const MyApp({super.key, required this.isAllowed});
 
   @override
   State<MyApp> createState() => _MyAppState();
 }
 
 class _MyAppState extends State<MyApp> {
-  Timer? _licenseTimer;
-  bool _licenseScreenVisible = false;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _checkLicense());
-    _licenseTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      _checkLicense();
-    });
-  }
-
-  @override
-  void dispose() {
-    _licenseTimer?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _checkLicense() async {
-    final active = await LicenseService.isActive();
-    if (!mounted || active || _licenseScreenVisible) return;
-
-    final navigator = appNavigatorKey.currentState;
-    if (navigator == null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _checkLicense());
-      return;
-    }
-
-    _licenseScreenVisible = true;
-    navigator
-        .pushReplacement(
-      MaterialPageRoute<void>(
-        settings: const RouteSettings(name: LicenseScreen.routeName),
-        builder: (_) => LicenseScreen(onActivated: _unlockAndReturnToLogin),
-      ),
-    )
-        .whenComplete(() {
-      _licenseScreenVisible = false;
-    });
-  }
-
-  void _unlockAndReturnToLogin() {
-    final navigator = appNavigatorKey.currentState;
-    if (navigator == null) return;
-
-    _licenseScreenVisible = false;
-    navigator.pushReplacement(
-      MaterialPageRoute<void>(
-        settings: const RouteSettings(name: '/'),
-        builder: (_) => LoginScreen(),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<ThemeMode>(
@@ -129,27 +82,29 @@ class _MyAppState extends State<MyApp> {
         debugShowCheckedModeBanner: false,
         navigatorKey: appNavigatorKey,
         themeMode: themeMode,
-        home: LoginScreen(),
-        routes: {
-          '/admin': (context) {
-            final username =
-                ModalRoute.of(context)?.settings.arguments?.toString() ??
-                    'admin';
-            return AdminDashboardScreen(username: username);
-          },
-          CashierScreen.routName: (context) {
-            final args = ModalRoute.of(context)?.settings.arguments;
-            String username = 'cashier';
-            if (args is Map && args['username'] != null) {
-              username = args['username'].toString();
-            } else if (args is String && args.isNotEmpty) {
-              username = args;
-            }
-            return CashierScreen(cashierUsername: username);
-          },
-          receiptsScreen.routeName: (context) => const receiptsScreen(),
-          CreditsScreen.routeName: (context) => const CreditsScreen(),
-        },
+        home: widget.isAllowed ? LoginScreen() : const DeviceLockedScreen(),
+        routes: widget.isAllowed
+            ? {
+                '/admin': (context) {
+                  final username =
+                      ModalRoute.of(context)?.settings.arguments?.toString() ??
+                          'admin';
+                  return AdminDashboardScreen(username: username);
+                },
+                CashierScreen.routName: (context) {
+                  final args = ModalRoute.of(context)?.settings.arguments;
+                  String username = 'cashier';
+                  if (args is Map && args['username'] != null) {
+                    username = args['username'].toString();
+                  } else if (args is String && args.isNotEmpty) {
+                    username = args;
+                  }
+                  return CashierScreen(cashierUsername: username);
+                },
+                receiptsScreen.routeName: (context) => const receiptsScreen(),
+                CreditsScreen.routeName: (context) => const CreditsScreen(),
+              }
+            : const {},
         theme: _buildTheme(Brightness.light),
         darkTheme: _buildTheme(Brightness.dark),
       ),

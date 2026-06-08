@@ -30,6 +30,11 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
 
   final ScrollController verticalScrollController = ScrollController();
 
+  Color _dialogTextColor(BuildContext ctx) =>
+      Theme.of(ctx).brightness == Brightness.light
+          ? Colors.black87
+          : Colors.white;
+
   @override
   void initState() {
     super.initState();
@@ -229,32 +234,45 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
       if (p != null) {
         await showDialog(
           context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('تم العثور على المنتج'),
+          builder: (ctx) => AlertDialog(
+            title: Text(
+              'تم العثور على المنتج',
+              style: TextStyle(color: _dialogTextColor(ctx)),
+            ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('الاسم: ${p['name']}'),
-                Text('الباركود: ${p['barcode'] ?? '-'}'),
-                Text('السعر: ${p['selling_price']}'),
-                Text('الكرتون: ${p['quantity']}'),
-                Text('الوحدات في الكرتونة: ${p['units_in_carton']}'),
-                Text('الوحدات المتبقية: ${p['units_remainder'] ?? 0}'),
+                Text('الاسم: ${p['name']}',
+                    style: TextStyle(color: _dialogTextColor(ctx))),
+                Text('الباركود: ${p['barcode'] ?? '-'}',
+                    style: TextStyle(color: _dialogTextColor(ctx))),
+                Text('السعر: ${p['selling_price']}',
+                    style: TextStyle(color: _dialogTextColor(ctx))),
+                Text('الكرتون: ${p['quantity']}',
+                    style: TextStyle(color: _dialogTextColor(ctx))),
+                Text('الوحدات في الكرتونة: ${p['units_in_carton']}',
+                    style: TextStyle(color: _dialogTextColor(ctx))),
+                Text('الوحدات المتبقية: ${p['units_remainder'] ?? 0}',
+                    style: TextStyle(color: _dialogTextColor(ctx))),
                 Text(
-                    'إجمالي الوحدات: ${p['total_units'] ?? ((p['quantity'] as num? ?? 0) * (p['units_in_carton'] as num? ?? 0) + (p['units_remainder'] ?? 0))}'),
+                  'إجمالي الوحدات: ${p['total_units'] ?? ((p['quantity'] as num? ?? 0) * (p['units_in_carton'] as num? ?? 0) + (p['units_remainder'] ?? 0))}',
+                  style: TextStyle(color: _dialogTextColor(ctx)),
+                ),
               ],
             ),
             actions: [
               TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('إغلاق')),
+                  onPressed: () => Navigator.pop(ctx),
+                  child: Text('إغلاق',
+                      style: TextStyle(color: _dialogTextColor(ctx)))),
               TextButton(
                 onPressed: () {
-                  Navigator.pop(context);
+                  Navigator.pop(ctx);
                   openAddEditDialog(existing: p);
                 },
-                child: const Text('تعديل'),
+                child: Text('تعديل',
+                    style: TextStyle(color: _dialogTextColor(ctx))),
               ),
             ],
           ),
@@ -262,17 +280,24 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
       } else {
         final add = await showDialog<bool>(
           context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('المنتج غير موجود'),
+          builder: (ctx) => AlertDialog(
+            title: Text(
+              'المنتج غير موجود',
+              style: TextStyle(color: _dialogTextColor(ctx)),
+            ),
             content: Text(
-                'لم يتم العثور على منتج بالباركود "$code". هل تريد إضافة منتج جديد بهذا الكود؟'),
+              'لم يتم العثور على منتج بالباركود "$code". هل تريد إضافة منتج جديد بهذا الكود؟',
+              style: TextStyle(color: _dialogTextColor(ctx)),
+            ),
             actions: [
               TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('لا')),
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('لا',
+                      style: TextStyle(color: _dialogTextColor(ctx)))),
               TextButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('نعم')),
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: Text('نعم',
+                      style: TextStyle(color: _dialogTextColor(ctx)))),
             ],
           ),
         );
@@ -310,15 +335,20 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   void openScannerFallbackInfo() {
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('مسح الباركود بالكاميرا'),
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          'مسح الباركود بالكاميرا',
+          style: TextStyle(color: _dialogTextColor(ctx)),
+        ),
         content: Text(
           'استخدم قارئ باركود USB لإدخال الكود مباشرة، أو أضف شاشة مسح بالكاميرا إذا احتجت ذلك لاحقاً.',
+          style: TextStyle(color: _dialogTextColor(ctx)),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('حسناً')),
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('حسناً',
+                  style: TextStyle(color: _dialogTextColor(ctx)))),
         ],
       ),
     );
@@ -345,8 +375,11 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
             onPressed: () {
               showDialog(
                 context: context,
-                builder: (_) => AlertDialog(
-                  title: const Text('بحث بالباركود'),
+                builder: (ctx) => AlertDialog(
+                  title: Text(
+                    'بحث بالباركود',
+                    style: TextStyle(color: _dialogTextColor(ctx)),
+                  ),
                   content: TextField(
                     controller: barcodeController,
                     focusNode: barcodeFocusNode,
@@ -359,15 +392,17 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                   ),
                   actions: [
                     TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('إلغاء')),
+                        onPressed: () => Navigator.pop(ctx),
+                        child: Text('إلغاء',
+                            style: TextStyle(color: _dialogTextColor(ctx)))),
                     TextButton(
                         onPressed: () {
                           final v = barcodeController.text.trim();
-                          Navigator.pop(context);
+                          Navigator.pop(ctx);
                           onScanBarcodeSubmitted(v);
                         },
-                        child: const Text('بحث')),
+                        child: Text('بحث',
+                            style: TextStyle(color: _dialogTextColor(ctx)))),
                   ],
                 ),
               );
@@ -735,26 +770,46 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                                       bool>(
                                                                 context:
                                                                     context,
-                                                                builder: (_) =>
+                                                                builder: (ctx) =>
                                                                     AlertDialog(
-                                                                  title: const Text(
-                                                                      'حذف المنتج'),
+                                                                  title: Text(
+                                                                    'حذف المنتج',
+                                                                    style: TextStyle(
+                                                                        color: _dialogTextColor(
+                                                                            ctx)),
+                                                                  ),
                                                                   content: Text(
-                                                                      'هل تريد حذف "${p['name']}"؟'),
+                                                                    'هل تريد حذف "${p['name']}"؟',
+                                                                    style: TextStyle(
+                                                                        color: _dialogTextColor(
+                                                                            ctx)),
+                                                                  ),
                                                                   actions: [
                                                                     TextButton(
-                                                                      onPressed: () => Navigator.pop(
-                                                                          context,
-                                                                          false),
-                                                                      child: const Text(
-                                                                          'إلغاء'),
+                                                                      onPressed: () =>
+                                                                          Navigator.pop(
+                                                                              ctx,
+                                                                              false),
+                                                                      child:
+                                                                          Text(
+                                                                        'إلغاء',
+                                                                        style: TextStyle(
+                                                                            color:
+                                                                                _dialogTextColor(ctx)),
+                                                                      ),
                                                                     ),
                                                                     TextButton(
-                                                                      onPressed: () => Navigator.pop(
-                                                                          context,
-                                                                          true),
-                                                                      child: const Text(
-                                                                          'حذف'),
+                                                                      onPressed: () =>
+                                                                          Navigator.pop(
+                                                                              ctx,
+                                                                              true),
+                                                                      child:
+                                                                          Text(
+                                                                        'حذف',
+                                                                        style: TextStyle(
+                                                                            color:
+                                                                                _dialogTextColor(ctx)),
+                                                                      ),
                                                                     ),
                                                                   ],
                                                                 ),
@@ -809,17 +864,30 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                                     builder:
                                                                         (dialogContext) =>
                                                                             AlertDialog(
-                                                                      title: const Text(
-                                                                          'تعذر الحذف'),
+                                                                      title:
+                                                                          Text(
+                                                                        'تعذر الحذف',
+                                                                        style: TextStyle(
+                                                                            color:
+                                                                                _dialogTextColor(dialogContext)),
+                                                                      ),
                                                                       content:
-                                                                          const Text(
-                                                                              'لا يمكن حذف هذا المنتج لأن له سجل مبيعات أو مشتريات.\nيمكنك تعديل الكمية بدلاً من الحذف.'),
+                                                                          Text(
+                                                                        'لا يمكن حذف هذا المنتج لأن له سجل مبيعات أو مشتريات.\nيمكنك تعديل الكمية بدلاً من الحذف.',
+                                                                        style: TextStyle(
+                                                                            color:
+                                                                                _dialogTextColor(dialogContext)),
+                                                                      ),
                                                                       actions: [
                                                                         TextButton(
                                                                           onPressed: () =>
                                                                               Navigator.pop(dialogContext),
                                                                           child:
-                                                                              const Text('حسناً'),
+                                                                              Text(
+                                                                            'حسناً',
+                                                                            style:
+                                                                                TextStyle(color: _dialogTextColor(dialogContext)),
+                                                                          ),
                                                                         ),
                                                                       ],
                                                                     ),
@@ -921,6 +989,11 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
 
   bool isEdit = false;
 
+  Color _dialogTextColor(BuildContext ctx) =>
+      Theme.of(ctx).brightness == Brightness.light
+          ? Colors.black87
+          : Colors.white;
+
   @override
   void initState() {
     super.initState();
@@ -996,12 +1069,20 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
     if (!success) {
       await showDialog(
         context: context,
-        builder: (_) => AlertDialog(
-          title: Text('فشل الحفظ'),
-          content: Text('فشل حفظ المنتج. راجع بيانات المنتج ثم حاول مرة أخرى.'),
+        builder: (ctx) => AlertDialog(
+          title: Text(
+            'فشل الحفظ',
+            style: TextStyle(color: _dialogTextColor(ctx)),
+          ),
+          content: Text(
+            'فشل حفظ المنتج. راجع بيانات المنتج ثم حاول مرة أخرى.',
+            style: TextStyle(color: _dialogTextColor(ctx)),
+          ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(context), child: Text('حسناً')),
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('حسناً',
+                    style: TextStyle(color: _dialogTextColor(ctx)))),
           ],
         ),
       );
@@ -1020,7 +1101,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
       title: Center(
         child: Text(
           isEdit ? 'تعديل المنتج' : 'اضافه منتج جديد',
-          style: TextStyle(color: AppColorsDark.mainTextDark),
+          style: TextStyle(color: _dialogTextColor(context)),
         ),
       ),
       content: SingleChildScrollView(
