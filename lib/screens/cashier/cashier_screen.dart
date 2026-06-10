@@ -831,15 +831,19 @@ class _CashierScreenState extends State<CashierScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // جلب المنتج من الـ API (يرجع null لو مش موجود)
-      final apiProduct = await ProductApi.getProductByBarcode(barcode);
+      // جلب كل المنتجات المطابقة لنفس الباركود لأن بعض الأصناف قد تشترك في نفس الكود.
+      final matches = await _getProductsByBarcodeListFromApi(barcode);
 
-      if (apiProduct == null) {
-        // لم يتم العثور على المنتج عبر الـ API
+      if (matches.isEmpty) {
         if (!mounted) return;
         _showSnackSafe('المنتج غير موجود');
         return;
       }
+
+      final apiProduct = matches.length == 1
+          ? matches.first
+          : await showProductChoiceDialog(context, matches);
+      if (apiProduct == null) return;
 
       // تحويل إلى نموذج المنتج والتعامل كالسابق
       final product = Product.fromMap(apiProduct);
@@ -897,13 +901,26 @@ class _CashierScreenState extends State<CashierScreen> {
                 itemCount: products.length,
                 separatorBuilder: (_, __) => const Divider(height: 0.5),
                 itemBuilder: (context, i) {
-                  final name = (products[i]['name'] ?? '').toString();
+                  final product = products[i];
+                  final name = (product['name'] ?? '').toString();
+                  final price = (product['selling_price'] as num?)
+                          ?.toDouble()
+                          .toStringAsFixed(2) ??
+                      double.tryParse(
+                              product['selling_price']?.toString() ?? '')
+                          ?.toStringAsFixed(2) ??
+                      '0.00';
+                  final available = _availableUnitsForProductMap(product);
                   return ListTile(
                     title: Text(name,
                         style: TextStyle(
                             color: AppColorsDark.mainTextDark, fontSize: 20)),
+                    subtitle: Text(
+                      'السعر: $price  •  المتاح: $available',
+                      style: TextStyle(color: AppColorsDark.mainTextLight),
+                    ),
                     onTap: () {
-                      Navigator.of(context).pop(products[i]);
+                      Navigator.of(context).pop(product);
                     },
                   );
                 },

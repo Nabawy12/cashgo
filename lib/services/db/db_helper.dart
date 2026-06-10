@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.174');
+    _database = await _initDB('pos_system.db_v2.187');
     return _database!;
   }
 
@@ -50,6 +50,7 @@ class DBHelper {
       onUpgrade: (db, oldVersion, newVersion) async {
         await _ensureUnitsRemainderColumn(db);
         await _ensureSaleColumns(db);
+        await _ensureSaleItemsPurchasePriceColumn(db);
         await _ensureProductDatesColumns(db);
         await _ensureExpirySeenColumn(db);
         await _ensureLowStockSeenColumn(db);
@@ -66,6 +67,7 @@ class DBHelper {
         await _ensureCloseShiftsTable(db);
         await _ensureShiftSettingsTable(db);
         await _ensureAppSettingsTable(db);
+        await _ensureShopExternalExpensesTable(db);
       },
       onOpen: (db) async {
         try {
@@ -73,6 +75,9 @@ class DBHelper {
         } catch (_) {}
         try {
           await _ensureSaleColumns(db);
+        } catch (_) {}
+        try {
+          await _ensureSaleItemsPurchasePriceColumn(db);
         } catch (_) {}
         try {
           await _ensureProductDatesColumns(db);
@@ -130,6 +135,9 @@ class DBHelper {
         try {
           await _ensureAppSettingsTable(db);
         } catch (_) {}
+        try {
+          await _ensureShopExternalExpensesTable(db);
+        } catch (_) {}
       },
     );
   }
@@ -150,6 +158,16 @@ class DBHelper {
       """CREATE TABLE app_settings (
         key TEXT PRIMARY KEY,
         value TEXT
+      )""",
+    );
+
+    await db.execute(
+      """CREATE TABLE shop_external_expenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        amount REAL NOT NULL,
+        expense_date TEXT NOT NULL,
+        created_at TEXT NOT NULL
       )""",
     );
 
@@ -204,6 +222,9 @@ class DBHelper {
         product_id INTEGER NOT NULL,
         quantity INTEGER NOT NULL,
         price REAL NOT NULL,
+        purchase_price_per_unit REAL NOT NULL DEFAULT 0,
+        returned INTEGER NOT NULL DEFAULT 0,
+        returned_quantity INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (sale_id) REFERENCES sales(id),
         FOREIGN KEY (product_id) REFERENCES products(id)
       )""",
@@ -217,6 +238,7 @@ class DBHelper {
         date TEXT NOT NULL,
         cashier_username TEXT,
         paid_delta REAL NOT NULL DEFAULT 0,
+        refund_amount REAL NOT NULL DEFAULT 0,
         note TEXT
       )""",
     );
@@ -380,6 +402,18 @@ class DBHelper {
     );
   }
 
+  Future<void> _ensureShopExternalExpensesTable(Database db) async {
+    await db.execute(
+      """CREATE TABLE IF NOT EXISTS shop_external_expenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        amount REAL NOT NULL,
+        expense_date TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )""",
+    );
+  }
+
   // ----------------- migrations helpers (same as before) -----------------
   Future<void> _ensureUnitsRemainderColumn(Database db) async {
     final cols = await db.rawQuery("PRAGMA table_info(products);");
@@ -430,6 +464,75 @@ class DBHelper {
   Future<void> ensureSaleColumns() async {
     final db = await instance.database;
     await _ensureSaleColumns(db);
+  }
+
+  Future<void> _ensureSaleItemsPurchasePriceColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(sale_items);');
+    if (cols.isEmpty) return;
+    final hasPurchasePrice =
+        cols.any((c) => c['name'] == 'purchase_price_per_unit');
+    if (!hasPurchasePrice) {
+      await db.execute(
+          'ALTER TABLE sale_items ADD COLUMN purchase_price_per_unit REAL NOT NULL DEFAULT 0;');
+      await db.rawUpdate('''
+        UPDATE sale_items
+        SET purchase_price_per_unit = (
+          SELECT CASE
+            WHEN COALESCE(p.units_in_carton, 0) > 0
+            THEN COALESCE(p.purchase_price, 0) / p.units_in_carton
+            ELSE COALESCE(p.purchase_price, 0)
+          END
+          FROM products p WHERE p.id = sale_items.product_id
+        )
+        WHERE purchase_price_per_unit = 0
+      ''');
+      debugPrint(
+          '[Migration] sale_items.purchase_price_per_unit added and backfilled');
+    } else {
+      debugPrint(
+          '[Migration] sale_items.purchase_price_per_unit already exists');
+    }
+    final hasReturned = cols.any((c) => c['name'] == 'returned');
+    if (!hasReturned) {
+      await db.execute(
+          'ALTER TABLE sale_items ADD COLUMN returned INTEGER NOT NULL DEFAULT 0;');
+      debugPrint('[Migration] sale_items.returned added');
+    }
+    final hasReturnedQuantity =
+        cols.any((c) => c['name'] == 'returned_quantity');
+    if (!hasReturnedQuantity) {
+      await db.execute(
+          'ALTER TABLE sale_items ADD COLUMN returned_quantity INTEGER NOT NULL DEFAULT 0;');
+      await db.rawUpdate('''
+        UPDATE sale_items
+        SET returned_quantity = quantity
+        WHERE COALESCE(returned,0) = 1
+          AND COALESCE(returned_quantity,0) = 0
+      ''');
+      debugPrint('[Migration] sale_items.returned_quantity added');
+    }
+  }
+
+  Future<void> ensureSaleReturnsColumns() async {
+    final db = await instance.database;
+    await _ensureSaleReturnsColumns(db);
+  }
+
+  Future<void> _ensureSaleReturnsColumns(Database db) async {
+    final cols = await db.rawQuery("PRAGMA table_info(sale_returns);");
+    if (cols.isEmpty) return;
+    final hasRefundAmount = cols.any((c) => c['name'] == 'refund_amount');
+    if (!hasRefundAmount) {
+      await db.execute(
+          'ALTER TABLE sale_returns ADD COLUMN refund_amount REAL NOT NULL DEFAULT 0;');
+      await db.rawUpdate('''
+        UPDATE sale_returns
+        SET refund_amount = CASE
+          WHEN COALESCE(paid_delta,0) < 0 THEN ABS(COALESCE(paid_delta,0))
+          ELSE 0
+        END
+      ''');
+    }
   }
 
   Future<void> _ensureProductDatesColumns(Database db) async {
@@ -903,13 +1006,36 @@ class DBHelper {
     required int productId,
     required int quantity,
     required double price,
+    double purchasePricePerUnit = 0.0,
   }) async {
     final db = await instance.database;
+    await _ensureSaleItemsPurchasePriceColumn(db);
+    double unitCost = purchasePricePerUnit;
+    if (unitCost <= 0) {
+      final rows = await db.query(
+        'products',
+        where: 'id = ?',
+        whereArgs: [productId],
+        limit: 1,
+      );
+      if (rows.isNotEmpty) {
+        final product = rows.first;
+        final purchasePricePerCarton =
+            (product['purchase_price'] as num?)?.toDouble() ?? 0.0;
+        final unitsInCarton =
+            (product['units_in_carton'] as num?)?.toInt() ?? 1;
+        final uic = unitsInCarton > 0 ? unitsInCarton : 1;
+        unitCost = purchasePricePerCarton / uic;
+      }
+    }
     return await db.insert('sale_items', {
       'sale_id': saleId,
       'product_id': productId,
       'quantity': quantity,
       'price': price,
+      'purchase_price_per_unit': unitCost,
+      'returned': 0,
+      'returned_quantity': 0,
     });
   }
 
@@ -926,6 +1052,7 @@ class DBHelper {
     double discountValue = 0.0,
   }) async {
     final db = await instance.database;
+    await _ensureSaleItemsPurchasePriceColumn(db);
     return await db.transaction<int>((txn) async {
       final change = paid >= total ? paid - total : 0.0;
       final saleId = await txn.insert('sales', {
@@ -956,19 +1083,26 @@ class DBHelper {
             double.tryParse(item['price']?.toString() ?? '') ??
             0.0;
         if (productId <= 0 || qty <= 0) continue;
+        final rows = await txn.query('products',
+            where: 'id = ?', whereArgs: [productId], limit: 1);
+        final product = rows.isNotEmpty ? rows.first : <String, Object?>{};
+        final unitsInCarton =
+            (product['units_in_carton'] as num?)?.toInt() ?? 1;
+        final purchasePricePerCarton =
+            (product['purchase_price'] as num?)?.toDouble() ?? 0.0;
+        final uic = unitsInCarton > 0 ? unitsInCarton : 1;
+        final purchasePricePerUnit = purchasePricePerCarton / uic;
         await txn.insert('sale_items', {
           'sale_id': saleId,
           'product_id': productId,
           'quantity': qty,
           'price': price,
+          'purchase_price_per_unit': purchasePricePerUnit,
+          'returned': 0,
+          'returned_quantity': 0,
         });
 
-        final rows = await txn.query('products',
-            where: 'id = ?', whereArgs: [productId], limit: 1);
         if (rows.isEmpty) continue;
-        final product = rows.first;
-        final unitsInCarton =
-            (product['units_in_carton'] as num?)?.toInt() ?? 1;
         final currentCartons = (product['quantity'] as num?)?.toInt() ?? 0;
         final currentRemainder =
             (product['units_remainder'] as num?)?.toInt() ?? 0;
@@ -1159,6 +1293,7 @@ class DBHelper {
 
   Future<List<Map<String, dynamic>>> getSaleItemsBySaleId(int saleId) async {
     final db = await instance.database;
+    await _ensureSaleItemsPurchasePriceColumn(db);
     final rows = await db.rawQuery(
       '''
     SELECT si.*, p.name as product_name, p.barcode as product_barcode
@@ -1227,7 +1362,7 @@ class DBHelper {
   /// - We create a sale_returns row and sale_return_items (is_replacement = 0 for returned items,
   ///   is_replacement = 1 for replacements)
   /// - Adjust product stock accordingly (restore returned units, reduce replacement units)
-  /// - We set a flag is_return = 1 and append return_note on the original sale (so UI knows there's a return),
+  /// - We append return_note on the original sale (so UI knows there's a return),
   ///   but we DO NOT modify sale_items nor sales.total/paid_amount/change_amount.
   /// Apply return/exchange and MODIFY the original sale row and sale_items,
   /// while still logging the action in sale_returns / sale_return_items.
@@ -1239,6 +1374,8 @@ class DBHelper {
     required String note,
   }) async {
     final db = await instance.database;
+    await _ensureSaleItemsPurchasePriceColumn(db);
+    await _ensureSaleReturnsColumns(db);
 
     await db.transaction((txn) async {
       final saleRows = await txn.query('sales',
@@ -1253,6 +1390,7 @@ class DBHelper {
         'date': now,
         'cashier_username': sale['cashier_username'] ?? '',
         'paid_delta': paidDelta,
+        'refund_amount': paidDelta < 0 ? paidDelta.abs() : 0.0,
         'note': note,
       });
 
@@ -1263,16 +1401,26 @@ class DBHelper {
 
         final itemRows = await txn.query(
           'sale_items',
-          where: 'sale_id = ? AND product_id = ?',
+          where:
+              'sale_id = ? AND product_id = ? AND COALESCE(returned_quantity,0) < COALESCE(quantity,0)',
           whereArgs: [saleId, pid],
           limit: 1,
         );
+        if (itemRows.isEmpty) {
+          throw 'هذا المنتج تم استرجاعه بالفعل';
+        }
+        final saleItem = Map<String, dynamic>.from(itemRows.first);
+        final soldQty = (saleItem['quantity'] as num?)?.toInt() ?? 0;
+        final alreadyReturned =
+            (saleItem['returned_quantity'] as num?)?.toInt() ?? 0;
+        final availableToReturn = soldQty - alreadyReturned;
+        if (qtyReturn > availableToReturn) {
+          throw 'الكمية المطلوبة أكبر من الكمية المتاحة للمرتجع';
+        }
         final prodRows = await txn.query('products',
             where: 'id = ?', whereArgs: [pid], limit: 1);
         if (prodRows.isEmpty) throw 'Product $pid not found in products table';
-        final price = itemRows.isNotEmpty
-            ? ((itemRows.first['price'] as num?)?.toDouble() ?? 0.0)
-            : ((prodRows.first['selling_price'] as num?)?.toDouble() ?? 0.0);
+        final price = ((saleItem['price'] as num?)?.toDouble() ?? 0.0);
 
         await txn.insert('sale_return_items', {
           'return_id': returnRowId,
@@ -1281,6 +1429,23 @@ class DBHelper {
           'is_replacement': 0,
           'price': price,
         });
+
+        final saleItemId = (saleItem['id'] as num?)?.toInt();
+        if (saleItemId != null) {
+          final newReturnedQty = alreadyReturned + qtyReturn;
+          final fullyReturned = newReturnedQty >= soldQty;
+          await txn.update(
+            'sale_items',
+            {
+              'returned_quantity': newReturnedQty,
+              'returned': fullyReturned ? 1 : 0,
+            },
+            where: 'id = ?',
+            whereArgs: [saleItemId],
+          );
+          debugPrint(
+              '[Return] updated sale_item id=$saleItemId product=$pid returnedQty=$newReturnedQty/$soldQty fullyReturned=$fullyReturned');
+        }
 
         final prod = Map<String, dynamic>.from(prodRows.first);
         final unitsInCarton = (prod['units_in_carton'] as num).toInt();
@@ -1342,7 +1507,6 @@ class DBHelper {
       await txn.update(
           'sales',
           {
-            'is_return': 1,
             'return_note': combinedNote,
           },
           where: 'id = ?',
@@ -1813,8 +1977,9 @@ class DBHelper {
       returnsArgs = [toDate];
     }
 
+    await _ensureSaleReturnsColumns(db);
     final returnsRow = await db.rawQuery(
-        'SELECT SUM(COALESCE(paid_delta,0)) as returns_delta FROM sale_returns $returnsDateCond',
+        'SELECT SUM(CASE WHEN COALESCE(refund_amount,0) > 0 THEN -COALESCE(refund_amount,0) ELSE COALESCE(paid_delta,0) END) as returns_delta FROM sale_returns $returnsDateCond',
         returnsArgs);
     final returnsDelta =
         (returnsRow.isNotEmpty && returnsRow.first['returns_delta'] != null)
@@ -2191,9 +2356,10 @@ class DBHelper {
     required String toDate,
   }) async {
     final db = await instance.database;
+    await _ensureSaleReturnsColumns(db);
     final rows = await db.rawQuery(
       '''
-    SELECT SUM(COALESCE(paid_delta,0)) as returns_delta
+    SELECT SUM(CASE WHEN COALESCE(refund_amount,0) > 0 THEN -COALESCE(refund_amount,0) ELSE COALESCE(paid_delta,0) END) as returns_delta
     FROM sale_returns
     WHERE cashier_username = ?
       AND date(date) BETWEEN ? AND ?
@@ -2442,9 +2608,10 @@ class DBHelper {
         ? (purchasesRow.first['purchases_paid_cash'] as num).toDouble()
         : 0.0;
 
-    // مجموع paid_delta في sale_returns لليوم (يمكن إيجابي أو سلبي حسب الحالة)
+    // مجموع المرتجعات لليوم: refund_amount للخصم الجزئي، و paid_delta للبدل/البيانات القديمة
+    await _ensureSaleReturnsColumns(db);
     final returnsRow = await db.rawQuery(
-      "SELECT SUM(COALESCE(paid_delta,0)) as returns_delta FROM sale_returns WHERE date(date) = ?",
+      "SELECT SUM(CASE WHEN COALESCE(refund_amount,0) > 0 THEN -COALESCE(refund_amount,0) ELSE COALESCE(paid_delta,0) END) as returns_delta FROM sale_returns WHERE date(date) = ?",
       [dateOnly],
     );
     final returnsDelta =
@@ -2659,6 +2826,7 @@ class DBHelper {
   }) async {
     final db = await database;
     await _ensureSaleColumns(db);
+    await _ensureSaleReturnsColumns(db);
     await _ensureCashDrawerTable(db);
     await _ensureDrawerWithdrawnAmountColumn(db);
     await _ensureShiftSettingsTable(db);
@@ -2686,7 +2854,7 @@ class DBHelper {
 	      ) AS cash_sales
 	      FROM sales
 	      WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
-	        AND COALESCE(is_return,0) = 0
+	        AND NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
 	        AND (
 	          (
 	            TRIM(COALESCE(cashier_username,'')) = ?
@@ -2717,7 +2885,7 @@ class DBHelper {
       SELECT COUNT(*) AS excluded_unpaid_credit
       FROM sales
       WHERE TRIM(COALESCE(cashier_username,'')) = ?
-        AND COALESCE(is_return,0) = 0
+        AND NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
         AND COALESCE(is_credit,0) = 1
         AND COALESCE(paid_amount,0) < COALESCE(total,0)
         AND datetime(date) BETWEEN datetime(?) AND datetime(?)
@@ -2734,7 +2902,7 @@ class DBHelper {
       '''
 	      SELECT SUM(COALESCE(total,0)) AS gross_sales
 	      FROM sales
-	      WHERE COALESCE(is_return,0) = 0
+	      WHERE NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
 	        AND NOT (COALESCE(is_credit,0) = 1 AND COALESCE(paid_amount,0) < COALESCE(total,0))
 	        AND (
 	          (
@@ -2764,7 +2932,7 @@ class DBHelper {
 
     final returnsRows = await db.rawQuery(
       '''
-      SELECT SUM(COALESCE(paid_delta,0)) AS returns_delta
+      SELECT SUM(CASE WHEN COALESCE(refund_amount,0) > 0 THEN -COALESCE(refund_amount,0) ELSE COALESCE(paid_delta,0) END) AS returns_delta
       FROM sale_returns
       WHERE TRIM(COALESCE(cashier_username,'')) = ?
         AND datetime(date) BETWEEN datetime(?) AND datetime(?)
@@ -2793,13 +2961,14 @@ class DBHelper {
     final cashExpenses = expenseRows.isNotEmpty
         ? _numFromRow(expenseRows.first, 'cash_expenses')
         : 0.0;
-    final totalSales = grossSales + returnsDelta;
+    final totalSales = (grossSales + returnsDelta).clamp(0.0, double.infinity);
     final netProfit = totalSales - totalExpenses;
+    final returnsImpactOnCash = returnsDelta < 0 ? returnsDelta : 0.0;
     final closingBalance =
-        openingBalance + cashSales + returnsDelta - cashExpenses;
+        openingBalance + cashSales + returnsImpactOnCash - cashExpenses;
 
     debugPrint(
-        '[CloseShiftSummary] cashier=${cashierName.trim()} from=$fromDateTime to=$toDateTime gross=$grossSales cash=$cashSales expenses=$totalExpenses returns=$returnsDelta closing=$closingBalance');
+        '[CloseShiftSummary] cashier=${cashierName.trim()} from=$fromDateTime to=$toDateTime gross=$grossSales cash=$cashSales expenses=$totalExpenses returns=$returnsDelta totalSales=$totalSales returnsCashImpact=$returnsImpactOnCash closing=$closingBalance');
 
     return {
       'opening_balance': openingBalance,
@@ -3037,6 +3206,7 @@ class DBHelper {
   Future<double> computeCurrentShiftDrawerBalance(String cashierName) async {
     final db = await database;
     await _ensureSaleColumns(db);
+    await _ensureSaleReturnsColumns(db);
     final username = cashierName.trim();
     if (username.isEmpty) return await getFixedShiftOpeningBalance();
 
@@ -3076,10 +3246,23 @@ class DBHelper {
     );
     final cashSales =
         rows.isNotEmpty ? _numFromRow(rows.first, 'cash_sales') : 0.0;
+    final returnsRows = await db.rawQuery(
+      '''
+      SELECT SUM(CASE WHEN COALESCE(refund_amount,0) > 0 THEN -COALESCE(refund_amount,0) ELSE COALESCE(paid_delta,0) END) AS returns_delta
+      FROM sale_returns
+      WHERE TRIM(COALESCE(cashier_username,'')) = ?
+        AND datetime(date) > datetime(?)
+        AND datetime(date) <= datetime(?)
+      ''',
+      [username, shiftStart, now],
+    );
+    final returnsDelta = returnsRows.isNotEmpty
+        ? _numFromRow(returnsRows.first, 'returns_delta')
+        : 0.0;
     debugPrint(
-        '[DrawerBalance] cashier=$username shiftStart=$shiftStart now=$now opening=$openingBalance cashSales=$cashSales');
+        '[DrawerBalance] cashier=$username shiftStart=$shiftStart now=$now opening=$openingBalance cashSales=$cashSales returns=$returnsDelta');
 
-    return openingBalance + cashSales;
+    return openingBalance + cashSales + returnsDelta;
   }
 
   Future<void> setAppSetting(String key, String value) async {
@@ -3142,36 +3325,249 @@ class DBHelper {
         DateTime(to.year, to.month, to.day, 23, 59, 59).toIso8601String();
     final rows = await db.rawQuery(
       '''
-      SELECT
-        p.id AS product_id,
-        p.name AS product_name,
-        p.barcode AS barcode,
-        COALESCE(p.purchase_price,0) AS purchase_price,
-        COALESCE(p.selling_price,0) AS selling_price,
-        COALESCE(p.units_in_carton,1) AS units_in_carton,
-        SUM(COALESCE(si.quantity,0)) AS quantity_sold,
-        SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0)) AS revenue,
-        SUM(
-          (COALESCE(si.price,0) -
-            CASE
-              WHEN COALESCE(p.units_in_carton,0) > 0
-              THEN COALESCE(p.purchase_price,0) / p.units_in_carton
-              ELSE COALESCE(p.purchase_price,0)
-            END
-          ) * COALESCE(si.quantity,0)
-        ) AS profit
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id
-      JOIN products p ON p.id = si.product_id
-      WHERE COALESCE(s.is_return,0) = 0
-        AND datetime(s.date) >= datetime(?)
-        AND datetime(s.date) <= datetime(?)
-      GROUP BY p.id, p.name, p.barcode, p.purchase_price, p.selling_price, p.units_in_carton
-      ORDER BY profit DESC
+	      SELECT
+	        p.id AS product_id,
+	        p.name AS product_name,
+	        p.barcode AS barcode,
+	        COALESCE(p.purchase_price,0) AS purchase_price,
+	        COALESCE(p.selling_price,0) AS selling_price,
+	        COALESCE(p.units_in_carton,1) AS units_in_carton,
+	        SUM(COALESCE(si.quantity,0)) - COALESCE(ret.returned_qty, 0) AS quantity_sold,
+	        (SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0)) - COALESCE(ret.returned_revenue, 0)) AS revenue,
+	        (SUM((COALESCE(si.price,0) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) - COALESCE(ret.returned_profit, 0)) AS profit
+	      FROM sale_items si
+	      JOIN sales s ON s.id = si.sale_id
+	      JOIN products p ON p.id = si.product_id
+	      LEFT JOIN (
+	        SELECT
+	          sri.product_id,
+	          SUM(COALESCE(sri.qty, 0)) AS returned_qty,
+	          SUM(COALESCE(sri.qty, 0) * COALESCE(sri.price, 0)) AS returned_revenue,
+	          SUM(COALESCE(sri.qty, 0) * (COALESCE(sri.price, 0) - COALESCE(si2.purchase_price_per_unit, 0))) AS returned_profit
+	        FROM sale_return_items sri
+	        JOIN sale_returns sr ON sr.id = sri.return_id
+	        JOIN sale_items si2 ON si2.sale_id = sr.sale_id AND si2.product_id = sri.product_id
+	        WHERE COALESCE(sri.is_replacement, 0) = 0
+	          AND datetime(sr.date) >= datetime(?)
+	          AND datetime(sr.date) <= datetime(?)
+	        GROUP BY sri.product_id
+	      ) ret ON ret.product_id = p.id
+	      WHERE COALESCE(s.is_return,0) = 0
+	        AND datetime(s.date) >= datetime(?)
+	        AND datetime(s.date) <= datetime(?)
+	      GROUP BY p.id, p.name, p.barcode, p.purchase_price, p.selling_price, p.units_in_carton
+	      HAVING quantity_sold > 0
+	      ORDER BY profit DESC
+	      ''',
+      [fromStr, toStr, fromStr, toStr],
+    );
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+  }
+
+  Future<int> addShopExternalExpense({
+    required String title,
+    required double amount,
+    required DateTime date,
+  }) async {
+    final db = await database;
+    await _ensureShopExternalExpensesTable(db);
+    return db.insert('shop_external_expenses', {
+      'title': title.trim(),
+      'amount': amount,
+      'expense_date':
+          DateTime(date.year, date.month, date.day).toIso8601String(),
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<int> deleteShopExternalExpense(int id) async {
+    final db = await database;
+    await _ensureShopExternalExpensesTable(db);
+    return db.delete(
+      'shop_external_expenses',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getShopExternalExpenses({
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    final db = await database;
+    await _ensureShopExternalExpensesTable(db);
+    final fromStr = DateTime(from.year, from.month, from.day).toIso8601String();
+    final toStr =
+        DateTime(to.year, to.month, to.day, 23, 59, 59).toIso8601String();
+    final rows = await db.rawQuery(
+      '''
+      SELECT *
+      FROM shop_external_expenses
+      WHERE datetime(expense_date) >= datetime(?)
+        AND datetime(expense_date) <= datetime(?)
+      ORDER BY datetime(expense_date) DESC, id DESC
       ''',
       [fromStr, toStr],
     );
     return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> getShopPaidPurchases({
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    final db = await database;
+    await _ensurePurchaseReceiptsTable(db);
+    await _ensurePurchaseReceiptsColumns(db);
+    final fromStr = DateTime(from.year, from.month, from.day).toIso8601String();
+    final toStr =
+        DateTime(to.year, to.month, to.day, 23, 59, 59).toIso8601String();
+    final rows = await db.rawQuery(
+      '''
+      SELECT *,
+             CASE
+               WHEN (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) > 0
+               THEN (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0))
+               ELSE COALESCE(paid_amount,0)
+             END AS paid_total
+      FROM purchase_receipts
+      WHERE datetime(created_at) >= datetime(?)
+        AND datetime(created_at) <= datetime(?)
+        AND (
+          (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) > 0
+          OR COALESCE(paid_amount,0) > 0
+        )
+      ORDER BY datetime(created_at) DESC, id DESC
+      ''',
+      [fromStr, toStr],
+    );
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> getDailyShopProfitReport({
+    required int year,
+    required int month,
+  }) async {
+    final db = await database;
+    await _ensureSaleItemsPurchasePriceColumn(db);
+    await _ensureSaleReturnsColumns(db);
+    await _ensurePurchaseReceiptsTable(db);
+    await _ensurePurchaseReceiptsColumns(db);
+
+    final from = DateTime(year, month, 1);
+    final to = DateTime(year, month + 1, 0, 23, 59, 59);
+    final fromStr = from.toIso8601String();
+    final toStr = to.toIso8601String();
+
+    final salesRows = await db.rawQuery(
+      '''
+      SELECT date(s.date) AS day,
+             SUM((COALESCE(si.price,0) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) AS sales_profit
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      WHERE COALESCE(s.is_return,0) = 0
+        AND datetime(s.date) >= datetime(?)
+        AND datetime(s.date) <= datetime(?)
+      GROUP BY date(s.date)
+      ''',
+      [fromStr, toStr],
+    );
+
+    final returnsRows = await db.rawQuery(
+      '''
+      SELECT date(sr.date) AS day,
+             SUM(COALESCE(sri.qty,0) * (COALESCE(sri.price,0) - COALESCE(si.purchase_price_per_unit,0))) AS returned_profit
+      FROM sale_return_items sri
+      JOIN sale_returns sr ON sr.id = sri.return_id
+      JOIN sale_items si ON si.sale_id = sr.sale_id AND si.product_id = sri.product_id
+      WHERE COALESCE(sri.is_replacement,0) = 0
+        AND datetime(sr.date) >= datetime(?)
+        AND datetime(sr.date) <= datetime(?)
+      GROUP BY date(sr.date)
+      ''',
+      [fromStr, toStr],
+    );
+
+    final expensesRows = await db.rawQuery(
+      '''
+      SELECT date(expense_date) AS day,
+             SUM(COALESCE(amount,0)) AS external_expenses
+      FROM shop_external_expenses
+      WHERE datetime(expense_date) >= datetime(?)
+        AND datetime(expense_date) <= datetime(?)
+      GROUP BY date(expense_date)
+      ''',
+      [fromStr, toStr],
+    );
+
+    final purchasesRows = await db.rawQuery(
+      '''
+      SELECT date(created_at) AS day,
+             SUM(
+               CASE
+                 WHEN (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) > 0
+                 THEN (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0))
+                 ELSE COALESCE(paid_amount,0)
+               END
+             ) AS paid_purchases
+      FROM purchase_receipts
+      WHERE datetime(created_at) >= datetime(?)
+        AND datetime(created_at) <= datetime(?)
+        AND (
+          (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) > 0
+          OR COALESCE(paid_amount,0) > 0
+        )
+      GROUP BY date(created_at)
+      ''',
+      [fromStr, toStr],
+    );
+
+    final salesByDay = <String, double>{};
+    for (final row in salesRows) {
+      salesByDay[(row['day'] ?? '').toString()] =
+          _numFromRow(row, 'sales_profit');
+    }
+
+    final returnsByDay = <String, double>{};
+    for (final row in returnsRows) {
+      returnsByDay[(row['day'] ?? '').toString()] =
+          _numFromRow(row, 'returned_profit').abs();
+    }
+
+    final expensesByDay = <String, double>{};
+    for (final row in expensesRows) {
+      expensesByDay[(row['day'] ?? '').toString()] =
+          _numFromRow(row, 'external_expenses');
+    }
+
+    final paidPurchasesByDay = <String, double>{};
+    for (final row in purchasesRows) {
+      paidPurchasesByDay[(row['day'] ?? '').toString()] =
+          _numFromRow(row, 'paid_purchases');
+    }
+
+    final daysInMonth = DateTime(year, month + 1, 0).day;
+    final out = <Map<String, dynamic>>[];
+    for (var day = 1; day <= daysInMonth; day++) {
+      final d = DateTime(year, month, day);
+      final key =
+          '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      final grossProfit = salesByDay[key] ?? 0.0;
+      final returnsProfit = returnsByDay[key] ?? 0.0;
+      final externalExpenses = expensesByDay[key] ?? 0.0;
+      final paidPurchases = paidPurchasesByDay[key] ?? 0.0;
+      final shopProfit = grossProfit - returnsProfit;
+      out.add({
+        'date': key,
+        'gross_profit': grossProfit,
+        'returns_profit': returnsProfit,
+        'profit': shopProfit,
+        'external_expenses': externalExpenses,
+        'paid_purchases': paidPurchases,
+        'net_profit': shopProfit - externalExpenses - paidPurchases,
+      });
+    }
+    return out;
   }
 
   Future<List<Map<String, dynamic>>> getStockReport() async {

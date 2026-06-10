@@ -71,7 +71,9 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
           'updated_at': raw['date'] ?? '',
           'is_canceled': 0,
           'status': '',
-          'type': (raw['is_return'] == 1) ? 'return' : 'sale',
+          'type': raw['is_return'] == 1 && raw['return_of_sale_id'] != null
+              ? 'return'
+              : 'sale',
           'parent_invoice_id': raw['return_of_sale_id'],
           'meta': {},
         };
@@ -279,7 +281,37 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
       int originalSaleId, String cashierName) async {
     // ensure items loaded
     await _ensureItems(originalSaleId);
-    final items = saleItems[originalSaleId] ?? [];
+    final items = (saleItems[originalSaleId] ?? []).where((item) {
+      final qty = (item['quantity'] as num?)?.toInt() ??
+          (item['qty'] as num?)?.toInt() ??
+          0;
+      final returnedQty = (item['returned_quantity'] as num?)?.toInt() ?? 0;
+      return qty - returnedQty > 0;
+    }).map((item) {
+      final qty = (item['quantity'] as num?)?.toInt() ??
+          (item['qty'] as num?)?.toInt() ??
+          0;
+      final returnedQty = (item['returned_quantity'] as num?)?.toInt() ?? 0;
+      return {
+        ...item,
+        'original_quantity': qty,
+        'quantity': qty - returnedQty,
+        'qty': qty - returnedQty,
+      };
+    }).toList();
+
+    if (items.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('كل عناصر هذه الفاتورة تم استرجاعها بالفعل'),
+          ),
+        ),
+      );
+      return;
+    }
 
     // open full-screen dialog/screen using ProcessReturnDialog (which now uses ProductApi and API calls)
     await Navigator.of(context).push(

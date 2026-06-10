@@ -12,6 +12,7 @@ import 'AdminCreditPurchases.dart';
 import 'AdminPaidPurchases.dart';
 import 'FinancialAccounts.dart';
 import 'Settings.dart';
+import 'shop_profit_screen.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   final String username;
@@ -200,6 +201,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   ),
                 ],
               ),
+
               const SizedBox(height: 16),
               Row(
                 children: [
@@ -223,6 +225,22 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                         context,
                         MaterialPageRoute(
                             builder: (_) => const StockReportScreen()),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: DashboardWidget(
+                      title: 'أرباح المحل',
+                      image: 'assets/icons/financial.svg',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const ShopProfitScreen()),
                       ),
                     ),
                   ),

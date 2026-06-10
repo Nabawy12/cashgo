@@ -141,10 +141,13 @@ class _receiptsScreenState extends State<receiptsScreen> {
     return rows
         .map((r) => {
               'product_id': r['product_id'],
+              'id': r['id'],
               'product_name': r['product_name'] ?? '',
               'barcode': r['product_barcode'] ?? '',
               'price': r['price'] ?? 0.0,
               'quantity': r['quantity'] ?? 0,
+              'returned': r['returned'] ?? 0,
+              'returned_quantity': r['returned_quantity'] ?? 0,
             })
         .toList();
   }
@@ -1217,7 +1220,7 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                                   final name = (it[
                                                                               'product_name'] ??
                                                                           'منتج')
-                                                                      as String;
+                                                                      .toString();
                                                                   final qty =
                                                                       (it['quantity'] as num?)
                                                                               ?.toInt() ??
@@ -1232,7 +1235,39 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                                   final barcode =
                                                                       (it['barcode'] ??
                                                                               '-')
-                                                                          as String;
+                                                                          .toString();
+                                                                  final returnedQty = (it['returned_quantity']
+                                                                              as num?)
+                                                                          ?.toInt() ??
+                                                                      (((it['returned'] as num?)?.toInt() ?? 0) ==
+                                                                              1
+                                                                          ? qty
+                                                                          : 0);
+                                                                  final isPartiallyReturned =
+                                                                      returnedQty >
+                                                                          0;
+                                                                  final isFullyReturned =
+                                                                      qty > 0 &&
+                                                                          returnedQty >=
+                                                                              qty;
+                                                                  final returnedSubtotal =
+                                                                      returnedQty *
+                                                                          price;
+                                                                  final itemValueStyle =
+                                                                      TextStyle(
+                                                                    color: isPartiallyReturned
+                                                                        ? Colors
+                                                                            .redAccent
+                                                                        : AppColorsDark
+                                                                            .mainTextLight,
+                                                                    fontSize:
+                                                                        15,
+                                                                    decoration: isFullyReturned
+                                                                        ? TextDecoration
+                                                                            .lineThrough
+                                                                        : TextDecoration
+                                                                            .none,
+                                                                  );
                                                                   return Container(
                                                                     padding: const EdgeInsets
                                                                         .symmetric(
@@ -1267,10 +1302,7 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                                                   children: [
                                                                                     TextSpan(
                                                                                       text: name,
-                                                                                      style: TextStyle(
-                                                                                        color: AppColorsDark.mainTextLight,
-                                                                                        fontSize: 15,
-                                                                                      ),
+                                                                                      style: itemValueStyle,
                                                                                     ),
                                                                                     TextSpan(
                                                                                       text: ' : الاسم',
@@ -1286,6 +1318,30 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                                         const SizedBox(
                                                                             height:
                                                                                 12),
+                                                                        if (isPartiallyReturned) ...[
+                                                                          Align(
+                                                                            alignment:
+                                                                                Alignment.centerRight,
+                                                                            child:
+                                                                                Container(
+                                                                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                                              decoration: BoxDecoration(
+                                                                                color: Colors.redAccent.withOpacity(0.12),
+                                                                                border: Border.all(color: Colors.redAccent),
+                                                                                borderRadius: BorderRadius.circular(999),
+                                                                              ),
+                                                                              child: Text(
+                                                                                isFullyReturned ? 'تم الاسترجاع' : 'تم استرجاع $returnedQty من $qty',
+                                                                                style: TextStyle(
+                                                                                  color: Colors.redAccent,
+                                                                                  fontWeight: FontWeight.bold,
+                                                                                ),
+                                                                              ),
+                                                                            ),
+                                                                          ),
+                                                                          const SizedBox(
+                                                                              height: 12),
+                                                                        ],
                                                                         buildLabelValue(
                                                                             'باركود',
                                                                             barcode),
@@ -1300,7 +1356,7 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                                             children: [
                                                                               TextSpan(
                                                                                 text: "$qty × ${price.toStringAsFixed(2)}",
-                                                                                style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 15),
+                                                                                style: itemValueStyle,
                                                                               ),
                                                                               TextSpan(
                                                                                 text: ' : الكميه',
@@ -1322,7 +1378,7 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                                             children: [
                                                                               TextSpan(
                                                                                 text: subtotal.toStringAsFixed(2),
-                                                                                style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 15),
+                                                                                style: itemValueStyle,
                                                                               ),
                                                                               TextSpan(
                                                                                 text: ' : الإجمالي',
@@ -1333,6 +1389,20 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                                           overflow:
                                                                               TextOverflow.ellipsis,
                                                                         ),
+                                                                        if (isPartiallyReturned) ...[
+                                                                          const SizedBox(
+                                                                              height: 12),
+                                                                          Text(
+                                                                            'مسترجع: $name - ${returnedSubtotal.toStringAsFixed(2)}',
+                                                                            textAlign:
+                                                                                TextAlign.right,
+                                                                            style:
+                                                                                const TextStyle(
+                                                                              color: Colors.redAccent,
+                                                                              fontWeight: FontWeight.bold,
+                                                                            ),
+                                                                          ),
+                                                                        ],
                                                                       ],
                                                                     ),
                                                                   );

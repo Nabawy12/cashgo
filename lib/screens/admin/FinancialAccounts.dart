@@ -295,12 +295,13 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       final dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate);
       final db = await DBHelper.instance.database;
       await DBHelper.instance.ensureSaleColumns();
+      await DBHelper.instance.ensureSaleReturnsColumns();
 
       final cashRows = await db.rawQuery('''
         SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as cash_net
         FROM sales
         WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
-          AND COALESCE(is_return,0) = 0
+          AND NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
           AND (
             (
               (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
@@ -317,7 +318,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         SELECT SUM(COALESCE(paid_amount,0) - COALESCE(change_amount,0)) as wallet_net
         FROM sales
         WHERE LOWER(TRIM(COALESCE(payment_method,''))) IN ('wallet','card')
-          AND COALESCE(is_return,0) = 0
+          AND NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
           AND (
             (
               (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
@@ -383,11 +384,33 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           ? (purchaseCreditRows.first['purchase_due'] as num).toDouble()
           : 0.0;
 
+      final diagRows = await db.rawQuery('''
+        SELECT id, paid_delta, date FROM sale_returns
+        ORDER BY id DESC LIMIT 5
+      ''');
+      debugPrint('[Returns Diagnostic] latest sale_returns: $diagRows');
+
+      final returnsRows = await db.rawQuery('''
+        SELECT SUM(COALESCE(paid_delta, 0)) as returns_total
+        FROM sale_returns
+        WHERE date(date) = ?
+      ''', [dateStr]);
+      final returnsTotal =
+          returnsRows.isNotEmpty && returnsRows.first['returns_total'] != null
+              ? (returnsRows.first['returns_total'] as num).toDouble()
+              : 0.0;
+
+      debugPrint('[Returns] returnsTotal=$returnsTotal for date=$dateStr');
+
+      // paid_delta is negative when money is returned to customer,
+      // so we add it here (adding a negative value subtracts it).
+      final cashNetAfterReturns = cashNet + returnsTotal;
+
       final creditRows = await db.rawQuery('''
         SELECT SUM(COALESCE(total,0) - COALESCE(paid_amount,0)) as credit_outstanding
         FROM sales
         WHERE COALESCE(is_credit,0) = 1
-          AND COALESCE(is_return,0) = 0
+          AND NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
           AND date(date) = ?
       ''', [dateStr]);
       final creditOutstanding = creditRows.isNotEmpty &&
@@ -397,15 +420,15 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
 
       final openingBalance =
           await DBHelper.instance.getFixedShiftOpeningBalance();
-      final drawerNow = openingBalance + cashNet - purchaseCash;
+      final drawerNow = openingBalance + cashNetAfterReturns - purchaseCash;
       final walletTotal = walletNet - purchaseWallet;
 
       debugPrint(
-          '[AllShiftsSummary] date=$dateStr cash=$cashNet wallet=$walletNet purchaseWallet=$purchaseWallet walletTotal=$walletTotal purchaseCash=$purchaseCash purchaseCredit=$purchaseCredit creditOutstanding=$creditOutstanding opening=$openingBalance drawer=$drawerNow');
+          '[AllShiftsSummary] date=$dateStr cash=$cashNet returns=$returnsTotal cashAfterReturns=$cashNetAfterReturns wallet=$walletNet purchaseWallet=$purchaseWallet walletTotal=$walletTotal purchaseCash=$purchaseCash purchaseCredit=$purchaseCredit creditOutstanding=$creditOutstanding opening=$openingBalance drawer=$drawerNow');
 
       if (!mounted) return;
       setState(() {
-        _salesNet = cashNet;
+        _salesNet = cashNetAfterReturns;
         _salesWallet = walletTotal;
         _purchasePaidCash = purchaseCash;
         _purchasePaidWallet = purchaseWallet;
@@ -595,14 +618,24 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           raw: raw,
         );
       }).toList();
-      final totalSalesAllShifts = filtered.fold(
-          0.0,
-          (sum, row) =>
-              sum +
-              (_pickDoubleFromMap(
-                      Map<String, dynamic>.from(row.raw ?? const {}),
-                      ['total_sales']) ??
-                  row.totalSales));
+      final totalGrossSales = filtered.fold(0.0, (sum, row) {
+        final raw2 = Map<String, dynamic>.from(row.raw ?? const {});
+        final sales = (_pickDoubleFromMap(raw2, ['gross_sales']) ??
+                _pickDoubleFromMap(raw2, ['total_sales']) ??
+                row.totalSales)
+            .clamp(0.0, double.infinity);
+        return sum + sales;
+      });
+
+      final totalReturnsAllShifts = filtered.fold(0.0, (sum, row) {
+        final raw2 = Map<String, dynamic>.from(row.raw ?? const {});
+        final returnsDeltaRaw =
+            _pickDoubleFromMap(raw2, ['returns_delta']) ?? 0.0;
+        return sum + returnsDeltaRaw.abs();
+      });
+
+      final totalSalesAllShifts =
+          (totalGrossSales - totalReturnsAllShifts).clamp(0.0, double.infinity);
       final totalExpensesAllShifts = filtered.fold(
           0.0,
           (sum, row) =>
@@ -968,10 +1001,14 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     final cashSales = _pickDoubleFromMap(
             raw, ['cash_sales_total', 'cash_sales', 'sales_cash']) ??
         0.0;
-    final totalSales = _pickDoubleFromMap(raw, ['total_sales']) ?? s.totalSales;
+    final grossSales =
+        (_pickDoubleFromMap(raw, ['gross_sales']) ?? s.totalSales)
+            .clamp(0.0, double.infinity);
+    final totalSales = (_pickDoubleFromMap(raw, ['total_sales']) ?? grossSales)
+        .clamp(0.0, double.infinity);
     final walletSales = _pickDoubleFromMap(
             raw, ['wallet_sales_total', 'wallet_sales', 'sales_wallet']) ??
-        (totalSales - cashSales).clamp(0.0, double.infinity);
+        (grossSales - cashSales).clamp(0.0, double.infinity);
     final cashExpenses =
         _pickDoubleFromMap(raw, ['cash_purchases', 'cash_expenses']) ?? 0.0;
     final totalExpenses =
@@ -983,8 +1020,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         _pickDoubleFromMap(raw, ['wallet_purchases', 'wallet_expenses']) ??
             (totalExpenses - cashExpenses).clamp(0.0, double.infinity);
     final totalReturns = returnsValue;
-    final netProfit = totalSales - totalExpenses;
-    final drawerBalance = cashSales - cashExpenses;
+    final netProfit = (totalSales - returnsValue) - totalExpenses;
+    final drawerBalance = cashSales - returnsValue - cashExpenses;
 
     String money(double value) => value.toStringAsFixed(2);
 

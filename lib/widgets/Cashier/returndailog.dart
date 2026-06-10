@@ -654,7 +654,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                     ),
                                     const SizedBox(height: 12),
                                     Text(
-                                      'مباع : $origQty',
+                                      'متاح للإرجاع : $origQty',
                                       style: TextStyle(
                                         color: AppColorsDark.mainTextDark,
                                         fontSize: 17,
