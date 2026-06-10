@@ -56,6 +56,7 @@ class DBHelper {
         await _ensureLowStockSeenColumn(db);
         await _ensurePurchaseReceiptsTable(db);
         await _ensurePurchaseReceiptsColumns(db);
+        await _ensurePurchasePaymentsTable(db);
         await _ensureCashDrawerTable(db);
         await _ensureIsCurrentUserColumn(db);
         await _ensureSalePaymentMethodColumn(db);
@@ -93,6 +94,9 @@ class DBHelper {
         } catch (_) {}
         try {
           await _ensurePurchaseReceiptsColumns(db);
+        } catch (_) {}
+        try {
+          await _ensurePurchasePaymentsTable(db);
         } catch (_) {}
         try {
           await _ensureCashDrawerTable(db);
@@ -276,6 +280,18 @@ class DBHelper {
         due_amount REAL NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         FOREIGN KEY(product_id) REFERENCES products(id)
+      )""",
+    );
+
+    await db.execute(
+      """CREATE TABLE purchase_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        payment_method TEXT NOT NULL DEFAULT 'cash',
+        paid_by TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(receipt_id) REFERENCES purchase_receipts(id)
       )""",
     );
 
@@ -656,6 +672,50 @@ class DBHelper {
   Future<void> ensurePurchaseReceiptsColumns() async {
     final db = await instance.database;
     await _ensurePurchaseReceiptsColumns(db);
+  }
+
+  Future<void> _ensurePurchasePaymentsTable(Database db) async {
+    await db.execute(
+      """CREATE TABLE IF NOT EXISTS purchase_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        payment_method TEXT NOT NULL DEFAULT 'cash',
+        paid_by TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(receipt_id) REFERENCES purchase_receipts(id)
+      )""",
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getPurchasePayments(int receiptId) async {
+    final db = await database;
+    await _ensurePurchasePaymentsTable(db);
+    final rows = await db.query(
+      'purchase_payments',
+      where: 'receipt_id = ?',
+      whereArgs: [receiptId],
+      orderBy: 'datetime(created_at) ASC, id ASC',
+    );
+    return rows.map((row) => Map<String, dynamic>.from(row)).toList();
+  }
+
+  Future<void> _insertPurchasePayment(
+    DatabaseExecutor db, {
+    required int receiptId,
+    required double amount,
+    required String paymentMethod,
+    String? paidBy,
+    String? createdAt,
+  }) async {
+    if (amount <= 0) return;
+    await db.insert('purchase_payments', {
+      'receipt_id': receiptId,
+      'amount': amount,
+      'payment_method': paymentMethod.trim().toLowerCase(),
+      'paid_by': paidBy ?? '',
+      'created_at': createdAt ?? DateTime.now().toIso8601String(),
+    });
   }
 
   // ----------------- auth / CRUD / helpers (mostly same as previous) -----------------
@@ -1685,7 +1745,7 @@ class DBHelper {
       double due = totalCost - paidAmount;
       if (due < 0) due = 0.0;
 
-      await db.insert('purchase_receipts', {
+      final receiptId = await db.insert('purchase_receipts', {
         'product_id': pid,
         'product_name': found['name'] ?? '',
         'barcode': found['barcode'] ?? '',
@@ -1705,6 +1765,14 @@ class DBHelper {
         'due_amount': due,
         'created_at': now,
       });
+      await _insertPurchasePayment(
+        db,
+        receiptId: receiptId,
+        amount: paidAmount,
+        paymentMethod: paymentType,
+        paidBy: receivedBy,
+        createdAt: now,
+      );
 
       return {
         'status': 'ok',
@@ -1757,7 +1825,7 @@ class DBHelper {
       });
 
       // log receipt
-      await db.insert('purchase_receipts', {
+      final receiptId = await db.insert('purchase_receipts', {
         'product_id': newId,
         'product_name': n,
         'barcode': b,
@@ -1777,6 +1845,14 @@ class DBHelper {
         'due_amount': due,
         'created_at': now,
       });
+      await _insertPurchasePayment(
+        db,
+        receiptId: receiptId,
+        amount: paidAmount,
+        paymentMethod: paymentType,
+        paidBy: receivedBy,
+        createdAt: now,
+      );
 
       return {
         'status': 'ok',
@@ -1792,11 +1868,55 @@ class DBHelper {
 
   Future<List<Map<String, dynamic>>> getPaidPurchaseReceipts() async {
     final db = await instance.database;
+    await _ensurePurchaseReceiptsColumns(db);
+    await _ensurePurchasePaymentsTable(db);
     final rows = await db.query('purchase_receipts',
         where:
             'due_amount = 0 OR (paid_amount IS NOT NULL AND paid_amount > 0 AND due_amount = 0)',
         orderBy: 'created_at DESC');
-    return rows;
+    final out = <Map<String, dynamic>>[];
+    for (final row in rows) {
+      final receipt = Map<String, dynamic>.from(row);
+      final id = (receipt['id'] as num?)?.toInt() ?? 0;
+      final payments =
+          id > 0 ? await getPurchasePayments(id) : <Map<String, dynamic>>[];
+      if (payments.isNotEmpty) {
+        receipt['payment_history'] = payments;
+      } else {
+        final fallback = <Map<String, dynamic>>[];
+        final paidCash = (receipt['paid_cash'] as num?)?.toDouble() ?? 0.0;
+        final paidWallet = (receipt['paid_wallet'] as num?)?.toDouble() ?? 0.0;
+        final paidAmount = (receipt['paid_amount'] as num?)?.toDouble() ?? 0.0;
+        final createdAt = (receipt['created_at'] ?? '').toString();
+        if (paidCash > 0) {
+          fallback.add({
+            'receipt_id': id,
+            'amount': paidCash,
+            'payment_method': 'cash',
+            'created_at': createdAt,
+          });
+        }
+        if (paidWallet > 0) {
+          fallback.add({
+            'receipt_id': id,
+            'amount': paidWallet,
+            'payment_method': 'wallet',
+            'created_at': createdAt,
+          });
+        }
+        if (fallback.isEmpty && paidAmount > 0) {
+          fallback.add({
+            'receipt_id': id,
+            'amount': paidAmount,
+            'payment_method': receipt['payment_type'] ?? 'cash',
+            'created_at': createdAt,
+          });
+        }
+        receipt['payment_history'] = fallback;
+      }
+      out.add(receipt);
+    }
+    return out;
   }
 
   Future<List<Map<String, dynamic>>> getCreditPurchaseReceipts() async {
@@ -1811,6 +1931,7 @@ class DBHelper {
     if (amount <= 0) return 0;
     final db = await instance.database;
     await _ensurePurchaseReceiptsColumns(db);
+    await _ensurePurchasePaymentsTable(db);
     return await db.transaction((txn) async {
       final rows = await txn.query('purchase_receipts',
           where: 'id = ?', whereArgs: [receiptId], limit: 1);
@@ -1850,6 +1971,12 @@ class DBHelper {
           },
           where: 'id = ?',
           whereArgs: [receiptId]);
+      await _insertPurchasePayment(
+        txn,
+        receiptId: receiptId,
+        amount: amount,
+        paymentMethod: normalizedMethod,
+      );
       return updated;
     });
   }
@@ -1869,7 +1996,7 @@ class DBHelper {
         note TEXT,
         created_at TEXT NOT NULL
       )
-    ''');
+      ''');
     }
   }
 

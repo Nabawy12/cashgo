@@ -53,25 +53,15 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     try {
       final rows = await _fetchReceiptsFromServer(date: date);
 
-      // الآن نفلتر لعرض سجلات الدفع الفعلي فقط:
-      // فقط payment_type == 'cash' أو 'wallet'، ولا نعرض أي سجل به مبلغ آجل/credit (>0).
+      // نعرض السندات التي اكتمل دفعها، حتى لو اتدفعت على أكثر من مرحلة.
       List<Map<String, dynamic>> filtered = rows.where((r) {
-        final pt = _effectivePaymentType(r);
-        // show only cash or wallet (and card if you want)
-        if (!(pt == 'cash' || pt == 'wallet')) return false;
-
         // exclude any record that still has due/credit > 0
         final due = _getDueAmount(r) ?? 0.0;
         if (due > 0.0) return false;
+        if (_getPaidAmount(r) <= 0.0) return false;
 
         if (date == null) return true;
-        final raw = (r['created_at'] ?? r['receipt_date'] ?? r['date'] ?? '')
-            .toString();
-        final dt = _parseDateOnly(raw);
-        if (dt == null) return false;
-        return dt.year == date.year &&
-            dt.month == date.month &&
-            dt.day == date.day;
+        return _matchesReceiptOrPaymentDate(r, date);
       }).toList();
 
       _computeTotals(filtered);
@@ -127,28 +117,40 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     return null;
   }
 
+  bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  bool _matchesReceiptOrPaymentDate(Map<String, dynamic> r, DateTime date) {
+    final rawReceiptDate =
+        (r['created_at'] ?? r['receipt_date'] ?? r['date'] ?? '').toString();
+    final receiptDate = _parseDateOnly(rawReceiptDate);
+    if (receiptDate != null && _sameDay(receiptDate, date)) return true;
+
+    for (final payment in _paymentHistory(r)) {
+      final paymentDate =
+          _parseDateOnly((payment['created_at'] ?? '').toString());
+      if (paymentDate != null && _sameDay(paymentDate, date)) return true;
+    }
+    return false;
+  }
+
   void _computeTotals(List<Map<String, dynamic>> rows) {
     double cash = 0.0, wallet = 0.0, card = 0.0;
     int cashC = 0, walletC = 0, cardC = 0;
 
     for (final r in rows) {
-      // API field name: total_paid (or maybe totalPaid). allow fallback to 'paid_amount'
-      final paid = _getPaidAmount(r);
-      final pt = _effectivePaymentType(r);
-      switch (pt) {
-        case 'wallet':
-          wallet += paid;
-          walletC++;
-          break;
-        case 'card':
-          card += paid;
-          cardC++;
-          break;
-        case 'cash':
-        default:
-          cash += paid;
-          cashC++;
-          break;
+      final paidByMethod = _paidByMethod(r);
+      if ((paidByMethod['cash'] ?? 0.0) > 0) {
+        cash += paidByMethod['cash']!;
+        cashC++;
+      }
+      if ((paidByMethod['wallet'] ?? 0.0) > 0) {
+        wallet += paidByMethod['wallet']!;
+        walletC++;
+      }
+      if ((paidByMethod['card'] ?? 0.0) > 0) {
+        card += paidByMethod['card']!;
+        cardC++;
       }
     }
 
@@ -162,6 +164,7 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
 
   double _getPaidAmount(Map<String, dynamic> r) {
     final candidates = [
+      'amount',
       'total_paid',
       'totalPaid',
       'paid',
@@ -177,6 +180,62 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
       if (d != null) return d;
     }
     return 0.0;
+  }
+
+  List<Map<String, dynamic>> _paymentHistory(Map<String, dynamic> r) {
+    final raw = r['payment_history'] ?? r['payments'];
+    if (raw is List) {
+      return raw
+          .whereType<Map>()
+          .map((payment) => Map<String, dynamic>.from(payment))
+          .toList();
+    }
+    return const [];
+  }
+
+  Map<String, double> _paidByMethod(Map<String, dynamic> r) {
+    final out = {'cash': 0.0, 'wallet': 0.0, 'card': 0.0};
+    final history = _paymentHistory(r);
+    if (history.isNotEmpty) {
+      for (final payment in history) {
+        final method = _normalizePaymentType(payment);
+        final amount = _getPaidAmount(payment);
+        if (method == 'wallet') {
+          out['wallet'] = out['wallet']! + amount;
+        } else if (method == 'card') {
+          out['card'] = out['card']! + amount;
+        } else {
+          out['cash'] = out['cash']! + amount;
+        }
+      }
+      return out;
+    }
+
+    final paidCash = (r['paid_cash'] as num?)?.toDouble() ?? 0.0;
+    final paidWallet = (r['paid_wallet'] as num?)?.toDouble() ?? 0.0;
+    if (paidCash > 0 || paidWallet > 0) {
+      out['cash'] = paidCash;
+      out['wallet'] = paidWallet;
+      return out;
+    }
+
+    final method = _effectivePaymentType(r);
+    final paid = _getPaidAmount(r);
+    if (method == 'wallet') {
+      out['wallet'] = paid;
+    } else if (method == 'card') {
+      out['card'] = paid;
+    } else {
+      out['cash'] = paid;
+    }
+    return out;
+  }
+
+  String _paymentMethodLabel(String method) {
+    final normalized = _normalizePaymentType({'payment_type': method});
+    if (normalized == 'wallet') return 'محفظة';
+    if (normalized == 'card') return 'بطاقة';
+    return 'نقدي';
   }
 
   /// يرجع اسم الكاشير من row بفحص عدة مفاتيح محتملة ثم إرجاع fallback '—' إذا كان فارغًا
@@ -213,7 +272,11 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   }
 
   String _normalizePaymentType(Map<String, dynamic> r) {
-    final raw = (r['payment_type'] ?? r['paymentType'] ?? '')
+    final raw = (r['payment_type'] ??
+            r['payment_method'] ??
+            r['method'] ??
+            r['paymentType'] ??
+            '')
         .toString()
         .trim()
         .toLowerCase();
@@ -328,7 +391,9 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
             ? 'دفع بالمحفظة'
             : paymentType == 'card'
                 ? 'بطاقة'
-                : paymentType;
+                : paymentType == 'mixed'
+                    ? 'مدفوع على مراحل'
+                    : paymentType;
     return Chip(
       label: Text(label,
           style: TextStyle(
@@ -344,6 +409,17 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
           borderRadius: BorderRadius.circular(15)),
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
+  }
+
+  String _displayPaymentType(Map<String, dynamic> r) {
+    final paidByMethod = _paidByMethod(r);
+    final methodsCount = [
+      paidByMethod['cash'] ?? 0.0,
+      paidByMethod['wallet'] ?? 0.0,
+      paidByMethod['card'] ?? 0.0,
+    ].where((amount) => amount > 0).length;
+    if (methodsCount > 1) return 'mixed';
+    return _effectivePaymentType(r);
   }
 
   Widget _buildSummaryBoards() {
@@ -392,6 +468,56 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
         children: [
           board('نقدي', _cashCount, _cashTotal, Colors.green),
           board('دفع بالمحفظة', _walletCount, _walletTotal, Colors.blueAccent),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPaymentHistory(Map<String, dynamic> r) {
+    final history = _paymentHistory(r);
+    if (history.isEmpty) {
+      final paidByMethod = _paidByMethod(r);
+      final parts = <String>[];
+      if ((paidByMethod['cash'] ?? 0.0) > 0) {
+        parts.add('نقدي: ${paidByMethod['cash']!.toStringAsFixed(2)}');
+      }
+      if ((paidByMethod['wallet'] ?? 0.0) > 0) {
+        parts.add('محفظة: ${paidByMethod['wallet']!.toStringAsFixed(2)}');
+      }
+      if ((paidByMethod['card'] ?? 0.0) > 0) {
+        parts.add('بطاقة: ${paidByMethod['card']!.toStringAsFixed(2)}');
+      }
+      return _buildInfoRow(
+        'تفاصيل الدفع:',
+        parts.isEmpty ? 'غير محدد' : parts.join(' | '),
+        valueColor: Colors.blueAccent,
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('تفاصيل الدفع:',
+              style: TextStyle(color: Colors.grey[400], fontSize: 14)),
+          const SizedBox(height: 6),
+          ...history.asMap().entries.map((entry) {
+            final index = entry.key + 1;
+            final payment = entry.value;
+            final method = _paymentMethodLabel(
+                (payment['payment_method'] ?? '').toString());
+            final amount = _getPaidAmount(payment);
+            final created = (payment['created_at'] ?? '').toString();
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                'الدفعة $index: $method - ${amount.toStringAsFixed(2)}${created.isEmpty ? '' : ' (${_fmtDate(created)})'}',
+                style:
+                    TextStyle(color: AppColorsDark.mainTextDark, fontSize: 14),
+              ),
+            );
+          }),
         ],
       ),
     );
@@ -514,7 +640,7 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
                                 final created =
                                     (r['created_at'] ?? r['receipt_date'] ?? '')
                                         .toString();
-                                final paymentType = _effectivePaymentType(r);
+                                final paymentType = _displayPaymentType(r);
 
                                 return Card(
                                   color: Theme.of(context).cardColor,
@@ -558,6 +684,7 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
                                         _buildInfoRow(
                                             "المدفوع:", paid.toStringAsFixed(1),
                                             valueColor: Colors.green),
+                                        _buildPaymentHistory(r),
                                         _buildInfoRow(
                                             "التاريخ:", _fmtDate(created)),
                                         if ((_getDueAmount(r) ?? 0.0) > 0)
