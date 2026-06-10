@@ -554,7 +554,7 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
                                         _buildInfoRow(
                                             "استلم:", _getCashierName(r)),
                                         _buildInfoRow("الكمية:",
-                                            "${r['cartons'] ?? 0} كرتينات + ${r['units'] ?? 0} وحدات"),
+                                            "${r['cartons'] ?? 0} كرتونه + ${r['units'] ?? 0} وحدات"),
                                         _buildInfoRow(
                                             "المدفوع:", paid.toStringAsFixed(1),
                                             valueColor: Colors.green),

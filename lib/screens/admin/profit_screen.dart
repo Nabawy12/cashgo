@@ -19,13 +19,30 @@ class ProfitReportScreen extends StatefulWidget {
 
 class _ProfitReportScreenState extends State<ProfitReportScreen> {
   final _money = NumberFormat.currency(locale: 'ar', symbol: 'EGP ');
+  final _searchController = TextEditingController();
   DateTime _from = DateTime.now();
   DateTime _to = DateTime.now();
   bool _loading = true;
   List<Map<String, dynamic>> _rows = [];
 
-  double get _totalProfit => _rows.fold<double>(
+  List<Map<String, dynamic>> get _filteredRows {
+    final query = _searchController.text.trim().toLowerCase();
+    if (query.isEmpty) return _rows;
+    return _rows.where((row) {
+      final name = (row['product_name'] ?? '').toString().toLowerCase();
+      final barcode = (row['barcode'] ?? '').toString().toLowerCase();
+      return name.contains(query) || barcode.contains(query);
+    }).toList();
+  }
+
+  double get _totalProfit => _filteredRows.fold<double>(
       0, (sum, row) => sum + ((row['profit'] as num?)?.toDouble() ?? 0));
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -88,13 +105,15 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
           pw.Table.fromTextArray(
             headers: const [
               'المنتج',
-              'الكمية',
+              'مباع',
+              'مرتجع',
+              'الصافي',
               'سعر البيع',
               'تكلفة الوحدة',
               'الإيراد',
               'الربح',
             ],
-            data: _rows.map((r) {
+            data: _filteredRows.map((r) {
               final unitsInCarton =
                   ((r['units_in_carton'] as num?)?.toDouble() ?? 1);
               final purchase = ((r['purchase_price'] as num?)?.toDouble() ?? 0);
@@ -102,6 +121,8 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
                   unitsInCarton > 0 ? purchase / unitsInCarton : purchase;
               return [
                 (r['product_name'] ?? '').toString(),
+                '${(r['gross_quantity_sold'] as num?)?.toInt() ?? ((r['quantity_sold'] as num?)?.toInt() ?? 0)}',
+                '${(r['returned_quantity'] as num?)?.toInt() ?? 0}',
                 '${(r['quantity_sold'] as num?)?.toInt() ?? 0}',
                 ((r['selling_price'] as num?)?.toDouble() ?? 0)
                     .toStringAsFixed(2),
@@ -154,7 +175,7 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
         actions: [
           IconButton(
             tooltip: 'تصدير PDF',
-            onPressed: _rows.isEmpty ? null : _exportPdf,
+            onPressed: _filteredRows.isEmpty ? null : _exportPdf,
             icon: Icon(Icons.picture_as_pdf,
                 color: Theme.of(context).iconTheme.color),
           ),
@@ -179,6 +200,34 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
                   ),
                 ],
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _searchController,
+                textDirection: TextDirection.rtl,
+                onChanged: (_) => setState(() {}),
+                style: TextStyle(color: AppColorsDark.mainTextDark),
+                decoration: InputDecoration(
+                  prefixIcon: Icon(Icons.search,
+                      color: Theme.of(context).iconTheme.color),
+                  suffixIcon: _searchController.text.isEmpty
+                      ? null
+                      : IconButton(
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() {});
+                          },
+                          icon: Icon(Icons.close,
+                              color: Theme.of(context).iconTheme.color),
+                        ),
+                  hintText: 'ابحث باسم المنتج أو الباركود',
+                  hintStyle: TextStyle(color: AppColorsDark.mainTextLight),
+                  filled: true,
+                  fillColor: AppColorsDark.bgCardColor,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
               const SizedBox(height: 16),
               Card(
                 color: AppColorsDark.bgCardColor,
@@ -196,21 +245,27 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
               Expanded(
                 child: _loading
                     ? const Center(child: CircularProgressIndicator())
-                    : _rows.isEmpty
+                    : _filteredRows.isEmpty
                         ? const EmptyStateCard(
                             icon: Icons.trending_up,
                             title: 'لا توجد مبيعات',
                             message:
-                                'غيّر الفترة الزمنية أو أضف مبيعات لعرض تقرير الأرباح.',
+                                'غيّر الفترة الزمنية أو ابحث باسم/باركود آخر.',
                           )
                         : ListView.separated(
-                            itemCount: _rows.length,
+                            itemCount: _filteredRows.length,
                             separatorBuilder: (_, __) =>
                                 const SizedBox(height: 8),
                             itemBuilder: (_, i) {
-                              final r = _rows[i];
-                              final qty =
+                              final r = _filteredRows[i];
+                              final netQty =
                                   (r['quantity_sold'] as num?)?.toInt() ?? 0;
+                              final grossQty =
+                                  (r['gross_quantity_sold'] as num?)?.toInt() ??
+                                      netQty;
+                              final returnedQty =
+                                  (r['returned_quantity'] as num?)?.toInt() ??
+                                      0;
                               final profit =
                                   (r['profit'] as num?)?.toDouble() ?? 0;
                               final revenue =
@@ -223,7 +278,7 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
                                       style: TextStyle(
                                           color: AppColorsDark.mainTextDark)),
                                   subtitle: Text(
-                                      'الكمية: $qty | الإيراد: ${_money.format(revenue)}',
+                                      'مباع: $grossQty | مرتجع: $returnedQty | الصافي: $netQty | الإيراد: ${_money.format(revenue)}',
                                       style: TextStyle(
                                           color: AppColorsDark.mainTextLight)),
                                   trailing: Text(_money.format(profit),

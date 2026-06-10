@@ -639,7 +639,7 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
                                                   _buildInfoRow("استلم:",
                                                       "${r['received_by'] ?? r['cashier_name'] ?? ''}"),
                                                   _buildInfoRow("كمية:",
-                                                      "${r['cartons'] ?? 0} كرتينات + ${r['units'] ?? 0} وحدات"),
+                                                      "${r['cartons'] ?? 0} كراتين + ${r['units'] ?? 0} وحدات"),
                                                   _buildInfoRow("المدفوع:",
                                                       paid.toStringAsFixed(2),
                                                       valueColor: Colors.green),

@@ -44,6 +44,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   String _paymentType = 'cash_or_credit'; // 'cash_or_credit' or 'wallet'
   bool _loading = false;
   bool _paidTouched = false;
+  int? _selectedProductId;
 
   @override
   void initState() {
@@ -141,6 +142,106 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     setState(() {});
   }
 
+  void _fillProductFields(Map<String, dynamic> product) {
+    _selectedProductId = (product['id'] as num?)?.toInt();
+    final name = (product['name'] ?? '').toString();
+    final unitsInCarton = (product['units_in_carton'] != null)
+        ? (int.tryParse(product['units_in_carton'].toString()) ?? 1)
+        : 1;
+    final totalUnits = (product['total_units'] != null)
+        ? (int.tryParse(product['total_units'].toString()) ?? 0)
+        : 0;
+
+    final purchasePrice = (product['purchase_price'] != null)
+        ? double.tryParse(product['purchase_price'].toString()) ?? 0.0
+        : 0.0;
+    final sellingPrice = (product['selling_price'] != null)
+        ? double.tryParse(product['selling_price'].toString()) ?? 0.0
+        : 0.0;
+
+    if (name.isNotEmpty) _nameCtrl.text = name;
+
+    _unitsInCartonCtrl.text =
+        unitsInCarton > 0 ? unitsInCarton.toString() : '1';
+    _existingUnitsCtrl.text = totalUnits.toString();
+
+    if (purchasePrice > 0) {
+      _purchasePricePerCartonCtrl.text = purchasePrice.toStringAsFixed(2);
+      if (unitsInCarton > 0) {
+        final unitPrice = purchasePrice / unitsInCarton;
+        _purchasePricePerUnitCtrl.text = unitPrice.toStringAsFixed(2);
+      } else {
+        _purchasePricePerUnitCtrl.text = '0.00';
+      }
+    } else {
+      _purchasePricePerCartonCtrl.clear();
+      _purchasePricePerUnitCtrl.clear();
+    }
+
+    if (sellingPrice > 0) {
+      _sellingPriceIfNewCtrl.text = sellingPrice.toStringAsFixed(2);
+    }
+  }
+
+  Future<Map<String, dynamic>?> _chooseProductDialog(
+    List<Map<String, dynamic>> products,
+  ) {
+    return showDialog<Map<String, dynamic>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: AppColorsDark.bgCardColor,
+          title: Text(
+            'اختر المنتج',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: AppColorsDark.mainTextDark),
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: products.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (_, index) {
+                final product = products[index];
+                final name = (product['name'] ?? '').toString();
+                final stock = (product['total_units'] as num?)?.toInt() ?? 0;
+                final purchase = (product['purchase_price'] as num?)
+                        ?.toDouble()
+                        .toStringAsFixed(2) ??
+                    '0.00';
+                return ListTile(
+                  title: Text(name,
+                      style: TextStyle(color: AppColorsDark.mainTextDark)),
+                  subtitle: Text(
+                    'المخزون: $stock | سعر الشراء: $purchase',
+                    style: TextStyle(color: AppColorsDark.mainTextLight),
+                  ),
+                  onTap: () => Navigator.pop(ctx, product),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(
+                'إلغاء',
+                style: TextStyle(
+                  color: Theme.of(ctx).brightness == Brightness.light
+                      ? Colors.black
+                      : Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// Lookup product from local SQLite by barcode and autofill form fields
   Future<void> _lookupBarcode() async {
     final barcode = _barcodeCtrl.text.trim();
@@ -151,45 +252,14 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
     setState(() => _loading = true);
     try {
-      final p = await DBHelper.instance.getProductByBarcode(barcode);
+      final matches = await DBHelper.instance.getProductsByBarcodeList(barcode);
+      final p = matches.length == 1
+          ? matches.first
+          : matches.length > 1
+              ? await _chooseProductDialog(matches)
+              : null;
       if (p != null) {
-        final name = (p['name'] ?? '').toString();
-        final unitsInCarton = (p['units_in_carton'] != null)
-            ? (int.tryParse(p['units_in_carton'].toString()) ?? 1)
-            : 1;
-        final totalUnits = (p['total_units'] != null)
-            ? (int.tryParse(p['total_units'].toString()) ?? 0)
-            : 0;
-
-        final purchasePrice = (p['purchase_price'] != null)
-            ? double.tryParse(p['purchase_price'].toString()) ?? 0.0
-            : 0.0;
-        final sellingPrice = (p['selling_price'] != null)
-            ? double.tryParse(p['selling_price'].toString()) ?? 0.0
-            : 0.0;
-
-        if (name.isNotEmpty) _nameCtrl.text = name;
-
-        _unitsInCartonCtrl.text =
-            unitsInCarton > 0 ? unitsInCarton.toString() : '1';
-        _existingUnitsCtrl.text = totalUnits.toString();
-
-        if (purchasePrice > 0) {
-          _purchasePricePerCartonCtrl.text = purchasePrice.toStringAsFixed(2);
-          if (unitsInCarton > 0) {
-            final unitPrice = purchasePrice / unitsInCarton;
-            _purchasePricePerUnitCtrl.text = unitPrice.toStringAsFixed(2);
-          } else {
-            _purchasePricePerUnitCtrl.text = '0.00';
-          }
-        } else {
-          _purchasePricePerCartonCtrl.clear();
-          _purchasePricePerUnitCtrl.clear();
-        }
-
-        if (sellingPrice > 0) {
-          _sellingPriceIfNewCtrl.text = sellingPrice.toStringAsFixed(2);
-        }
+        _fillProductFields(p);
 
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Directionality(
@@ -198,6 +268,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         _paidTouched = false;
         _updateComputedPaid();
       } else {
+        _selectedProductId = null;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Directionality(
                 textDirection: TextDirection.rtl,
@@ -294,6 +365,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
       final data = await DBHelper.instance.receiveFromSupplier(
         barcode: barcode,
         name: name,
+        productId: _selectedProductId,
         cartons: cartonsInput,
         units: unitsInput,
         purchasePricePerCarton: purchasePerCarton,
@@ -353,6 +425,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         _purchasePricePerUnitCtrl.clear();
         _sellingPriceIfNewCtrl.clear();
         _existingUnitsCtrl.text = '0';
+        _selectedProductId = null;
         // set paid to total after reset to be consistent with computed default
         _paidAmountCtrl.text = totalCostRes.toStringAsFixed(2);
         _paidTouched = false;

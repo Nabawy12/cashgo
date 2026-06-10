@@ -1601,6 +1601,7 @@ class DBHelper {
   Future<Map<String, dynamic>> receiveFromSupplier({
     String? barcode,
     String? name,
+    int? productId,
     required int cartons,
     required int units,
     double? purchasePricePerCarton,
@@ -1617,9 +1618,24 @@ class DBHelper {
     final n = (name ?? '').trim();
 
     Map<String, dynamic>? found;
-    if (b.isNotEmpty) {
+    if (productId != null && productId > 0) {
+      final res = await db.query(
+        'products',
+        where: 'id = ?',
+        whereArgs: [productId],
+        limit: 1,
+      );
+      if (res.isNotEmpty) found = Map<String, dynamic>.from(res.first);
+    }
+    if (found == null && b.isNotEmpty) {
       final res = await db.query('products',
-          where: 'barcode = ?', whereArgs: [b], limit: 1);
+          where: 'barcode = ?', whereArgs: [b], orderBy: 'id ASC');
+      if (res.length > 1) {
+        return {
+          'status': 'choose_product',
+          'message': 'يوجد أكثر من منتج بنفس الباركود. اختر المنتج أولاً.',
+        };
+      }
       if (res.isNotEmpty) found = Map<String, dynamic>.from(res.first);
     }
     if (found == null && n.isNotEmpty) {
@@ -3325,6 +3341,12 @@ class DBHelper {
         DateTime(to.year, to.month, to.day, 23, 59, 59).toIso8601String();
     final rows = await db.rawQuery(
       '''
+        WITH sale_subtotals AS (
+          SELECT sale_id,
+                 SUM(COALESCE(quantity,0) * COALESCE(price,0)) AS subtotal
+          FROM sale_items
+          GROUP BY sale_id
+        )
 	      SELECT
 	        p.id AS product_id,
 	        p.name AS product_name,
@@ -3332,21 +3354,46 @@ class DBHelper {
 	        COALESCE(p.purchase_price,0) AS purchase_price,
 	        COALESCE(p.selling_price,0) AS selling_price,
 	        COALESCE(p.units_in_carton,1) AS units_in_carton,
+	        SUM(COALESCE(si.quantity,0)) AS gross_quantity_sold,
+	        COALESCE(ret.returned_qty, 0) AS returned_quantity,
 	        SUM(COALESCE(si.quantity,0)) - COALESCE(ret.returned_qty, 0) AS quantity_sold,
-	        (SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0)) - COALESCE(ret.returned_revenue, 0)) AS revenue,
-	        (SUM((COALESCE(si.price,0) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) - COALESCE(ret.returned_profit, 0)) AS profit
+	        (SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0) *
+            CASE
+              WHEN COALESCE(ss.subtotal,0) > 0 THEN COALESCE(s.total,0) / ss.subtotal
+              ELSE 1
+            END
+          ) - COALESCE(ret.returned_revenue, 0)) AS revenue,
+	        (SUM(((COALESCE(si.price,0) *
+            CASE
+              WHEN COALESCE(ss.subtotal,0) > 0 THEN COALESCE(s.total,0) / ss.subtotal
+              ELSE 1
+            END
+          ) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) - COALESCE(ret.returned_profit, 0)) AS profit
 	      FROM sale_items si
 	      JOIN sales s ON s.id = si.sale_id
+        LEFT JOIN sale_subtotals ss ON ss.sale_id = si.sale_id
 	      JOIN products p ON p.id = si.product_id
 	      LEFT JOIN (
 	        SELECT
 	          sri.product_id,
 	          SUM(COALESCE(sri.qty, 0)) AS returned_qty,
-	          SUM(COALESCE(sri.qty, 0) * COALESCE(sri.price, 0)) AS returned_revenue,
-	          SUM(COALESCE(sri.qty, 0) * (COALESCE(sri.price, 0) - COALESCE(si2.purchase_price_per_unit, 0))) AS returned_profit
+	          SUM(COALESCE(sri.qty, 0) * COALESCE(sri.price, 0) *
+              CASE
+                WHEN COALESCE(ss2.subtotal,0) > 0 THEN COALESCE(s2.total,0) / ss2.subtotal
+                ELSE 1
+              END
+            ) AS returned_revenue,
+	          SUM(COALESCE(sri.qty, 0) * ((COALESCE(sri.price, 0) *
+              CASE
+                WHEN COALESCE(ss2.subtotal,0) > 0 THEN COALESCE(s2.total,0) / ss2.subtotal
+                ELSE 1
+              END
+            ) - COALESCE(si2.purchase_price_per_unit, 0))) AS returned_profit
 	        FROM sale_return_items sri
 	        JOIN sale_returns sr ON sr.id = sri.return_id
+          JOIN sales s2 ON s2.id = sr.sale_id
 	        JOIN sale_items si2 ON si2.sale_id = sr.sale_id AND si2.product_id = sri.product_id
+          LEFT JOIN sale_subtotals ss2 ON ss2.sale_id = sr.sale_id
 	        WHERE COALESCE(sri.is_replacement, 0) = 0
 	          AND datetime(sr.date) >= datetime(?)
 	          AND datetime(sr.date) <= datetime(?)
@@ -3461,10 +3508,22 @@ class DBHelper {
 
     final salesRows = await db.rawQuery(
       '''
+      WITH sale_subtotals AS (
+        SELECT sale_id,
+               SUM(COALESCE(quantity,0) * COALESCE(price,0)) AS subtotal
+        FROM sale_items
+        GROUP BY sale_id
+      )
       SELECT date(s.date) AS day,
-             SUM((COALESCE(si.price,0) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) AS sales_profit
+             SUM(((COALESCE(si.price,0) *
+               CASE
+                 WHEN COALESCE(ss.subtotal,0) > 0 THEN COALESCE(s.total,0) / ss.subtotal
+                 ELSE 1
+               END
+             ) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) AS sales_profit
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
+      LEFT JOIN sale_subtotals ss ON ss.sale_id = si.sale_id
       WHERE COALESCE(s.is_return,0) = 0
         AND datetime(s.date) >= datetime(?)
         AND datetime(s.date) <= datetime(?)
@@ -3475,11 +3534,24 @@ class DBHelper {
 
     final returnsRows = await db.rawQuery(
       '''
+      WITH sale_subtotals AS (
+        SELECT sale_id,
+               SUM(COALESCE(quantity,0) * COALESCE(price,0)) AS subtotal
+        FROM sale_items
+        GROUP BY sale_id
+      )
       SELECT date(sr.date) AS day,
-             SUM(COALESCE(sri.qty,0) * (COALESCE(sri.price,0) - COALESCE(si.purchase_price_per_unit,0))) AS returned_profit
+             SUM(COALESCE(sri.qty,0) * ((COALESCE(sri.price,0) *
+               CASE
+                 WHEN COALESCE(ss.subtotal,0) > 0 THEN COALESCE(s.total,0) / ss.subtotal
+                 ELSE 1
+               END
+             ) - COALESCE(si.purchase_price_per_unit,0))) AS returned_profit
       FROM sale_return_items sri
       JOIN sale_returns sr ON sr.id = sri.return_id
+      JOIN sales s ON s.id = sr.sale_id
       JOIN sale_items si ON si.sale_id = sr.sale_id AND si.product_id = sri.product_id
+      LEFT JOIN sale_subtotals ss ON ss.sale_id = sr.sale_id
       WHERE COALESCE(sri.is_replacement,0) = 0
         AND datetime(sr.date) >= datetime(?)
         AND datetime(sr.date) <= datetime(?)

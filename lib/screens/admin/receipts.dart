@@ -87,6 +87,8 @@ class _receiptsScreenState extends State<receiptsScreen> {
           'parent_invoice_id': s['return_of_sale_id'],
           'meta': {},
           'is_credit_flag': s['is_credit'],
+          'discount_type': s['discount_type'] ?? 'fixed',
+          'discount_value': s['discount_value'] ?? 0.0,
         };
       }).toList();
 
@@ -1410,6 +1412,37 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                               ),
                                                               const SizedBox(
                                                                   height: 12),
+                                                              if (discountAmount >
+                                                                  0) ...[
+                                                                Divider(
+                                                                    color: AppColorsDark
+                                                                        .mainColor),
+                                                                buildLabelValue(
+                                                                    'الإجمالي قبل الخصم',
+                                                                    originalTotalFromMeta
+                                                                        .toStringAsFixed(
+                                                                            2)),
+                                                                const SizedBox(
+                                                                    height: 10),
+                                                                buildLabelValue(
+                                                                  discountTypeUsed ==
+                                                                          'percent'
+                                                                      ? 'الخصم (${discountValueUsed.toStringAsFixed(2)}%)'
+                                                                      : 'الخصم مبلغ ثابت',
+                                                                  discountAmount
+                                                                      .toStringAsFixed(
+                                                                          2),
+                                                                ),
+                                                                const SizedBox(
+                                                                    height: 10),
+                                                                buildLabelValue(
+                                                                    'الإجمالي بعد الخصم',
+                                                                    effectiveTotalAfterDiscount
+                                                                        .toStringAsFixed(
+                                                                            2)),
+                                                                const SizedBox(
+                                                                    height: 12),
+                                                              ],
                                                               if (returnsById
                                                                   .isNotEmpty)
                                                                 Divider(

@@ -1020,8 +1020,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         _pickDoubleFromMap(raw, ['wallet_purchases', 'wallet_expenses']) ??
             (totalExpenses - cashExpenses).clamp(0.0, double.infinity);
     final totalReturns = returnsValue;
-    final netProfit = (totalSales - returnsValue) - totalExpenses;
-    final drawerBalance = cashSales - returnsValue - cashExpenses;
+    final netProfit = totalSales - totalExpenses;
+    final drawerBalance = totalSales - cashExpenses;
 
     String money(double value) => value.toStringAsFixed(2);
 
@@ -1092,7 +1092,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                   valueColor: Colors.blueAccent),
               buildRow('صافي المبيعات بالمحفظة', money(walletSales),
                   valueColor: Colors.blueAccent),
-              buildRow('إجمالي المبيعات', money(totalSales),
+              buildRow('إجمالي المبيعات', money(grossSales),
                   valueColor: Colors.blueAccent),
               const Divider(height: 12),
               buildRow('المشتريات (النقدي)', money(cashExpenses)),
