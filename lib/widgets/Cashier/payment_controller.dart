@@ -61,6 +61,7 @@ class _PaymentControlsState extends State<PaymentControls> {
         final paid = _parsePaid();
         final isSaving = widget.saving || savingButton != null;
         final canPayFully = paid >= widget.total && widget.total > 0;
+        final canSaveAsLater = widget.total > 0 && paid <= 0 && !isSaving;
         final remaining = (paid >= widget.total)
             ? (paid - widget.total)
             : (widget.total - paid);
@@ -135,7 +136,7 @@ class _PaymentControlsState extends State<PaymentControls> {
                   visible: Session.pay_credit,
                   child: CustomButton(
                     text: 'حفظ كآجل',
-                    onPressed: widget.total > 0 && !isSaving
+                    onPressed: canSaveAsLater
                         ? () => _runPaymentAction(
                               "delayed",
                               widget.onSaveAsLater,

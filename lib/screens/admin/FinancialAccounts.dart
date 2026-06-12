@@ -1006,6 +1006,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
             .clamp(0.0, double.infinity);
     final totalSales = (_pickDoubleFromMap(raw, ['total_sales']) ?? grossSales)
         .clamp(0.0, double.infinity);
+    final unpaidCreditTotal =
+        _pickDoubleFromMap(raw, ['unpaid_credit_total']) ?? 0.0;
     final walletSales = _pickDoubleFromMap(
             raw, ['wallet_sales_total', 'wallet_sales', 'sales_wallet']) ??
         (grossSales - cashSales).clamp(0.0, double.infinity);
@@ -1094,6 +1096,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                   valueColor: Colors.blueAccent),
               buildRow('إجمالي المبيعات', money(grossSales),
                   valueColor: Colors.blueAccent),
+              buildRow('فواتير آجلة غير مدفوعة', money(unpaidCreditTotal),
+                  valueColor: Colors.orangeAccent),
               const Divider(height: 12),
               buildRow('المشتريات (النقدي)', money(cashExpenses)),
               buildRow('المشتريات (المحفظة)', money(walletExpenses)),

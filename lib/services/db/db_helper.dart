@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.187');
+    _database = await _initDB('pos_system.db_v2.190');
     return _database!;
   }
 
@@ -361,6 +361,7 @@ class DBHelper {
         cash_sales REAL NOT NULL DEFAULT 0,
         gross_sales REAL NOT NULL DEFAULT 0,
         returns_delta REAL NOT NULL DEFAULT 0,
+        unpaid_credit_total REAL NOT NULL DEFAULT 0,
         total_expenses REAL NOT NULL DEFAULT 0,
         cash_expenses REAL NOT NULL DEFAULT 0,
         net_profit REAL NOT NULL DEFAULT 0,
@@ -387,6 +388,8 @@ class DBHelper {
         'ALTER TABLE close_shifts ADD COLUMN gross_sales REAL NOT NULL DEFAULT 0;');
     await addIfMissing('returns_delta',
         'ALTER TABLE close_shifts ADD COLUMN returns_delta REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('unpaid_credit_total',
+        'ALTER TABLE close_shifts ADD COLUMN unpaid_credit_total REAL NOT NULL DEFAULT 0;');
     await addIfMissing('total_expenses',
         'ALTER TABLE close_shifts ADD COLUMN total_expenses REAL NOT NULL DEFAULT 0;');
     await addIfMissing('cash_expenses',
@@ -2188,6 +2191,8 @@ class DBHelper {
     final total = (rows.first['total'] as num?)?.toDouble() ?? 0.0;
     final paid = paidAmount ?? total;
     final change = (paid >= total) ? (paid - total) : 0.0;
+    final effectivePaidAt = paidAt ?? DateTime.now();
+    final effectivePaidBy = (paidBy ?? '').trim();
     final updated = await db.update(
       'sales',
       {
@@ -2195,8 +2200,8 @@ class DBHelper {
         'paid_amount': paid,
         'change_amount': change,
         'payment_method': paymentMethod,
-        'credit_paid_by': paidBy,
-        'credit_paid_at': paidAt?.toIso8601String(),
+        'credit_paid_by': effectivePaidBy,
+        'credit_paid_at': effectivePaidAt.toIso8601String(),
       },
       where: 'id = ?',
       whereArgs: [saleId],
@@ -3025,7 +3030,8 @@ class DBHelper {
 
     final unpaidCreditRows = await db.rawQuery(
       '''
-      SELECT COUNT(*) AS excluded_unpaid_credit
+      SELECT COUNT(*) AS excluded_unpaid_credit,
+             SUM(COALESCE(total,0) - COALESCE(paid_amount,0)) AS unpaid_credit_total
       FROM sales
       WHERE TRIM(COALESCE(cashier_username,'')) = ?
         AND NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
@@ -3038,8 +3044,11 @@ class DBHelper {
     final excludedUnpaidCredit = unpaidCreditRows.isNotEmpty
         ? _numFromRow(unpaidCreditRows.first, 'excluded_unpaid_credit').toInt()
         : 0;
+    final unpaidCreditTotal = unpaidCreditRows.isNotEmpty
+        ? _numFromRow(unpaidCreditRows.first, 'unpaid_credit_total')
+        : 0.0;
     debugPrint(
-        '[CloseShiftSummary] cashier=${cashierName.trim()} excludedUnpaidCreditSales=$excludedUnpaidCredit from=$fromDateTime to=$toDateTime');
+        '[CloseShiftSummary] cashier=${cashierName.trim()} excludedUnpaidCreditSales=$excludedUnpaidCredit unpaidCreditTotal=$unpaidCreditTotal from=$fromDateTime to=$toDateTime');
 
     final salesRows = await db.rawQuery(
       '''
@@ -3118,6 +3127,7 @@ class DBHelper {
       'cash_sales': cashSales,
       'gross_sales': grossSales,
       'returns_delta': returnsDelta,
+      'unpaid_credit_total': unpaidCreditTotal,
       'cash_expenses': cashExpenses,
       'total_sales': totalSales,
       'total_expenses': totalExpenses,
@@ -3135,6 +3145,7 @@ class DBHelper {
     required double cashSales,
     required double grossSales,
     required double returnsDelta,
+    required double unpaidCreditTotal,
     required double totalExpenses,
     required double cashExpenses,
     required double netProfit,
@@ -3162,6 +3173,7 @@ class DBHelper {
         'cash_sales': cashSales,
         'gross_sales': grossSales,
         'returns_delta': returnsDelta,
+        'unpaid_credit_total': unpaidCreditTotal,
         'total_expenses': totalExpenses,
         'cash_expenses': cashExpenses,
         'net_profit': netProfit,
@@ -3473,6 +3485,20 @@ class DBHelper {
                  SUM(COALESCE(quantity,0) * COALESCE(price,0)) AS subtotal
           FROM sale_items
           GROUP BY sale_id
+        ),
+        eligible_sales AS (
+          SELECT *,
+                 CASE
+                   WHEN credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != ''
+                   THEN credit_paid_at
+                   ELSE date
+                 END AS profit_date
+          FROM sales
+          WHERE COALESCE(is_return,0) = 0
+            AND (
+              COALESCE(is_credit,0) = 0
+              OR (credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != '')
+            )
         )
 	      SELECT
 	        p.id AS product_id,
@@ -3497,7 +3523,7 @@ class DBHelper {
             END
           ) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) - COALESCE(ret.returned_profit, 0)) AS profit
 	      FROM sale_items si
-	      JOIN sales s ON s.id = si.sale_id
+	      JOIN eligible_sales s ON s.id = si.sale_id
         LEFT JOIN sale_subtotals ss ON ss.sale_id = si.sale_id
 	      JOIN products p ON p.id = si.product_id
 	      LEFT JOIN (
@@ -3518,7 +3544,7 @@ class DBHelper {
             ) - COALESCE(si2.purchase_price_per_unit, 0))) AS returned_profit
 	        FROM sale_return_items sri
 	        JOIN sale_returns sr ON sr.id = sri.return_id
-          JOIN sales s2 ON s2.id = sr.sale_id
+          JOIN eligible_sales s2 ON s2.id = sr.sale_id
 	        JOIN sale_items si2 ON si2.sale_id = sr.sale_id AND si2.product_id = sri.product_id
           LEFT JOIN sale_subtotals ss2 ON ss2.sale_id = sr.sale_id
 	        WHERE COALESCE(sri.is_replacement, 0) = 0
@@ -3526,9 +3552,8 @@ class DBHelper {
 	          AND datetime(sr.date) <= datetime(?)
 	        GROUP BY sri.product_id
 	      ) ret ON ret.product_id = p.id
-	      WHERE COALESCE(s.is_return,0) = 0
-	        AND datetime(s.date) >= datetime(?)
-	        AND datetime(s.date) <= datetime(?)
+	      WHERE datetime(s.profit_date) >= datetime(?)
+	        AND datetime(s.profit_date) <= datetime(?)
 	      GROUP BY p.id, p.name, p.barcode, p.purchase_price, p.selling_price, p.units_in_carton
 	      HAVING quantity_sold > 0
 	      ORDER BY profit DESC
@@ -3640,8 +3665,22 @@ class DBHelper {
                SUM(COALESCE(quantity,0) * COALESCE(price,0)) AS subtotal
         FROM sale_items
         GROUP BY sale_id
+      ),
+      eligible_sales AS (
+        SELECT *,
+               CASE
+                 WHEN credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != ''
+                 THEN credit_paid_at
+                 ELSE date
+               END AS profit_date
+        FROM sales
+        WHERE COALESCE(is_return,0) = 0
+          AND (
+            COALESCE(is_credit,0) = 0
+            OR (credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != '')
+          )
       )
-      SELECT date(s.date) AS day,
+      SELECT date(s.profit_date) AS day,
              SUM(((COALESCE(si.price,0) *
                CASE
                  WHEN COALESCE(ss.subtotal,0) > 0 THEN COALESCE(s.total,0) / ss.subtotal
@@ -3649,12 +3688,11 @@ class DBHelper {
                END
              ) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) AS sales_profit
       FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id
+      JOIN eligible_sales s ON s.id = si.sale_id
       LEFT JOIN sale_subtotals ss ON ss.sale_id = si.sale_id
-      WHERE COALESCE(s.is_return,0) = 0
-        AND datetime(s.date) >= datetime(?)
-        AND datetime(s.date) <= datetime(?)
-      GROUP BY date(s.date)
+      WHERE datetime(s.profit_date) >= datetime(?)
+        AND datetime(s.profit_date) <= datetime(?)
+      GROUP BY date(s.profit_date)
       ''',
       [fromStr, toStr],
     );
@@ -3666,6 +3704,20 @@ class DBHelper {
                SUM(COALESCE(quantity,0) * COALESCE(price,0)) AS subtotal
         FROM sale_items
         GROUP BY sale_id
+      ),
+      eligible_sales AS (
+        SELECT *,
+               CASE
+                 WHEN credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != ''
+                 THEN credit_paid_at
+                 ELSE date
+               END AS profit_date
+        FROM sales
+        WHERE COALESCE(is_return,0) = 0
+          AND (
+            COALESCE(is_credit,0) = 0
+            OR (credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != '')
+          )
       )
       SELECT date(sr.date) AS day,
              SUM(COALESCE(sri.qty,0) * ((COALESCE(sri.price,0) *
@@ -3676,7 +3728,7 @@ class DBHelper {
              ) - COALESCE(si.purchase_price_per_unit,0))) AS returned_profit
       FROM sale_return_items sri
       JOIN sale_returns sr ON sr.id = sri.return_id
-      JOIN sales s ON s.id = sr.sale_id
+      JOIN eligible_sales s ON s.id = sr.sale_id
       JOIN sale_items si ON si.sale_id = sr.sale_id AND si.product_id = sri.product_id
       LEFT JOIN sale_subtotals ss ON ss.sale_id = sr.sale_id
       WHERE COALESCE(sri.is_replacement,0) = 0
