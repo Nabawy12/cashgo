@@ -1141,8 +1141,9 @@ class _CashierScreenState extends State<CashierScreen> {
           }
           final balance =
               (foundCustomer?['loyalty_balance'] as num?)?.toDouble() ?? 0.0;
-          final applicableDiscount =
-              balance.clamp(0.0, invoiceTotal).toDouble();
+          final applicableDiscount = balance
+              .clamp(0.0, invoiceTotal < 50.0 ? invoiceTotal : 50.0)
+              .toDouble();
 
           Future<void> searchCustomer() async {
             final phone = phoneController.text.trim();
@@ -1268,6 +1269,8 @@ class _CashierScreenState extends State<CashierScreen> {
                                   (customer['loyalty_balance'] as num?)
                                           ?.toDouble() ??
                                       0.0;
+                              final suggestionAvailableDiscount =
+                                  suggestionBalance.clamp(0.0, 50.0).toDouble();
                               return ListTile(
                                 dense: true,
                                 leading: const Icon(Icons.person_outline),
@@ -1281,7 +1284,7 @@ class _CashierScreenState extends State<CashierScreen> {
                                   ),
                                 ),
                                 subtitle: Text(
-                                  'رصيد الخصم: ${suggestionBalance.toStringAsFixed(2)} جنيه',
+                                  'الخصم المتاح: ${suggestionAvailableDiscount.toStringAsFixed(2)} جنيه',
                                   style: TextStyle(
                                     color: Theme.of(ctx)
                                         .textTheme
@@ -1320,7 +1323,7 @@ class _CashierScreenState extends State<CashierScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'رصيد الخصم الحالي: ${balance.toStringAsFixed(2)} جنيه',
+                                'الخصم المتاح لهذه الفاتورة: ${applicableDiscount.toStringAsFixed(2)} جنيه',
                                 style: TextStyle(
                                   color: textColor,
                                   fontWeight: FontWeight.bold,
@@ -1337,7 +1340,7 @@ class _CashierScreenState extends State<CashierScreen> {
                                     style: TextStyle(color: textColor),
                                   ),
                                   subtitle: Text(
-                                    'عند الاستخدام سيصبح رصيد العميل 0',
+                                    'أقصى خصم للفاتورة الواحدة 50 جنيه، ويتم خصم المستخدم من رصيد العميل',
                                     style: TextStyle(
                                         color: Theme.of(ctx)
                                             .textTheme
@@ -1345,9 +1348,9 @@ class _CashierScreenState extends State<CashierScreen> {
                                             ?.color),
                                   ),
                                 ),
-                              if (balance < 50 && !useDiscount)
+                              if (!useDiscount)
                                 Text(
-                                  'في حالة عدم الاستخدام، يصل الرصيد بعد دفع الفاتورة إلى ${(balance + 5).clamp(0, 50).toStringAsFixed(2)} جنيه.',
+                                  'في حالة عدم الاستخدام، سيضاف 3% من قيمة الفاتورة المدفوعة إلى رصيد العميل.',
                                   style: TextStyle(
                                       color: Theme.of(ctx)
                                           .textTheme
@@ -2045,9 +2048,19 @@ class _CashierScreenState extends State<CashierScreen> {
       final customerPhone = (customer['phone'] ?? '').toString();
       final loyaltyBalance =
           (customer['loyalty_balance'] as num?)?.toDouble() ?? 0.0;
+      if (customerId != null) {
+        final todayInvoices = await DBHelper.instance
+            .getCustomerInvoiceCountForDate(customerId, DateTime.now());
+        if (todayInvoices >= 2) {
+          _showSnackSafe('هذا العميل وصل للحد الأقصى اليومي: فاتورتين فقط');
+          return;
+        }
+      }
       final useLoyaltyDiscount = customer['use_discount'] == true;
       final loyaltyDiscount = useLoyaltyDiscount
-          ? loyaltyBalance.clamp(0.0, totalBeforeLoyalty).toDouble()
+          ? loyaltyBalance
+              .clamp(0.0, totalBeforeLoyalty < 50.0 ? totalBeforeLoyalty : 50.0)
+              .toDouble()
           : 0.0;
       final total =
           (totalBeforeLoyalty - loyaltyDiscount).clamp(0.0, double.infinity);

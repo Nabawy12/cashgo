@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.197');
+    _database = await _initDB('pos_system.db_v2.203');
     return _database!;
   }
 
@@ -1168,6 +1168,29 @@ class DBHelper {
     return rows.map((row) => Map<String, dynamic>.from(row)).toList();
   }
 
+  Future<int> getCustomerInvoiceCountForDate(
+    int customerId,
+    DateTime date,
+  ) async {
+    final db = await instance.database;
+    await _ensureSaleLoyaltyColumns(db);
+    final day = DateTime(date.year, date.month, date.day)
+        .toIso8601String()
+        .split('T')
+        .first;
+    final rows = await db.rawQuery(
+      '''
+      SELECT COUNT(*) AS count
+      FROM sales
+      WHERE customer_id = ?
+        AND COALESCE(is_return,0) = 0
+        AND date(date) = ?
+      ''',
+      [customerId, day],
+    );
+    return rows.isNotEmpty ? (rows.first['count'] as num?)?.toInt() ?? 0 : 0;
+  }
+
   Future<Map<String, dynamic>> findOrCreateCustomer({
     required String phone,
     required String name,
@@ -1424,9 +1447,12 @@ class DBHelper {
                   0.0;
           final now = DateTime.now().toIso8601String();
           if (loyaltyDiscount > 0) {
+            final redeemed = loyaltyDiscount.clamp(0.0, 50.0).toDouble();
+            final newBalance =
+                (currentBalance - redeemed).clamp(0.0, double.infinity);
             await txn.update(
               'customers',
-              {'loyalty_balance': 0.0, 'updated_at': now},
+              {'loyalty_balance': newBalance, 'updated_at': now},
               where: 'id = ?',
               whereArgs: [customerId],
             );
@@ -1435,14 +1461,13 @@ class DBHelper {
               customerId: customerId,
               saleId: saleId,
               type: 'redeem',
-              amount: -currentBalance,
-              balanceAfter: 0.0,
+              amount: -redeemed,
+              balanceAfter: newBalance,
               note: 'استخدام رصيد الخصم في الفاتورة',
             );
           } else if (paymentMethod != 'credit') {
-            final reward = (50.0 - currentBalance).clamp(0.0, 5.0).toDouble();
-            final newBalance =
-                (currentBalance + reward).clamp(0.0, 50.0).toDouble();
+            final reward = (total * 0.03).clamp(0.0, double.infinity);
+            final newBalance = currentBalance + reward;
             if (reward > 0) {
               await txn.update(
                 'customers',
@@ -1463,7 +1488,7 @@ class DBHelper {
                 type: 'earn',
                 amount: reward,
                 balanceAfter: newBalance,
-                note: 'مكافأة فاتورة مدفوعة',
+                note: 'مكافأة 3% من فاتورة مدفوعة',
               );
             }
           }
@@ -1762,9 +1787,21 @@ class DBHelper {
           final currentBalance =
               (customerRows.first['loyalty_balance'] as num?)?.toDouble() ??
                   0.0;
-          final amountToRevoke = currentBalance.clamp(0.0, 5.0).toDouble();
+          final earnedRows = await txn.rawQuery(
+            '''
+            SELECT SUM(COALESCE(amount,0)) AS earned
+            FROM loyalty_transactions
+            WHERE sale_id = ? AND type = 'earn'
+            ''',
+            [saleId],
+          );
+          final earnedAmount = earnedRows.isNotEmpty
+              ? _numFromRow(earnedRows.first, 'earned')
+              : 0.0;
+          final amountToRevoke =
+              currentBalance.clamp(0.0, earnedAmount).toDouble();
           final newBalance =
-              (currentBalance - amountToRevoke).clamp(0.0, 50.0).toDouble();
+              (currentBalance - amountToRevoke).clamp(0.0, double.infinity);
           await txn.update(
             'customers',
             {
@@ -2567,10 +2604,9 @@ class DBHelper {
           final currentBalance =
               (customerRows.first['loyalty_balance'] as num?)?.toDouble() ??
                   0.0;
-          final reward = (50.0 - currentBalance).clamp(0.0, 5.0).toDouble();
+          final reward = (paid * 0.03).clamp(0.0, double.infinity);
           if (reward > 0) {
-            final newBalance =
-                (currentBalance + reward).clamp(0.0, 50.0).toDouble();
+            final newBalance = currentBalance + reward;
             await txn.update(
               'customers',
               {
@@ -2593,7 +2629,7 @@ class DBHelper {
               type: 'earn',
               amount: reward,
               balanceAfter: newBalance,
-              note: 'مكافأة دفع فاتورة آجلة',
+              note: 'مكافأة 3% عند دفع فاتورة آجلة',
             );
           }
         }

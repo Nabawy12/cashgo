@@ -49,80 +49,87 @@ class CartList extends StatelessWidget {
                   side: BorderSide(color: AppColorsDark.mainColor)),
               borderOnForeground: true,
               elevation: 5,
-              child: ListTile(
-                title: Padding(
-                  padding: const EdgeInsets.all(10.0),
-                  child: Text(
-                    "المنتج: ${item.product.name}",
-                    style: TextStyle(
-                        fontSize: 17,
-                        color: AppColorsDark.mainTextDark,
-                        fontWeight: FontWeight.w500),
-                  ),
-                ),
-                subtitle: Padding(
-                  padding:
-                      const EdgeInsets.only(bottom: 10, left: 10, right: 10),
-                  child: Text(
-                    'سعر الوحدة: ${item.product.sellingPrice.toStringAsFixed(2)} | المتاح: $available',
-                    style: TextStyle(
-                        fontSize: 15,
-                        color: AppColorsDark.mainTextLight,
-                        fontWeight: FontWeight.w400),
-                  ),
-                ),
-                trailing: SizedBox(
-                  width: 260,
-                  child:
-                      Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                    IconButton(
-                        onPressed: () => onChangeQty(pid, item.quantity - 1),
-                        icon: Icon(
-                          Icons.remove,
-                          color: Theme.of(context).iconTheme.color,
-                          size: 20,
-                        )),
-                    GestureDetector(
-                        onTap: () => onEditQty(pid),
-                        child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                    color: AppColorsDark.mainColor
-                                        .withOpacity(0.5))),
-                            child: Text(
-                              item.quantity.toString(),
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                  color: AppColorsDark.mainTextDark,
-                                  fontSize: 17),
-                            ))),
-                    IconButton(
-                      onPressed: () => onChangeQty(pid, item.quantity + 1),
-                      icon: Icon(
-                        Icons.add,
-                        color: Theme.of(context).iconTheme.color,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
                     Text(
-                      item.subtotal.toStringAsFixed(2),
+                      "المنتج: ${item.product.name}",
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                          fontSize: 15, color: AppColorsDark.mainTextDark),
+                          fontSize: 17,
+                          color: AppColorsDark.mainTextDark,
+                          fontWeight: FontWeight.w500),
                     ),
-                    IconButton(
-                      tooltip: "ازاله المننج",
-                      onPressed: () => onRemove(pid),
-                      icon: Icon(
-                        Icons.delete_forever,
-                        size: 20,
-                        color: Colors.red.withOpacity(0.8),
-                      ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'سعر الوحدة: ${item.product.sellingPrice.toStringAsFixed(2)} | المتاح: $available',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 15,
+                          color: AppColorsDark.mainTextLight,
+                          fontWeight: FontWeight.w400),
                     ),
-                  ]),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      alignment: WrapAlignment.end,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        IconButton(
+                            onPressed: () =>
+                                onChangeQty(pid, item.quantity - 1),
+                            icon: Icon(
+                              Icons.remove,
+                              color: Theme.of(context).iconTheme.color,
+                              size: 20,
+                            )),
+                        GestureDetector(
+                            onTap: () => onEditQty(pid),
+                            child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                        color: AppColorsDark.mainColor
+                                            .withOpacity(0.5))),
+                                child: Text(
+                                  item.quantity.toString(),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                      color: AppColorsDark.mainTextDark,
+                                      fontSize: 17),
+                                ))),
+                        IconButton(
+                          onPressed: () => onChangeQty(pid, item.quantity + 1),
+                          icon: Icon(
+                            Icons.add,
+                            color: Theme.of(context).iconTheme.color,
+                            size: 20,
+                          ),
+                        ),
+                        Text(
+                          item.subtotal.toStringAsFixed(2),
+                          style: TextStyle(
+                              fontSize: 15, color: AppColorsDark.mainTextDark),
+                        ),
+                        IconButton(
+                          tooltip: "ازاله المنتج",
+                          onPressed: () => onRemove(pid),
+                          icon: Icon(
+                            Icons.delete_forever,
+                            size: 20,
+                            color: Colors.red.withOpacity(0.8),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ),
