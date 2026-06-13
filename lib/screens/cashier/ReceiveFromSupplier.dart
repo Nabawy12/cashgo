@@ -21,10 +21,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
   final _barcodeCtrl = TextEditingController(); // اختياري
   final _nameCtrl = TextEditingController();
-  final _cartonsCtrl = TextEditingController(text: '0');
   final _unitsCtrl = TextEditingController(text: '0');
-  final _unitsInCartonCtrl = TextEditingController(text: '1');
-  final _purchasePricePerCartonCtrl = TextEditingController();
   final _purchasePricePerUnitCtrl = TextEditingController();
   final _sellingPriceIfNewCtrl = TextEditingController();
   final _paidAmountCtrl = TextEditingController();
@@ -33,10 +30,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   // Focus nodes
   final FocusNode _barcodeFocusNode = FocusNode();
   final FocusNode _nameFocusNode = FocusNode();
-  final FocusNode _cartonsFocusNode = FocusNode();
   final FocusNode _unitsFocusNode = FocusNode();
-  final FocusNode _unitsInCartonFocusNode = FocusNode();
-  final FocusNode _purchaseCartonFocusNode = FocusNode();
   final FocusNode _purchaseUnitFocusNode = FocusNode();
   final FocusNode _sellingFocusNode = FocusNode();
   final FocusNode _paidFocusNode = FocusNode();
@@ -58,10 +52,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   void dispose() {
     _barcodeCtrl.dispose();
     _nameCtrl.dispose();
-    _cartonsCtrl.dispose();
     _unitsCtrl.dispose();
-    _unitsInCartonCtrl.dispose();
-    _purchasePricePerCartonCtrl.dispose();
     _purchasePricePerUnitCtrl.dispose();
     _sellingPriceIfNewCtrl.dispose();
     _paidAmountCtrl.dispose();
@@ -69,10 +60,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
     _barcodeFocusNode.dispose();
     _nameFocusNode.dispose();
-    _cartonsFocusNode.dispose();
     _unitsFocusNode.dispose();
-    _unitsInCartonFocusNode.dispose();
-    _purchaseCartonFocusNode.dispose();
     _purchaseUnitFocusNode.dispose();
     _sellingFocusNode.dispose();
     _paidFocusNode.dispose();
@@ -91,47 +79,12 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
   }
 
   double _computeTotalCost() {
-    final cartons = _parseInt(_cartonsCtrl.text);
     final units = _parseInt(_unitsCtrl.text);
-    final unitsInCarton = _parseInt(_unitsInCartonCtrl.text).clamp(1, 1000000);
-
-    final rawCartonText = _purchasePricePerCartonCtrl.text.trim();
     final rawUnitText = _purchasePricePerUnitCtrl.text.trim();
-
-    final purchasePerCarton = rawCartonText.isEmpty
-        ? null
-        : double.tryParse(rawCartonText.replaceAll(',', ''));
-
-    double? purchasePerUnit = rawUnitText.isEmpty
+    final purchasePerUnit = rawUnitText.isEmpty
         ? null
         : double.tryParse(rawUnitText.replaceAll(',', ''));
-
-    if (purchasePerUnit != null &&
-        purchasePerUnit == 0.0 &&
-        purchasePerCarton != null) {
-      purchasePerUnit = null;
-    }
-
-    double cartonPrice = 0.0;
-    double unitPrice = 0.0;
-
-    if (purchasePerCarton != null) {
-      cartonPrice = purchasePerCarton;
-      unitPrice = (purchasePerUnit != null)
-          ? purchasePerUnit
-          : (unitsInCarton > 0 ? purchasePerCarton / unitsInCarton : 0.0);
-    } else {
-      if (purchasePerUnit != null) {
-        unitPrice = purchasePerUnit;
-        cartonPrice = purchasePerUnit * unitsInCarton;
-      } else {
-        cartonPrice = 0.0;
-        unitPrice = 0.0;
-      }
-    }
-
-    final total = cartons * cartonPrice + units * unitPrice;
-    return total;
+    return units * (purchasePerUnit ?? 0.0);
   }
 
   void _updateComputedPaid() {
@@ -161,20 +114,12 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
     if (name.isNotEmpty) _nameCtrl.text = name;
 
-    _unitsInCartonCtrl.text =
-        unitsInCarton > 0 ? unitsInCarton.toString() : '1';
     _existingUnitsCtrl.text = totalUnits.toString();
 
     if (purchasePrice > 0) {
-      _purchasePricePerCartonCtrl.text = purchasePrice.toStringAsFixed(2);
-      if (unitsInCarton > 0) {
-        final unitPrice = purchasePrice / unitsInCarton;
-        _purchasePricePerUnitCtrl.text = unitPrice.toStringAsFixed(2);
-      } else {
-        _purchasePricePerUnitCtrl.text = '0.00';
-      }
+      final unitPrice = purchasePrice / (unitsInCarton > 0 ? unitsInCarton : 1);
+      _purchasePricePerUnitCtrl.text = unitPrice.toStringAsFixed(2);
     } else {
-      _purchasePricePerCartonCtrl.clear();
       _purchasePricePerUnitCtrl.clear();
     }
 
@@ -290,13 +235,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
     final barcode = _barcodeCtrl.text.trim();
     final name = _nameCtrl.text.trim();
-    final cartonsInput = int.tryParse(_cartonsCtrl.text) ?? 0;
     final unitsInput = int.tryParse(_unitsCtrl.text) ?? 0;
-    final unitsInCartonInput = int.tryParse(_unitsInCartonCtrl.text) ?? 1;
-
-    double? purchasePerCarton = _purchasePricePerCartonCtrl.text.trim().isEmpty
-        ? null
-        : double.tryParse(_purchasePricePerCartonCtrl.text.replaceAll(',', ''));
     double? purchasePerUnit = _purchasePricePerUnitCtrl.text.trim().isEmpty
         ? null
         : double.tryParse(_purchasePricePerUnitCtrl.text.replaceAll(',', ''));
@@ -308,49 +247,8 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
     final rawPaid =
         double.tryParse(_paidAmountCtrl.text.replaceAll(',', '')) ?? 0.0;
 
-    if (purchasePerUnit != null &&
-        purchasePerUnit == 0.0 &&
-        purchasePerCarton != null) {
-      purchasePerUnit = null;
-    }
-
-    double computeTotalFromValues({
-      required int cartons,
-      required int units,
-      required int unitsInCarton,
-      double? purchaseCarton,
-      double? purchaseUnit,
-    }) {
-      final uic = unitsInCarton.clamp(1, 1000000);
-      double cartonPrice = 0.0;
-      double unitPrice = 0.0;
-
-      if (purchaseCarton != null) {
-        cartonPrice = purchaseCarton;
-        unitPrice = (purchaseUnit != null)
-            ? purchaseUnit
-            : (uic > 0 ? purchaseCarton / uic : 0.0);
-      } else {
-        if (purchaseUnit != null) {
-          unitPrice = purchaseUnit;
-          cartonPrice = purchaseUnit * uic;
-        } else {
-          cartonPrice = 0.0;
-          unitPrice = 0.0;
-        }
-      }
-
-      return cartons * cartonPrice + units * unitPrice;
-    }
-
     try {
-      final totalCost = computeTotalFromValues(
-        cartons: cartonsInput,
-        units: unitsInput,
-        unitsInCarton: unitsInCartonInput,
-        purchaseCarton: purchasePerCarton,
-        purchaseUnit: purchasePerUnit,
-      );
+      final totalCost = unitsInput * (purchasePerUnit ?? 0.0);
 
       double paid = rawPaid;
       if (paid < 0) paid = 0.0;
@@ -366,12 +264,12 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
         barcode: barcode,
         name: name,
         productId: _selectedProductId,
-        cartons: cartonsInput,
+        cartons: 0,
         units: unitsInput,
-        purchasePricePerCarton: purchasePerCarton,
+        purchasePricePerCarton: null,
         purchasePricePerUnit: purchasePerUnit,
         sellingPricePerUnitIfNew: sellingIfNew,
-        unitsInCartonIfNew: unitsInCartonInput,
+        unitsInCartonIfNew: 1,
         receivedBy: Session.currentUsername ?? 'unknown',
         paymentType: paymentTypeToSave,
         paidAmount: paid,
@@ -418,10 +316,7 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
 
         // reset form
         _formKey.currentState!.reset();
-        _cartonsCtrl.text = '0';
         _unitsCtrl.text = '0';
-        _unitsInCartonCtrl.text = '1';
-        _purchasePricePerCartonCtrl.clear();
         _purchasePricePerUnitCtrl.clear();
         _sellingPriceIfNewCtrl.clear();
         _existingUnitsCtrl.text = '0';
@@ -519,25 +414,25 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                           return 'اسم المنتج مطلوب';
                         return null;
                       },
-                      onFieldSubmitted: (_) => FocusScope.of(context)
-                          .requestFocus(_cartonsFocusNode),
+                      // onFieldSubmitted: (_) => FocusScope.of(context)
+                      //     .requestFocus(_cartonsFocusNode),
                     ),
                     const SizedBox(height: 10),
                     Row(
                       children: [
-                        Expanded(
-                          child: CustomFormField(
-                            controller: _cartonsCtrl,
-                            label: true,
-                            hint: 'عدد الكراتين',
-                            focusNode: _cartonsFocusNode,
-                            textInputAction: TextInputAction.next,
-                            keyboardType: TextInputType.number,
-                            onChanged: (_) => _updateComputedPaid(),
-                            onFieldSubmitted: (_) => FocusScope.of(context)
-                                .requestFocus(_unitsFocusNode),
-                          ),
-                        ),
+                        // Expanded(
+                        //   child: CustomFormField(
+                        //     controller: _cartonsCtrl,
+                        //     label: true,
+                        //     hint: 'عدد الكراتين',
+                        //     focusNode: _cartonsFocusNode,
+                        //     textInputAction: TextInputAction.next,
+                        //     keyboardType: TextInputType.number,
+                        //     onChanged: (_) => _updateComputedPaid(),
+                        //     onFieldSubmitted: (_) => FocusScope.of(context)
+                        //         .requestFocus(_unitsFocusNode),
+                        //   ),
+                        // ),
                         const SizedBox(width: 10),
                         Expanded(
                           child: CustomFormField(
@@ -548,8 +443,8 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                             focusNode: _unitsFocusNode,
                             textInputAction: TextInputAction.next,
                             onChanged: (_) => _updateComputedPaid(),
-                            onFieldSubmitted: (_) => FocusScope.of(context)
-                                .requestFocus(_unitsInCartonFocusNode),
+                            // onFieldSubmitted: (_) => FocusScope.of(context)
+                            //     .requestFocus(_unitsInCartonFocusNode),
                           ),
                         ),
                       ],
@@ -557,34 +452,34 @@ class _ReceiveFromSupplierScreenState extends State<ReceiveFromSupplierScreen> {
                     const SizedBox(height: 10),
                     Row(
                       children: [
-                        Expanded(
-                          child: CustomFormField(
-                            controller: _unitsInCartonCtrl,
-                            label: true,
-                            keyboardType: TextInputType.number,
-                            hint: 'وحدات في الكرتونة',
-                            focusNode: _unitsInCartonFocusNode,
-                            textInputAction: TextInputAction.next,
-                            onChanged: (_) => _updateComputedPaid(),
-                            onFieldSubmitted: (_) => FocusScope.of(context)
-                                .requestFocus(_purchaseCartonFocusNode),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: CustomFormField(
-                            controller: _purchasePricePerCartonCtrl,
-                            label: true,
-                            keyboardType:
-                                TextInputType.numberWithOptions(decimal: true),
-                            hint: 'سعر شراء للكرتونة',
-                            focusNode: _purchaseCartonFocusNode,
-                            textInputAction: TextInputAction.next,
-                            onChanged: (_) => _updateComputedPaid(),
-                            onFieldSubmitted: (_) => FocusScope.of(context)
-                                .requestFocus(_purchaseUnitFocusNode),
-                          ),
-                        ),
+                        // Expanded(
+                        //   child: CustomFormField(
+                        //     // controller: _unitsInCartonCtrl,
+                        //     label: true,
+                        //     keyboardType: TextInputType.number,
+                        //     hint: 'وحدات في الكرتونة',
+                        //     // focusNode: _unitsInCartonFocusNode,
+                        //     textInputAction: TextInputAction.next,
+                        //     onChanged: (_) => _updateComputedPaid(),
+                        //     // onFieldSubmitted: (_) => FocusScope.of(context)
+                        //     //     .requestFocus(_purchaseCartonFocusNode),
+                        //   ),
+                        // ),
+                        // const SizedBox(width: 10),
+                        // Expanded(
+                        //   child: CustomFormField(
+                        //     // controller: _purchasePricePerCartonCtrl,
+                        //     label: true,
+                        //     keyboardType:
+                        //         TextInputType.numberWithOptions(decimal: true),
+                        //     hint: 'سعر شراء للكرتونة',
+                        //     focusNode: _purchaseCartonFocusNode,
+                        //     textInputAction: TextInputAction.next,
+                        //     onChanged: (_) => _updateComputedPaid(),
+                        //     onFieldSubmitted: (_) => FocusScope.of(context)
+                        //         .requestFocus(_purchaseUnitFocusNode),
+                        //   ),
+                        // ),
                       ],
                     ),
                     const SizedBox(height: 10),

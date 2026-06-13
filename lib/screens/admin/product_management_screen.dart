@@ -280,14 +280,8 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                     style: TextStyle(color: _dialogTextColor(ctx))),
                 Text('السعر: ${p['selling_price']}',
                     style: TextStyle(color: _dialogTextColor(ctx))),
-                Text('الكرتون: ${p['quantity']}',
-                    style: TextStyle(color: _dialogTextColor(ctx))),
-                Text('الوحدات في الكرتونة: ${p['units_in_carton']}',
-                    style: TextStyle(color: _dialogTextColor(ctx))),
-                Text('الوحدات المتبقية: ${p['units_remainder'] ?? 0}',
-                    style: TextStyle(color: _dialogTextColor(ctx))),
                 Text(
-                  'إجمالي الوحدات: ${p['total_units'] ?? ((p['quantity'] as num? ?? 0) * (p['units_in_carton'] as num? ?? 0) + (p['units_remainder'] ?? 0))}',
+                  'الكمية بالوحدة: ${p['total_units'] ?? ((p['quantity'] as num? ?? 0) * (p['units_in_carton'] as num? ?? 1) + (p['units_remainder'] ?? 0))}',
                   style: TextStyle(color: _dialogTextColor(ctx)),
                 ),
               ],
@@ -616,11 +610,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                               color: AppColorsDark
                                                                   .mainTextDark))),
                                                   DataColumn(
-                                                      label: Text('كرتون',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
                                                       label: Text('الوحدات',
                                                           style: TextStyle(
                                                               color: AppColorsDark
@@ -654,18 +643,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                               (p['units_remainder'] ??
                                                                   0))) as num)
                                                       .toInt();
-                                                  final cartons =
-                                                      (p['quantity'] as num? ??
-                                                              0)
-                                                          .toInt();
-                                                  final unitsInCarton =
-                                                      (p['units_in_carton']
-                                                                  as num? ??
-                                                              0)
-                                                          .toInt();
-                                                  final remainder =
-                                                      (p['units_remainder'] ??
-                                                          0) as int;
                                                   final lowStock =
                                                       totalUnits <= 5;
                                                   final isProfitMarked = ((p[
@@ -678,15 +655,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                                   '') ??
                                                           0) ==
                                                       1;
-                                                  String stockText;
-                                                  if (unitsInCarton > 0) {
-                                                    stockText =
-                                                        '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
-                                                  } else {
-                                                    stockText =
-                                                        '$totalUnits قطعة';
-                                                  }
-
                                                   return DataRow(
                                                     cells: [
                                                       DataCell(Text(
@@ -736,17 +704,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                           style: TextStyle(
                                                               color: AppColorsDark
                                                                   .mainTextDark))),
-                                                      DataCell(
-                                                        Text(
-                                                          "$cartons",
-                                                          style: TextStyle(
-                                                            color: lowStock
-                                                                ? Colors.red
-                                                                : AppColorsDark
-                                                                    .mainTextDark,
-                                                          ),
-                                                        ),
-                                                      ),
                                                       DataCell(
                                                         Text(
                                                           "$totalUnits",
@@ -1025,22 +982,15 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
   final nameController = TextEditingController();
   final purchaseController = TextEditingController();
   final sellingController = TextEditingController();
-  final unitsInCartonController = TextEditingController();
-  final qtyController = TextEditingController(); // عدد الكراتين
-  final unitsRemainderController =
-      TextEditingController(); // محجوز داخلياً (لن يدخل المستخدمه يدوياً)
+  final qtyController = TextEditingController(); // عدد الوحدات
   final productionDateController = TextEditingController();
   final expiryDateController = TextEditingController();
-  final externalUnitsController = TextEditingController();
 
   final barcodeFocusNode = FocusNode();
   final nameProductFocusNode = FocusNode();
   final paidPriceFocusNode = FocusNode();
   final salePriceFocusNode = FocusNode();
-  final unisInCartonFocusNode = FocusNode();
   final quantityFocusNode = FocusNode();
-  final externalUnitsFocusNode = FocusNode(); // focus للحقول الجديدة
-  final unitsRemainderFocusNode = FocusNode();
   final productionDateFocusNode = FocusNode();
   final expiryDateFocusNode = FocusNode();
 
@@ -1067,18 +1017,14 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
     sellingController.text = widget.existing != null
         ? (widget.existing!['selling_price']?.toString() ?? '')
         : '';
-    unitsInCartonController.text = widget.existing != null
-        ? (widget.existing!['units_in_carton']?.toString() ?? '')
-        : '';
     qtyController.text = widget.existing != null
-        ? (widget.existing!['quantity']?.toString() ?? '')
+        ? (((widget.existing!['total_units'] ??
+                    ((widget.existing!['quantity'] as num? ?? 0) *
+                            (widget.existing!['units_in_carton'] as num? ?? 1) +
+                        (widget.existing!['units_remainder'] ?? 0))) as num)
+                .toInt())
+            .toString()
         : '';
-    externalUnitsController.text = widget.existing != null
-        ? (widget.existing!['units_remainder']?.toString() ?? '0')
-        : '0';
-    unitsRemainderController.text = widget.existing != null
-        ? (widget.existing!['units_remainder']?.toString() ?? '0')
-        : '0';
     productionDateController.text = widget.existing?['production_date'] ?? '';
     expiryDateController.text = widget.existing?['expiry_date'] ?? '';
   }
@@ -1086,19 +1032,8 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
   Future<void> save() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final unitsInCarton =
-        int.tryParse(unitsInCartonController.text.trim()) ?? 0;
-    final cartons = int.tryParse(qtyController.text.trim()) ?? 0;
-    final external = int.tryParse(externalUnitsController.text.trim()) ?? 0;
-
-    int finalCartons = cartons;
-    int remainder = 0;
-    if (unitsInCarton > 0) {
-      finalCartons += external ~/ unitsInCarton;
-      remainder = external % unitsInCarton;
-    } else {
-      remainder = external;
-    }
+    const unitsInCarton = 1;
+    final totalUnits = int.tryParse(qtyController.text.trim()) ?? 0;
 
     final prod = {
       'id': isEdit ? widget.existing!['id'] : null,
@@ -1107,8 +1042,8 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
       'purchase_price': double.tryParse(purchaseController.text.trim()) ?? 0.0,
       'selling_price': double.tryParse(sellingController.text.trim()) ?? 0.0,
       'units_in_carton': unitsInCarton,
-      'quantity': finalCartons,
-      'units_remainder': remainder,
+      'quantity': totalUnits,
+      'units_remainder': 0,
       'production_date': productionDateController.text.trim(),
       'expiry_date': expiryDateController.text.trim(),
       'profit_marked': isEdit ? (widget.existing!['profit_marked'] ?? 0) : 0,
@@ -1195,7 +1130,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                 CustomFormField(
                   controller: purchaseController,
                   focusNode: paidPriceFocusNode,
-                  hint: 'سعر شراء الجمله',
+                  hint: 'سعر شراء الوحدة',
                   validator: (v) =>
                       (v?.trim().isEmpty ?? true) ? 'ادخل الاسم' : null,
                   keyboardType:
@@ -1212,16 +1147,6 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   onFieldSubmitted: (_) {
-                    FocusScope.of(context).requestFocus(unisInCartonFocusNode);
-                  },
-                ),
-                const SizedBox(height: 10),
-                CustomFormField(
-                  controller: unitsInCartonController,
-                  focusNode: unisInCartonFocusNode,
-                  hint: 'كام قطعه في الكرتونه',
-                  keyboardType: TextInputType.number,
-                  onFieldSubmitted: (_) {
                     FocusScope.of(context).requestFocus(quantityFocusNode);
                   },
                 ),
@@ -1229,17 +1154,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                 CustomFormField(
                   controller: qtyController,
                   focusNode: quantityFocusNode,
-                  hint: 'كام كرتونه عندك',
-                  keyboardType: TextInputType.number,
-                  onFieldSubmitted: (_) {
-                    FocusScope.of(context).requestFocus(externalUnitsFocusNode);
-                  },
-                ),
-                const SizedBox(height: 10),
-                CustomFormField(
-                  controller: externalUnitsController,
-                  focusNode: externalUnitsFocusNode,
-                  hint: 'وحدات خارج الكراتين (مثلاً 10)',
+                  hint: 'الكمية بالوحدة',
                   keyboardType: TextInputType.number,
                   onFieldSubmitted: (_) {
                     FocusScope.of(context)
