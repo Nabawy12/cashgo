@@ -33,6 +33,7 @@ class StockReportScreen extends StatefulWidget {
 class _StockReportScreenState extends State<StockReportScreen> {
   final _money = NumberFormat.currency(locale: 'ar', symbol: 'EGP ');
   bool _loading = true;
+  bool _markedOnly = false;
   List<Map<String, dynamic>> _rows = [];
 
   double get _inventoryValue => _rows.fold<double>(
@@ -49,7 +50,8 @@ class _StockReportScreenState extends State<StockReportScreen> {
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final rows = await DBHelper.instance.getStockReport();
+      final rows =
+          await DBHelper.instance.getStockReport(markedOnly: _markedOnly);
       if (mounted) setState(() => _rows = rows);
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -79,7 +81,10 @@ class _StockReportScreenState extends State<StockReportScreen> {
         theme: pw.ThemeData.withFont(base: font, bold: font),
         textDirection: pw.TextDirection.rtl,
         build: (_) => [
-          pw.Text('تقرير المخزون',
+          pw.Text(
+              _markedOnly
+                  ? 'تقرير مخزون المنتجات التي تم تعليمها'
+                  : 'تقرير المخزون',
               style:
                   pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
           pw.SizedBox(height: 8),
@@ -158,6 +163,33 @@ class _StockReportScreenState extends State<StockReportScreen> {
           padding: const EdgeInsets.all(16),
           child: Column(
             children: [
+              Align(
+                alignment: Alignment.centerRight,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    setState(() => _markedOnly = !_markedOnly);
+                    await _load();
+                  },
+                  icon: Icon(
+                    _markedOnly
+                        ? Icons.check_box
+                        : Icons.check_box_outline_blank,
+                    color: Theme.of(context).iconTheme.color,
+                  ),
+                  label: Text(
+                    'المنتجات التي تم تعليمها',
+                    style: TextStyle(color: AppColorsDark.mainTextDark),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(
+                      color: _markedOnly
+                          ? AppColorsDark.mainColor
+                          : AppColorsDark.strokColor,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
               Card(
                 color: AppColorsDark.bgCardColor,
                 child: ListTile(

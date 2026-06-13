@@ -3854,8 +3854,11 @@ class DBHelper {
     return out;
   }
 
-  Future<List<Map<String, dynamic>>> getStockReport() async {
+  Future<List<Map<String, dynamic>>> getStockReport({
+    bool markedOnly = false,
+  }) async {
     final db = await database;
+    await _ensureProductProfitMarkedColumn(db);
     final rows = await db.rawQuery(
       '''
       SELECT
@@ -3874,8 +3877,10 @@ class DBHelper {
           END
         ) AS inventory_value
       FROM products
+      WHERE (? = 0 OR COALESCE(profit_marked,0) = 1)
       ORDER BY name COLLATE NOCASE ASC
       ''',
+      [markedOnly ? 1 : 0],
     );
     return rows.map((r) => Map<String, dynamic>.from(r)).toList();
   }
