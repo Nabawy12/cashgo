@@ -89,6 +89,9 @@ class _receiptsScreenState extends State<receiptsScreen> {
           'is_credit_flag': s['is_credit'],
           'discount_type': s['discount_type'] ?? 'fixed',
           'discount_value': s['discount_value'] ?? 0.0,
+          'customer_name': s['customer_name'] ?? '',
+          'customer_phone': s['customer_phone'] ?? '',
+          'loyalty_discount': s['loyalty_discount'] ?? 0.0,
         };
       }).toList();
 
@@ -1028,6 +1031,26 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                               (info['effective_total']
                                                                       as double?) ??
                                                                   currentItemsTotal;
+                                                          final customerName =
+                                                              (s['customer_name'] ??
+                                                                      '')
+                                                                  .toString();
+                                                          final customerPhone =
+                                                              (s['customer_phone'] ??
+                                                                      '')
+                                                                  .toString();
+                                                          final loyaltyDiscount =
+                                                              (s['loyalty_discount']
+                                                                          as num?)
+                                                                      ?.toDouble() ??
+                                                                  0.0;
+                                                          final finalTotalAfterLoyalty =
+                                                              (effectiveTotalAfterDiscount -
+                                                                      loyaltyDiscount)
+                                                                  .clamp(
+                                                                      0.0,
+                                                                      double
+                                                                          .infinity);
 
                                                           String discountLabel =
                                                               '';
@@ -1412,6 +1435,33 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                               ),
                                                               const SizedBox(
                                                                   height: 12),
+                                                              if (customerPhone
+                                                                      .isNotEmpty ||
+                                                                  customerName
+                                                                      .isNotEmpty) ...[
+                                                                Divider(
+                                                                    color: AppColorsDark
+                                                                        .mainColor),
+                                                                buildLabelValue(
+                                                                    'رقم العميل',
+                                                                    customerPhone
+                                                                            .isEmpty
+                                                                        ? '-'
+                                                                        : customerPhone),
+                                                                if (customerName
+                                                                        .isNotEmpty &&
+                                                                    customerName !=
+                                                                        customerPhone) ...[
+                                                                  const SizedBox(
+                                                                      height:
+                                                                          10),
+                                                                  buildLabelValue(
+                                                                      'اسم العميل',
+                                                                      customerName),
+                                                                ],
+                                                                const SizedBox(
+                                                                    height: 10),
+                                                              ],
                                                               if (discountAmount >
                                                                   0) ...[
                                                                 Divider(
@@ -1440,6 +1490,28 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                                     effectiveTotalAfterDiscount
                                                                         .toStringAsFixed(
                                                                             2)),
+                                                                const SizedBox(
+                                                                    height: 12),
+                                                              ],
+                                                              if (loyaltyDiscount >
+                                                                  0) ...[
+                                                                Divider(
+                                                                    color: Colors
+                                                                        .orangeAccent),
+                                                                buildLabelValue(
+                                                                  'خصم رصيد العميل المستخدم',
+                                                                  loyaltyDiscount
+                                                                      .toStringAsFixed(
+                                                                          2),
+                                                                ),
+                                                                const SizedBox(
+                                                                    height: 10),
+                                                                buildLabelValue(
+                                                                  'الإجمالي بعد خصم العميل',
+                                                                  finalTotalAfterLoyalty
+                                                                      .toStringAsFixed(
+                                                                          2),
+                                                                ),
                                                                 const SizedBox(
                                                                     height: 12),
                                                               ],

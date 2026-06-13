@@ -28,6 +28,7 @@ Future<void> main() async {
       'macbook-air-with-zeyad.local',
       'desktop-463r073',
       'desktop-6p83kj5',
+      'desktop-a9k3m6m'
     ];
     isAllowed = allowedHostnames.contains(hostname);
   } catch (_) {

@@ -12,6 +12,7 @@ import 'AdminCreditPurchases.dart';
 import 'AdminPaidPurchases.dart';
 import 'FinancialAccounts.dart';
 import 'Settings.dart';
+import 'customers_screen.dart';
 import 'shop_profit_screen.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
@@ -201,7 +202,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   ),
                 ],
               ),
-
               const SizedBox(height: 16),
               Row(
                 children: [
@@ -244,8 +244,21 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       ),
                     ),
                   ),
+                  Expanded(
+                    child: DashboardWidget(
+                      title: 'العملاء',
+                      image: 'assets/icons/products.svg',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const CustomersScreen()),
+                      ),
+                    ),
+                  ),
+
                 ],
               ),
+              const SizedBox(height: 16),
             ],
           ),
         ),

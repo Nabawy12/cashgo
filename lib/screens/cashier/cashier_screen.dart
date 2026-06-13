@@ -1112,48 +1112,306 @@ class _CashierScreenState extends State<CashierScreen> {
     if (res != null) _changeQuantity(productId, res);
   }
 
-  // دالة جديدة تطلب اسم العميل عند حفظ فاتورة آجل
-  Future<String?> _askForCustomerName() async {
-    final controller = TextEditingController();
-    final res = await showDialog<String?>(
+  Future<Map<String, dynamic>?> _askForCustomer(double invoiceTotal) async {
+    final phoneController = TextEditingController();
+    final nameController = TextEditingController();
+    final phoneFocusNode = FocusNode();
+    Map<String, dynamic>? foundCustomer;
+    List<Map<String, dynamic>> suggestions = [];
+    bool searching = false;
+    bool useDiscount = false;
+    String? errorText;
+    bool requestedPhoneFocus = false;
+
+    final result = await showDialog<Map<String, dynamic>?>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => SizedBox(
-        width: 250,
-        height: 50,
-        child: AlertDialog(
-          backgroundColor: AppColorsDark.bgCardColor,
-          title: Center(
-              child: Text('اسم العميل للفاتورة الآجلة',
-                  style: TextStyle(color: AppColorsDark.mainTextDark))),
-          content: CustomFormField(
-            controller: controller,
-            hint: 'اكتب اسم العميل أو الجهة',
-          ),
-          actions: [
-            TextButton(
-              style:
-                  TextButton.styleFrom(backgroundColor: AppColorsDark.bgColor),
-              onPressed: () => Navigator.of(ctx).pop(null),
-              child: Text(
-                'إلغاء',
-                style: TextStyle(
-                  color: Theme.of(context).brightness == Brightness.light
-                      ? Colors.black
-                      : Colors.white,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          if (!requestedPhoneFocus) {
+            requestedPhoneFocus = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!phoneFocusNode.canRequestFocus) return;
+              phoneFocusNode.requestFocus();
+              phoneController.selection = TextSelection(
+                baseOffset: 0,
+                extentOffset: phoneController.text.length,
+              );
+            });
+          }
+          final balance =
+              (foundCustomer?['loyalty_balance'] as num?)?.toDouble() ?? 0.0;
+          final applicableDiscount =
+              balance.clamp(0.0, invoiceTotal).toDouble();
+
+          Future<void> searchCustomer() async {
+            final phone = phoneController.text.trim();
+            if (phone.isEmpty) {
+              setDialogState(() => errorText = 'اكتب رقم الهاتف أولاً');
+              return;
+            }
+            setDialogState(() {
+              searching = true;
+              errorText = null;
+            });
+            final customer = await DBHelper.instance.getCustomerByPhone(phone);
+            if (!ctx.mounted) return;
+            setDialogState(() {
+              searching = false;
+              foundCustomer = customer;
+              useDiscount = false;
+              if (customer != null) {
+                nameController.text = (customer['name'] ?? '').toString();
+              } else {
+                nameController.clear();
+              }
+            });
+          }
+
+          Future<void> loadSuggestions(String value) async {
+            final query = value.trim();
+            if (query.isEmpty) {
+              setDialogState(() {
+                suggestions = [];
+                searching = false;
+              });
+              return;
+            }
+            setDialogState(() => searching = true);
+            final rows = await DBHelper.instance.searchCustomersByPhone(query);
+            if (!ctx.mounted || phoneController.text.trim() != query) return;
+            setDialogState(() {
+              suggestions = rows;
+              searching = false;
+            });
+          }
+
+          void selectCustomer(Map<String, dynamic> customer) {
+            setDialogState(() {
+              foundCustomer = customer;
+              phoneController.text = (customer['phone'] ?? '').toString();
+              nameController.text = (customer['name'] ?? '').toString();
+              suggestions = [];
+              useDiscount = false;
+              errorText = null;
+            });
+          }
+
+          final textColor = Theme.of(ctx).brightness == Brightness.light
+              ? Colors.black87
+              : Colors.white;
+          return AlertDialog(
+            backgroundColor: Theme.of(ctx).cardColor,
+            title: Text(
+              'بيانات العميل',
+              textAlign: TextAlign.right,
+              style: TextStyle(color: textColor),
+            ),
+            content: SizedBox(
+              width: 440,
+              child: Directionality(
+                textDirection: TextDirection.rtl,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        controller: phoneController,
+                        focusNode: phoneFocusNode,
+                        keyboardType: TextInputType.phone,
+                        textDirection: TextDirection.ltr,
+                        onChanged: (_) {
+                          if (foundCustomer != null) {
+                            setDialogState(() {
+                              foundCustomer = null;
+                              useDiscount = false;
+                              nameController.clear();
+                            });
+                          }
+                          loadSuggestions(phoneController.text);
+                        },
+                        onSubmitted: (_) => searchCustomer(),
+                        decoration: InputDecoration(
+                          labelText: 'رقم الهاتف',
+                          prefixIcon: IconButton(
+                            tooltip: 'بحث',
+                            onPressed: searching ? null : searchCustomer,
+                            icon: searching
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.search),
+                          ),
+                        ),
+                      ),
+                      if (suggestions.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 190),
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: Theme.of(ctx).dividerColor,
+                            ),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: suggestions.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1),
+                            itemBuilder: (_, index) {
+                              final customer = suggestions[index];
+                              final suggestionBalance =
+                                  (customer['loyalty_balance'] as num?)
+                                          ?.toDouble() ??
+                                      0.0;
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.person_outline),
+                                title: Text(
+                                  (customer['phone'] ?? '').toString(),
+                                  textDirection: TextDirection.ltr,
+                                  textAlign: TextAlign.right,
+                                  style: TextStyle(
+                                    color: textColor,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  'رصيد الخصم: ${suggestionBalance.toStringAsFixed(2)} جنيه',
+                                  style: TextStyle(
+                                    color: Theme.of(ctx)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.color,
+                                  ),
+                                ),
+                                onTap: () => selectCustomer(customer),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: nameController,
+                        textDirection: TextDirection.rtl,
+                        readOnly: foundCustomer != null,
+                        decoration: InputDecoration(
+                          labelText: foundCustomer == null
+                              ? 'اسم العميل الجديد (اختياري)'
+                              : 'اسم العميل',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (foundCustomer != null)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color:
+                                AppColorsDark.mainColor.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'رصيد الخصم الحالي: ${balance.toStringAsFixed(2)} جنيه',
+                                style: TextStyle(
+                                  color: textColor,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              if (balance > 0)
+                                CheckboxListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  value: useDiscount,
+                                  onChanged: (value) => setDialogState(
+                                      () => useDiscount = value ?? false),
+                                  title: Text(
+                                    'استخدام خصم ${applicableDiscount.toStringAsFixed(2)} جنيه الآن',
+                                    style: TextStyle(color: textColor),
+                                  ),
+                                  subtitle: Text(
+                                    'عند الاستخدام سيصبح رصيد العميل 0',
+                                    style: TextStyle(
+                                        color: Theme.of(ctx)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.color),
+                                  ),
+                                ),
+                              if (balance < 50 && !useDiscount)
+                                Text(
+                                  'في حالة عدم الاستخدام، يصل الرصيد بعد دفع الفاتورة إلى ${(balance + 5).clamp(0, 50).toStringAsFixed(2)} جنيه.',
+                                  style: TextStyle(
+                                      color: Theme.of(ctx)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.color),
+                                ),
+                            ],
+                          ),
+                        )
+                      else
+                        Text(
+                          'إذا كان الرقم جديدًا سيتم تسجيله تلقائيًا، والاسم اختياري.',
+                          style: TextStyle(
+                              color: Theme.of(ctx).textTheme.bodySmall?.color),
+                        ),
+                      if (errorText != null) ...[
+                        const SizedBox(height: 10),
+                        Text(errorText!,
+                            style: const TextStyle(color: Colors.redAccent)),
+                      ],
+                    ],
+                  ),
                 ),
               ),
             ),
-            CustomButton(
-              infinity: false,
-              text: 'حفظ',
-              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-            ),
-          ],
-        ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(null),
+                child: const Text('إلغاء'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final phone = phoneController.text.trim();
+                  final name = nameController.text.trim();
+                  if (phone.isEmpty) {
+                    setDialogState(() => errorText = 'يجب إدخال رقم الهاتف');
+                    return;
+                  }
+                  try {
+                    final customer =
+                        await DBHelper.instance.findOrCreateCustomer(
+                      phone: phone,
+                      name: name,
+                    );
+                    if (!ctx.mounted) return;
+                    Navigator.of(ctx).pop({
+                      ...customer,
+                      'use_discount': useDiscount,
+                    });
+                  } catch (e) {
+                    setDialogState(() => errorText = e.toString());
+                  }
+                },
+                child: const Text('متابعة'),
+              ),
+            ],
+          );
+        },
       ),
     );
-    return res;
+    phoneController.dispose();
+    nameController.dispose();
+    phoneFocusNode.dispose();
+    return result;
   }
 
   Future<void> _loadDrawerBalance() async {
@@ -1771,20 +2029,28 @@ class _CashierScreenState extends State<CashierScreen> {
     } else if (normalizedDiscountType == 'fixed' && _discountValue > 0) {
       discountAmount = _discountValue > subtotal ? subtotal : _discountValue;
     }
-    final total = (subtotal - discountAmount).clamp(0.0, double.infinity);
+    final totalBeforeLoyalty =
+        (subtotal - discountAmount).clamp(0.0, double.infinity);
 
     if (mounted) setState(() => _saving = true);
 
     try {
-      String? customerName;
-      if (paymentMethod == 'credit') {
-        customerName = await _askForCustomerName();
-        if (customerName == null || customerName.isEmpty) {
-          _showSnackSafe(
-              'تم إلغاء حفظ الفاتورة: يجب إدخال اسم العميل للفواتير الآجلة');
-          return;
-        }
+      final customer = await _askForCustomer(totalBeforeLoyalty);
+      if (customer == null) {
+        _showSnackSafe('تم إلغاء حفظ الفاتورة');
+        return;
       }
+      final customerId = (customer['id'] as num?)?.toInt();
+      final customerName = (customer['name'] ?? '').toString();
+      final customerPhone = (customer['phone'] ?? '').toString();
+      final loyaltyBalance =
+          (customer['loyalty_balance'] as num?)?.toDouble() ?? 0.0;
+      final useLoyaltyDiscount = customer['use_discount'] == true;
+      final loyaltyDiscount = useLoyaltyDiscount
+          ? loyaltyBalance.clamp(0.0, totalBeforeLoyalty).toDouble()
+          : 0.0;
+      final total =
+          (totalBeforeLoyalty - loyaltyDiscount).clamp(0.0, double.infinity);
 
       final paid = (paymentMethod == 'card' || paymentMethod == 'wallet')
           ? total
@@ -1816,10 +2082,14 @@ class _CashierScreenState extends State<CashierScreen> {
         paymentMethod: paymentMethod,
         requireFullPayment: requireFullPayment,
         customerName: customerName,
+        customerId: customerId,
+        customerPhone: customerPhone,
+        loyaltyDiscount: loyaltyDiscount,
         discountType: normalizedDiscountType,
         discountValue: _discountValue,
       );
-      debugPrint('[saveSale] saved locally with saleId=$saleId');
+      debugPrint(
+          '[saveSale] saved locally with saleId=$saleId customer=$customerPhone loyaltyDiscount=$loyaltyDiscount');
 
       await recordSaleTotals(total, paymentMethod);
       await _loadDrawerBalance();
@@ -1834,7 +2104,9 @@ class _CashierScreenState extends State<CashierScreen> {
         });
         FocusScope.of(context).requestFocus(_barcodeFocus);
       }
-      _showSnackSafe('تم الحفظ بنجاح');
+      _showSnackSafe(loyaltyDiscount > 0
+          ? 'تم الحفظ واستخدام خصم ${loyaltyDiscount.toStringAsFixed(2)} جنيه'
+          : 'تم الحفظ بنجاح');
     } catch (e, st) {
       debugPrint('Failed to save sale locally: $e\n$st');
       if (mounted) {

@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.193');
+    _database = await _initDB('pos_system.db_v2.197');
     return _database!;
   }
 
@@ -70,6 +70,8 @@ class DBHelper {
         await _ensureShiftSettingsTable(db);
         await _ensureAppSettingsTable(db);
         await _ensureShopExternalExpensesTable(db);
+        await _ensureCustomersTables(db);
+        await _ensureSaleLoyaltyColumns(db);
       },
       onOpen: (db) async {
         try {
@@ -146,6 +148,12 @@ class DBHelper {
         try {
           await _ensureShopExternalExpensesTable(db);
         } catch (_) {}
+        try {
+          await _ensureCustomersTables(db);
+        } catch (_) {}
+        try {
+          await _ensureSaleLoyaltyColumns(db);
+        } catch (_) {}
       },
     );
   }
@@ -176,6 +184,32 @@ class DBHelper {
         amount REAL NOT NULL,
         expense_date TEXT NOT NULL,
         created_at TEXT NOT NULL
+      )""",
+    );
+
+    await db.execute(
+      """CREATE TABLE customers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL UNIQUE,
+        loyalty_balance REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )""",
+    );
+
+    await db.execute(
+      """CREATE TABLE loyalty_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL,
+        sale_id INTEGER,
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        balance_after REAL NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(customer_id) REFERENCES customers(id),
+        FOREIGN KEY(sale_id) REFERENCES sales(id)
       )""",
     );
 
@@ -217,6 +251,11 @@ class DBHelper {
     discount_value REAL NOT NULL DEFAULT 0,
     credit_paid_by TEXT,
     credit_paid_at TEXT,
+    customer_id INTEGER,
+    customer_phone TEXT,
+    loyalty_discount REAL NOT NULL DEFAULT 0,
+    loyalty_reward_earned INTEGER NOT NULL DEFAULT 0,
+    loyalty_reward_revoked INTEGER NOT NULL DEFAULT 0,
     -- new columns to track drawer clearing
     drawer_withdrawn INTEGER NOT NULL DEFAULT 0,
     drawer_withdrawn_amount REAL NOT NULL DEFAULT 0
@@ -494,6 +533,54 @@ class DBHelper {
         'credit_paid_by', "ALTER TABLE sales ADD COLUMN credit_paid_by TEXT;");
     await addIfMissing(
         'credit_paid_at', "ALTER TABLE sales ADD COLUMN credit_paid_at TEXT;");
+  }
+
+  Future<void> _ensureSaleLoyaltyColumns(Database db) async {
+    final cols = await db.rawQuery("PRAGMA table_info(sales);");
+
+    Future<void> addIfMissing(String name, String sql) async {
+      if (!cols.any((c) => c['name'] == name)) {
+        await db.execute(sql);
+      }
+    }
+
+    await addIfMissing(
+        'customer_id', 'ALTER TABLE sales ADD COLUMN customer_id INTEGER;');
+    await addIfMissing(
+        'customer_phone', "ALTER TABLE sales ADD COLUMN customer_phone TEXT;");
+    await addIfMissing('loyalty_discount',
+        'ALTER TABLE sales ADD COLUMN loyalty_discount REAL NOT NULL DEFAULT 0;');
+    await addIfMissing('loyalty_reward_earned',
+        'ALTER TABLE sales ADD COLUMN loyalty_reward_earned INTEGER NOT NULL DEFAULT 0;');
+    await addIfMissing('loyalty_reward_revoked',
+        'ALTER TABLE sales ADD COLUMN loyalty_reward_revoked INTEGER NOT NULL DEFAULT 0;');
+  }
+
+  Future<void> _ensureCustomersTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS customers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL UNIQUE,
+        loyalty_balance REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS loyalty_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL,
+        sale_id INTEGER,
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        balance_after REAL NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(customer_id) REFERENCES customers(id),
+        FOREIGN KEY(sale_id) REFERENCES sales(id)
+      )
+    ''');
   }
 
   Future<void> ensureSaleColumns() async {
@@ -1045,6 +1132,108 @@ class DBHelper {
     return null;
   }
 
+  String _normalizeCustomerPhone(String phone) {
+    return phone.replaceAll(RegExp(r'[^0-9+]'), '').trim();
+  }
+
+  Future<Map<String, dynamic>?> getCustomerByPhone(String phone) async {
+    final db = await instance.database;
+    await _ensureCustomersTables(db);
+    final normalized = _normalizeCustomerPhone(phone);
+    if (normalized.isEmpty) return null;
+    final rows = await db.query(
+      'customers',
+      where: 'phone = ?',
+      whereArgs: [normalized],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : Map<String, dynamic>.from(rows.first);
+  }
+
+  Future<List<Map<String, dynamic>>> searchCustomersByPhone(
+    String phone, {
+    int limit = 8,
+  }) async {
+    final db = await instance.database;
+    await _ensureCustomersTables(db);
+    final normalized = _normalizeCustomerPhone(phone);
+    if (normalized.isEmpty) return [];
+    final rows = await db.query(
+      'customers',
+      where: 'phone LIKE ?',
+      whereArgs: ['%$normalized%'],
+      orderBy: 'phone ASC',
+      limit: limit,
+    );
+    return rows.map((row) => Map<String, dynamic>.from(row)).toList();
+  }
+
+  Future<Map<String, dynamic>> findOrCreateCustomer({
+    required String phone,
+    required String name,
+  }) async {
+    final db = await instance.database;
+    await _ensureCustomersTables(db);
+    final normalized = _normalizeCustomerPhone(phone);
+    if (normalized.isEmpty) throw 'يجب إدخال رقم العميل';
+    final existing = await getCustomerByPhone(normalized);
+    if (existing != null) return existing;
+    final customerName = name.trim().isEmpty ? normalized : name.trim();
+    final now = DateTime.now().toIso8601String();
+    final id = await db.insert('customers', {
+      'name': customerName,
+      'phone': normalized,
+      'loyalty_balance': 0.0,
+      'created_at': now,
+      'updated_at': now,
+    });
+    return {
+      'id': id,
+      'name': customerName,
+      'phone': normalized,
+      'loyalty_balance': 0.0,
+      'created_at': now,
+      'updated_at': now,
+    };
+  }
+
+  Future<List<Map<String, dynamic>>> getCustomersWithSummary() async {
+    final db = await instance.database;
+    await _ensureCustomersTables(db);
+    await _ensureSaleLoyaltyColumns(db);
+    final rows = await db.rawQuery('''
+      SELECT
+        c.*,
+        COUNT(s.id) AS invoice_count,
+        COALESCE(SUM(CASE WHEN COALESCE(s.is_return,0) = 0 THEN COALESCE(s.total,0) ELSE 0 END),0) AS total_purchases
+      FROM customers c
+      LEFT JOIN sales s ON s.customer_id = c.id
+      GROUP BY c.id
+      ORDER BY c.name COLLATE NOCASE ASC
+    ''');
+    return rows.map((row) => Map<String, dynamic>.from(row)).toList();
+  }
+
+  Future<void> _recordLoyaltyTransaction(
+    DatabaseExecutor executor, {
+    required int customerId,
+    required int saleId,
+    required String type,
+    required double amount,
+    required double balanceAfter,
+    required String note,
+  }) async {
+    await executor.insert('loyalty_transactions', {
+      'customer_id': customerId,
+      'sale_id': saleId,
+      'type': type,
+      'amount': amount,
+      'balance_after': balanceAfter,
+      'note': note,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
   // ----------------- sales & sale_items -----------------
   Future<int> createSale({
     required double total,
@@ -1140,11 +1329,16 @@ class DBHelper {
     required String paymentMethod,
     bool requireFullPayment = false,
     String? customerName,
+    int? customerId,
+    String? customerPhone,
+    double loyaltyDiscount = 0.0,
     String discountType = 'fixed',
     double discountValue = 0.0,
   }) async {
     final db = await instance.database;
     await _ensureSaleItemsPurchasePriceColumn(db);
+    await _ensureCustomersTables(db);
+    await _ensureSaleLoyaltyColumns(db);
     return await db.transaction<int>((txn) async {
       final change = paid >= total ? paid - total : 0.0;
       final saleId = await txn.insert('sales', {
@@ -1158,6 +1352,11 @@ class DBHelper {
         'return_of_sale_id': null,
         'return_note': '',
         'customer_name': customerName ?? '',
+        'customer_id': customerId,
+        'customer_phone': customerPhone ?? '',
+        'loyalty_discount': loyaltyDiscount,
+        'loyalty_reward_earned': 0,
+        'loyalty_reward_revoked': 0,
         'payment_method': paymentMethod,
         'discount_type': discountType,
         'discount_value': discountValue,
@@ -1210,6 +1409,65 @@ class DBHelper {
           where: 'id = ?',
           whereArgs: [productId],
         );
+      }
+
+      if (customerId != null) {
+        final customerRows = await txn.query(
+          'customers',
+          where: 'id = ?',
+          whereArgs: [customerId],
+          limit: 1,
+        );
+        if (customerRows.isNotEmpty) {
+          final currentBalance =
+              (customerRows.first['loyalty_balance'] as num?)?.toDouble() ??
+                  0.0;
+          final now = DateTime.now().toIso8601String();
+          if (loyaltyDiscount > 0) {
+            await txn.update(
+              'customers',
+              {'loyalty_balance': 0.0, 'updated_at': now},
+              where: 'id = ?',
+              whereArgs: [customerId],
+            );
+            await _recordLoyaltyTransaction(
+              txn,
+              customerId: customerId,
+              saleId: saleId,
+              type: 'redeem',
+              amount: -currentBalance,
+              balanceAfter: 0.0,
+              note: 'استخدام رصيد الخصم في الفاتورة',
+            );
+          } else if (paymentMethod != 'credit') {
+            final reward = (50.0 - currentBalance).clamp(0.0, 5.0).toDouble();
+            final newBalance =
+                (currentBalance + reward).clamp(0.0, 50.0).toDouble();
+            if (reward > 0) {
+              await txn.update(
+                'customers',
+                {'loyalty_balance': newBalance, 'updated_at': now},
+                where: 'id = ?',
+                whereArgs: [customerId],
+              );
+              await txn.update(
+                'sales',
+                {'loyalty_reward_earned': 1},
+                where: 'id = ?',
+                whereArgs: [saleId],
+              );
+              await _recordLoyaltyTransaction(
+                txn,
+                customerId: customerId,
+                saleId: saleId,
+                type: 'earn',
+                amount: reward,
+                balanceAfter: newBalance,
+                note: 'مكافأة فاتورة مدفوعة',
+              );
+            }
+          }
+        }
       }
 
       return saleId;
@@ -1468,6 +1726,8 @@ class DBHelper {
     final db = await instance.database;
     await _ensureSaleItemsPurchasePriceColumn(db);
     await _ensureSaleReturnsColumns(db);
+    await _ensureCustomersTables(db);
+    await _ensureSaleLoyaltyColumns(db);
 
     await db.transaction((txn) async {
       final saleRows = await txn.query('sales',
@@ -1485,6 +1745,54 @@ class DBHelper {
         'refund_amount': paidDelta < 0 ? paidDelta.abs() : 0.0,
         'note': note,
       });
+
+      final customerId = (sale['customer_id'] as num?)?.toInt();
+      final rewardEarned =
+          (sale['loyalty_reward_earned'] as num?)?.toInt() ?? 0;
+      final rewardRevoked =
+          (sale['loyalty_reward_revoked'] as num?)?.toInt() ?? 0;
+      if (customerId != null && rewardEarned == 1 && rewardRevoked == 0) {
+        final customerRows = await txn.query(
+          'customers',
+          where: 'id = ?',
+          whereArgs: [customerId],
+          limit: 1,
+        );
+        if (customerRows.isNotEmpty) {
+          final currentBalance =
+              (customerRows.first['loyalty_balance'] as num?)?.toDouble() ??
+                  0.0;
+          final amountToRevoke = currentBalance.clamp(0.0, 5.0).toDouble();
+          final newBalance =
+              (currentBalance - amountToRevoke).clamp(0.0, 50.0).toDouble();
+          await txn.update(
+            'customers',
+            {
+              'loyalty_balance': newBalance,
+              'updated_at': now,
+            },
+            where: 'id = ?',
+            whereArgs: [customerId],
+          );
+          await txn.update(
+            'sales',
+            {'loyalty_reward_revoked': 1},
+            where: 'id = ?',
+            whereArgs: [saleId],
+          );
+          await _recordLoyaltyTransaction(
+            txn,
+            customerId: customerId,
+            saleId: saleId,
+            type: 'revoke',
+            amount: -amountToRevoke,
+            balanceAfter: newBalance,
+            note: 'سحب مكافأة بسبب استرجاع من الفاتورة',
+          );
+          debugPrint(
+              '[Loyalty] revoked=$amountToRevoke customer=$customerId sale=$saleId balance=$newBalance');
+        }
+      }
 
       for (final entry in returnsMap.entries) {
         final pid = entry.key;
@@ -2214,28 +2522,84 @@ class DBHelper {
   }) async {
     final db = await instance.database;
     await _ensureSaleColumns(db);
-    final rows =
-        await db.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
-    if (rows.isEmpty) throw 'Sale not found';
-    final total = (rows.first['total'] as num?)?.toDouble() ?? 0.0;
-    final paid = paidAmount ?? total;
-    final change = (paid >= total) ? (paid - total) : 0.0;
-    final effectivePaidAt = paidAt ?? DateTime.now();
-    final effectivePaidBy = (paidBy ?? '').trim();
-    final updated = await db.update(
-      'sales',
-      {
-        'is_credit': 0,
-        'paid_amount': paid,
-        'change_amount': change,
-        'payment_method': paymentMethod,
-        'credit_paid_by': effectivePaidBy,
-        'credit_paid_at': effectivePaidAt.toIso8601String(),
-      },
-      where: 'id = ?',
-      whereArgs: [saleId],
-    );
-    return updated;
+    await _ensureCustomersTables(db);
+    await _ensureSaleLoyaltyColumns(db);
+    return await db.transaction<int>((txn) async {
+      final rows = await txn.query('sales',
+          where: 'id = ?', whereArgs: [saleId], limit: 1);
+      if (rows.isEmpty) throw 'Sale not found';
+      final sale = rows.first;
+      final total = (sale['total'] as num?)?.toDouble() ?? 0.0;
+      final paid = paidAmount ?? total;
+      final change = (paid >= total) ? (paid - total) : 0.0;
+      final effectivePaidAt = paidAt ?? DateTime.now();
+      final effectivePaidBy = (paidBy ?? '').trim();
+      final updated = await txn.update(
+        'sales',
+        {
+          'is_credit': 0,
+          'paid_amount': paid,
+          'change_amount': change,
+          'payment_method': paymentMethod,
+          'credit_paid_by': effectivePaidBy,
+          'credit_paid_at': effectivePaidAt.toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [saleId],
+      );
+
+      final customerId = (sale['customer_id'] as num?)?.toInt();
+      final loyaltyDiscount =
+          (sale['loyalty_discount'] as num?)?.toDouble() ?? 0.0;
+      final rewardEarned =
+          (sale['loyalty_reward_earned'] as num?)?.toInt() ?? 0;
+      if (customerId != null &&
+          loyaltyDiscount <= 0 &&
+          rewardEarned == 0 &&
+          paid >= total) {
+        final customerRows = await txn.query(
+          'customers',
+          where: 'id = ?',
+          whereArgs: [customerId],
+          limit: 1,
+        );
+        if (customerRows.isNotEmpty) {
+          final currentBalance =
+              (customerRows.first['loyalty_balance'] as num?)?.toDouble() ??
+                  0.0;
+          final reward = (50.0 - currentBalance).clamp(0.0, 5.0).toDouble();
+          if (reward > 0) {
+            final newBalance =
+                (currentBalance + reward).clamp(0.0, 50.0).toDouble();
+            await txn.update(
+              'customers',
+              {
+                'loyalty_balance': newBalance,
+                'updated_at': effectivePaidAt.toIso8601String(),
+              },
+              where: 'id = ?',
+              whereArgs: [customerId],
+            );
+            await txn.update(
+              'sales',
+              {'loyalty_reward_earned': 1},
+              where: 'id = ?',
+              whereArgs: [saleId],
+            );
+            await _recordLoyaltyTransaction(
+              txn,
+              customerId: customerId,
+              saleId: saleId,
+              type: 'earn',
+              amount: reward,
+              balanceAfter: newBalance,
+              note: 'مكافأة دفع فاتورة آجلة',
+            );
+          }
+        }
+      }
+      return updated;
+    });
   }
 
   Future<void> _ensureIsCurrentUserColumn(Database db) async {
@@ -3443,10 +3807,15 @@ class DBHelper {
     final returnsDelta = returnsRows.isNotEmpty
         ? _numFromRow(returnsRows.first, 'returns_delta')
         : 0.0;
+    final drawerWalletTransferNet =
+        await getDoubleAppSetting('drawer_wallet_transfer_net');
+    final balance =
+        (openingBalance + cashSales + returnsDelta - drawerWalletTransferNet)
+            .clamp(0.0, double.infinity);
     debugPrint(
-        '[DrawerBalance] cashier=$username shiftStart=$shiftStart now=$now opening=$openingBalance cashSales=$cashSales returns=$returnsDelta');
+        '[DrawerBalance] cashier=$username shiftStart=$shiftStart now=$now opening=$openingBalance cashSales=$cashSales returns=$returnsDelta transferNet=$drawerWalletTransferNet balance=$balance');
 
-    return openingBalance + cashSales + returnsDelta;
+    return balance;
   }
 
   Future<void> setAppSetting(String key, String value) async {
@@ -3470,6 +3839,17 @@ class DBHelper {
       limit: 1,
     );
     return rows.isEmpty ? null : rows.first['value']?.toString();
+  }
+
+  Future<double> getDoubleAppSetting(String key,
+      {double fallback = 0.0}) async {
+    final value = await getAppSetting(key);
+    if (value == null) return fallback;
+    return double.tryParse(value) ?? fallback;
+  }
+
+  Future<void> setDoubleAppSetting(String key, double value) async {
+    await setAppSetting(key, value.toStringAsFixed(2));
   }
 
   Future<Map<String, String>> getShopSettings() async {

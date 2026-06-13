@@ -28,6 +28,8 @@ class AdminCashDrawerPage extends StatefulWidget {
 class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   final TextEditingController _startingController = TextEditingController();
   final TextEditingController _maxLimitController = TextEditingController();
+  final TextEditingController _walletController = TextEditingController();
+  final TextEditingController _transferController = TextEditingController();
 
   final NumberFormat _moneyFmt =
       NumberFormat.currency(locale: 'ar', symbol: '', decimalDigits: 0);
@@ -42,6 +44,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   double _totalInDrawer = 0.0;
   double _salesNet = 0.0;
   double _salesWallet = 0.0; // sales paid by wallet/card
+  double _manualWalletBalance = 0.0;
+  double _drawerWalletTransferNet = 0.0;
   double _purchasePaidCash = 0.0;
   double _purchasePaidWallet = 0.0;
   double _creditOutstanding = 0.0;
@@ -68,6 +72,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   void dispose() {
     _startingController.dispose();
     _maxLimitController.dispose();
+    _walletController.dispose();
+    _transferController.dispose();
     _service.dispose();
     super.dispose();
   }
@@ -82,6 +88,10 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     if (value < 0) return '-${_formatMoney(value.abs())}';
     return _formatMoney(value);
   }
+
+  double get _walletTransfersIntoWallet => _drawerWalletTransferNet;
+
+  double get _walletTransfersIntoDrawer => -_drawerWalletTransferNet;
 
   void _showSnackBar(SnackBar snackBar) {
     final isLight = Theme.of(context).brightness == Brightness.light;
@@ -271,7 +281,10 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       _startingAmount = 0.0;
       _maxLimit = 0.0;
       _totalInDrawer = 0.0;
+      _manualWalletBalance = 0.0;
+      _drawerWalletTransferNet = 0.0;
       _startingController.text = '0.00';
+      _walletController.text = '0.00';
       _maxLimitController.text = '0.00';
       _loading = false;
     });
@@ -284,6 +297,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
       _maxLimit = rec.maxLimit;
       _totalInDrawer = rec.totalInDrawer ?? 0.0;
       _startingController.text = _startingAmount.toStringAsFixed(2);
+      _walletController.text = _manualWalletBalance.toStringAsFixed(2);
       _maxLimitController.text = _maxLimit.toStringAsFixed(2);
       _loading = false;
     });
@@ -422,21 +436,33 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           await DBHelper.instance.getFixedShiftOpeningBalance();
       final drawerNow = openingBalance + cashNetAfterReturns - purchaseCash;
       final walletTotal = walletNet - purchaseWallet;
+      final manualWalletBalance =
+          await DBHelper.instance.getDoubleAppSetting('wallet_manual_balance');
+      final drawerWalletTransferNet = await DBHelper.instance
+          .getDoubleAppSetting('drawer_wallet_transfer_net');
+      final adjustedDrawerNow =
+          (drawerNow - drawerWalletTransferNet).clamp(0.0, double.infinity);
+      final adjustedWalletTotal =
+          (walletTotal + manualWalletBalance + drawerWalletTransferNet)
+              .clamp(0.0, double.infinity);
 
       debugPrint(
-          '[AllShiftsSummary] date=$dateStr cash=$cashNet returns=$returnsTotal cashAfterReturns=$cashNetAfterReturns wallet=$walletNet purchaseWallet=$purchaseWallet walletTotal=$walletTotal purchaseCash=$purchaseCash purchaseCredit=$purchaseCredit creditOutstanding=$creditOutstanding opening=$openingBalance drawer=$drawerNow');
+          '[AllShiftsSummary] date=$dateStr cash=$cashNet returns=$returnsTotal cashAfterReturns=$cashNetAfterReturns wallet=$walletNet manualWallet=$manualWalletBalance transferNet=$drawerWalletTransferNet purchaseWallet=$purchaseWallet walletTotal=$adjustedWalletTotal purchaseCash=$purchaseCash purchaseCredit=$purchaseCredit creditOutstanding=$creditOutstanding opening=$openingBalance drawer=$adjustedDrawerNow');
 
       if (!mounted) return;
       setState(() {
         _salesNet = cashNetAfterReturns;
-        _salesWallet = walletTotal;
+        _salesWallet = adjustedWalletTotal;
+        _manualWalletBalance = manualWalletBalance;
+        _drawerWalletTransferNet = drawerWalletTransferNet;
         _purchasePaidCash = purchaseCash;
         _purchasePaidWallet = purchaseWallet;
         _purchasePaidOnCredit = purchaseCredit;
         _creditOutstanding = creditOutstanding;
         _startingAmount = openingBalance;
-        _totalInDrawer = drawerNow;
+        _totalInDrawer = adjustedDrawerNow;
         _startingController.text = _startingAmount.toStringAsFixed(2);
+        _walletController.text = _manualWalletBalance.toStringAsFixed(2);
       });
     } catch (e, st) {
       debugPrint('Failed to load all shifts financial summary: $e\n$st');
@@ -503,6 +529,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
 
       await _saveOnlineOrQueue(payload);
       await DBHelper.instance.setFixedShiftOpeningBalance(entered);
+      await DBHelper.instance
+          .setDoubleAppSetting('drawer_wallet_transfer_net', 0.0);
       await DBHelper.instance.setDrawerStartingAmount(
         entered,
         'admin',
@@ -512,8 +540,10 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         setState(() {
           _startingAmount = entered;
           _startingController.text = entered.toStringAsFixed(2);
+          _drawerWalletTransferNet = 0.0;
         });
       }
+      await _loadAllShiftsSummary();
     } catch (e) {
       debugPrint('Error saving starting amount: $e');
       if (mounted) {
@@ -521,6 +551,135 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
           content: Directionality(
             textDirection: TextDirection.rtl,
             child: Text('خطأ أثناء الحفظ: $e'),
+          ),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _saveWalletBalance() async {
+    final entered =
+        double.tryParse(_walletController.text.trim().replaceAll(',', '')) ??
+            0.0;
+    if (entered < 0) {
+      _showSnackBar(const SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('قيمة المحفظة لا يمكن أن تكون أقل من صفر'),
+        ),
+      ));
+      return;
+    }
+    setState(() => _loading = true);
+    try {
+      await DBHelper.instance
+          .setDoubleAppSetting('wallet_manual_balance', entered);
+      await _loadAllShiftsSummary();
+      if (mounted) {
+        _showSnackBar(const SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('تم حفظ قيمة المحفظة'),
+          ),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        _showSnackBar(SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('فشل حفظ قيمة المحفظة: $e'),
+          ),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _transferDrawerWallet({required bool drawerToWallet}) async {
+    final amount =
+        double.tryParse(_transferController.text.trim().replaceAll(',', '')) ??
+            0.0;
+    if (amount <= 0) {
+      _showSnackBar(const SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('اكتب قيمة تحويل صحيحة'),
+        ),
+      ));
+      return;
+    }
+
+    final available = drawerToWallet ? _totalInDrawer : _salesWallet;
+    if (amount > available) {
+      _showSnackBar(SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text(
+            drawerToWallet
+                ? 'القيمة أكبر من المبلغ الموجود في الدرج'
+                : 'القيمة أكبر من رصيد المحفظة',
+          ),
+        ),
+      ));
+      return;
+    }
+
+    setState(() => _loading = true);
+    try {
+      final fullDrawerTransfer =
+          drawerToWallet && amount >= (available - 0.001);
+      if (fullDrawerTransfer) {
+        final newManualWallet =
+            (_manualWalletBalance + _drawerWalletTransferNet + amount)
+                .clamp(0.0, double.infinity);
+        await DBHelper.instance
+            .setDoubleAppSetting('wallet_manual_balance', newManualWallet);
+        await DBHelper.instance
+            .setDoubleAppSetting('drawer_wallet_transfer_net', 0.0);
+        await DBHelper.instance.setFixedShiftOpeningBalance(0.0);
+        await DBHelper.instance.setDrawerStartingAmount(
+          0.0,
+          'admin',
+          note: 'Drawer fully transferred to wallet',
+        );
+      } else {
+        final newTransferNet =
+            _drawerWalletTransferNet + (drawerToWallet ? amount : -amount);
+        await DBHelper.instance.setDoubleAppSetting(
+          'drawer_wallet_transfer_net',
+          newTransferNet,
+        );
+      }
+      _transferController.clear();
+      await _loadAllShiftsSummary();
+      if (mounted && fullDrawerTransfer) {
+        setState(() {
+          _startingAmount = 0.0;
+          _startingController.text = '0.00';
+        });
+      }
+      if (mounted) {
+        _showSnackBar(SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text(
+              drawerToWallet
+                  ? 'تم تحويل المبلغ من الدرج إلى المحفظة'
+                  : 'تم تحويل المبلغ من المحفظة إلى الدرج',
+            ),
+          ),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        _showSnackBar(SnackBar(
+          content: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Text('فشل التحويل: $e'),
           ),
         ));
       }
@@ -1116,6 +1275,75 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     );
   }
 
+  Widget _buildWalletTransferControls() {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Divider(height: 30, color: AppColorsDark.mainColor),
+          Center(
+            child: Text(
+              'إدارة المحفظة والتحويل',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: AppColorsDark.mainTextDark,
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          CustomFormField(
+            controller: _walletController,
+            hint: 'تعيين قيمة المحفظة الحالية',
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          const SizedBox(height: 10),
+          CustomButton(
+            text: 'حفظ قيمة المحفظة',
+            onPressed: _saveWalletBalance,
+            infinity: true,
+            color: AppColorsDark.mainColor.withOpacity(0.85),
+          ),
+          const SizedBox(height: 14),
+          CustomFormField(
+            controller: _transferController,
+            hint: 'قيمة التحويل بين الدرج والمحفظة',
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            alignment: WrapAlignment.center,
+            children: [
+              CustomButton(
+                text: 'من الدرج إلى المحفظة',
+                onPressed: () => _transferDrawerWallet(drawerToWallet: true),
+                infinity: false,
+                color: Colors.green.withOpacity(0.85),
+              ),
+              CustomButton(
+                text: 'من المحفظة إلى الدرج',
+                onPressed: () => _transferDrawerWallet(drawerToWallet: false),
+                infinity: false,
+                color: Colors.orange.withOpacity(0.85),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _buildSummaryRow(
+            'صافي التحويلات إلى المحفظة',
+            _walletTransfersIntoWallet,
+          ),
+          _buildSummaryRow(
+            'صافي التحويلات إلى الدرج',
+            _walletTransfersIntoDrawer,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _desktopLayout(BoxConstraints constraints) {
     final maxWidth = constraints.maxWidth < 900 ? constraints.maxWidth : 1400.0;
 
@@ -1157,6 +1385,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                               onPressed: _saveStartingAmount_replace,
                               infinity: true,
                               color: AppColorsDark.mainColor.withOpacity(0.9)),
+                          _buildWalletTransferControls(),
                           const SizedBox(height: 20),
                           Divider(height: 30, color: AppColorsDark.mainColor),
                           Center(
@@ -1211,7 +1440,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                     children: [
                                       Center(
                                           child: Text(
-                                              'المبلغ في الدرج الآن = مبدئي + نقدي',
+                                              'المبلغ في الدرج الآن',
                                               style: Theme.of(context)
                                                   .textTheme
                                                   .titleLarge!
@@ -1267,8 +1496,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                         CrossAxisAlignment.start,
                                     children: [
                                       Center(
-                                          child: Text(
-                                              'الحد الادني لبدايه كل شيفت',
+                                          child: Text('إجمالي قيمة المحفظة',
                                               style: Theme.of(context)
                                                   .textTheme
                                                   .titleLarge!
@@ -1293,7 +1521,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                                         color: AppColorsDark
                                                             .mainTextDark)),
                                             const SizedBox(width: 10),
-                                            Text(_formatWithSign(_maxLimit),
+                                            Text(_formatWithSign(_salesWallet),
                                                 style: Theme.of(context)
                                                     .textTheme
                                                     .displaySmall
@@ -1502,6 +1730,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                             onPressed: _saveStartingAmount_replace,
                             infinity: true,
                             color: AppColorsDark.mainColor.withOpacity(0.9)),
+                        _buildWalletTransferControls(),
                         const SizedBox(height: 14),
                         Center(
                             child: Text(
@@ -1562,8 +1791,8 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                           _formatWithSign(_totalInDrawer))),
                   const SizedBox(width: 8),
                   Expanded(
-                      child: _smallInfoCard('الحد الادني لبدايه كل شيفت',
-                          _formatWithSign(_maxLimit))),
+                      child: _smallInfoCard('إجمالي قيمة المحفظة',
+                          _formatWithSign(_salesWallet))),
                 ],
               ),
               const SizedBox(height: 12),
