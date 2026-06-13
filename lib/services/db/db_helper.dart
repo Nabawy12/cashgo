@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.190');
+    _database = await _initDB('pos_system.db_v2.193');
     return _database!;
   }
 
@@ -52,6 +52,7 @@ class DBHelper {
         await _ensureSaleColumns(db);
         await _ensureSaleItemsPurchasePriceColumn(db);
         await _ensureProductDatesColumns(db);
+        await _ensureProductProfitMarkedColumn(db);
         await _ensureExpirySeenColumn(db);
         await _ensureLowStockSeenColumn(db);
         await _ensurePurchaseReceiptsTable(db);
@@ -82,6 +83,9 @@ class DBHelper {
         } catch (_) {}
         try {
           await _ensureProductDatesColumns(db);
+        } catch (_) {}
+        try {
+          await _ensureProductProfitMarkedColumn(db);
         } catch (_) {}
         try {
           await _ensureExpirySeenColumn(db);
@@ -188,6 +192,7 @@ class DBHelper {
         units_remainder INTEGER NOT NULL DEFAULT 0,
         production_date TEXT,
         expiry_date TEXT,
+        profit_marked INTEGER NOT NULL DEFAULT 0,
         low_stock_seen INTEGER NOT NULL DEFAULT 0,
         expiry_seen INTEGER NOT NULL DEFAULT 0
       )""",
@@ -447,6 +452,17 @@ class DBHelper {
   Future<void> ensureUnitsRemainderColumn() async {
     final db = await instance.database;
     await _ensureUnitsRemainderColumn(db);
+  }
+
+  Future<void> _ensureProductProfitMarkedColumn(Database db) async {
+    final cols = await db.rawQuery("PRAGMA table_info(products);");
+    final has = cols.any((c) => c['name'] == 'profit_marked');
+    if (!has) {
+      await db.execute(
+          'ALTER TABLE products ADD COLUMN profit_marked INTEGER NOT NULL DEFAULT 0;');
+      await db.update('products', {'profit_marked': 0});
+      debugPrint('[DB] products.profit_marked column added');
+    }
   }
 
   Future<void> _ensureSaleColumns(Database db) async {
@@ -886,6 +902,7 @@ class DBHelper {
       'units_remainder': product['units_remainder'] ?? 0,
       'production_date': product['production_date'] ?? '',
       'expiry_date': product['expiry_date'] ?? '',
+      'profit_marked': product['profit_marked'] ?? 0,
       'low_stock_seen': product['low_stock_seen'] ?? 0,
       'expiry_seen': product['expiry_seen'] ?? 0,
     });
@@ -922,9 +939,21 @@ class DBHelper {
         'units_remainder': product['units_remainder'] ?? 0,
         'production_date': product['production_date'],
         'expiry_date': product['expiry_date'],
+        'profit_marked': product['profit_marked'] ?? 0,
       },
       where: 'id = ?',
       whereArgs: [product['id']],
+    );
+  }
+
+  Future<int> setProductProfitMarked(int id, bool marked) async {
+    final db = await instance.database;
+    await _ensureProductProfitMarkedColumn(db);
+    return await db.update(
+      'products',
+      {'profit_marked': marked ? 1 : 0},
+      where: 'id = ?',
+      whereArgs: [id],
     );
   }
 
@@ -3473,8 +3502,10 @@ class DBHelper {
   Future<List<Map<String, dynamic>>> getProfitReport({
     required DateTime from,
     required DateTime to,
+    bool markedOnly = false,
   }) async {
     final db = await database;
+    await _ensureProductProfitMarkedColumn(db);
     final fromStr = DateTime(from.year, from.month, from.day).toIso8601String();
     final toStr =
         DateTime(to.year, to.month, to.day, 23, 59, 59).toIso8601String();
@@ -3507,6 +3538,7 @@ class DBHelper {
 	        COALESCE(p.purchase_price,0) AS purchase_price,
 	        COALESCE(p.selling_price,0) AS selling_price,
 	        COALESCE(p.units_in_carton,1) AS units_in_carton,
+	        COALESCE(p.profit_marked,0) AS profit_marked,
 	        SUM(COALESCE(si.quantity,0)) AS gross_quantity_sold,
 	        COALESCE(ret.returned_qty, 0) AS returned_quantity,
 	        SUM(COALESCE(si.quantity,0)) - COALESCE(ret.returned_qty, 0) AS quantity_sold,
@@ -3554,11 +3586,12 @@ class DBHelper {
 	      ) ret ON ret.product_id = p.id
 	      WHERE datetime(s.profit_date) >= datetime(?)
 	        AND datetime(s.profit_date) <= datetime(?)
-	      GROUP BY p.id, p.name, p.barcode, p.purchase_price, p.selling_price, p.units_in_carton
+	        AND (? = 0 OR COALESCE(p.profit_marked,0) = 1)
+	      GROUP BY p.id, p.name, p.barcode, p.purchase_price, p.selling_price, p.units_in_carton, p.profit_marked
 	      HAVING quantity_sold > 0
 	      ORDER BY profit DESC
 	      ''',
-      [fromStr, toStr, fromStr, toStr],
+      [fromStr, toStr, fromStr, toStr, markedOnly ? 1 : 0],
     );
     return rows.map((r) => Map<String, dynamic>.from(r)).toList();
   }

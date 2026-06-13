@@ -83,6 +83,12 @@ class ProductApi {
     return true;
   }
 
+  static Future<bool> setProductProfitMarked(int id, bool marked) async {
+    if (id <= 0) return false;
+    await DBHelper.instance.setProductProfitMarked(id, marked);
+    return true;
+  }
+
   static Future<bool> deleteProduct(dynamic id) async {
     final parsed = id is int ? id : int.tryParse(id.toString()) ?? 0;
     if (parsed <= 0) return false;

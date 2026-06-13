@@ -221,6 +221,37 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
     }).toList();
   }
 
+  Future<void> toggleProfitMarked(
+      Map<String, dynamic> product, bool value) async {
+    final id = (product['id'] as num?)?.toInt() ??
+        int.tryParse(product['id']?.toString() ?? '') ??
+        0;
+    if (id <= 0) return;
+
+    setState(() {
+      product['profit_marked'] = value ? 1 : 0;
+      final index = products.indexWhere((p) => p['id'] == product['id']);
+      if (index >= 0) products[index]['profit_marked'] = value ? 1 : 0;
+    });
+
+    try {
+      await ProductApi.setProductProfitMarked(id, value);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        product['profit_marked'] = value ? 0 : 1;
+        final index = products.indexWhere((p) => p['id'] == product['id']);
+        if (index >= 0) products[index]['profit_marked'] = value ? 0 : 1;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('فشل حفظ علامة تقرير الأرباح: $e'),
+        ),
+      ));
+    }
+  }
+
   Future<void> onScanBarcodeSubmitted(String code) async {
     if (code.trim().isEmpty) return;
     showDialog(
@@ -559,6 +590,12 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                               color: AppColorsDark
                                                                   .mainTextDark))),
                                                   DataColumn(
+                                                      label: Text(
+                                                          'تقرير الأرباح',
+                                                          style: TextStyle(
+                                                              color: AppColorsDark
+                                                                  .mainTextDark))),
+                                                  DataColumn(
                                                       label: Text('الباركود',
                                                           style: TextStyle(
                                                               color: AppColorsDark
@@ -631,6 +668,16 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                           0) as int;
                                                   final lowStock =
                                                       totalUnits <= 5;
+                                                  final isProfitMarked = ((p[
+                                                                      'profit_marked']
+                                                                  as num?)
+                                                              ?.toInt() ??
+                                                          int.tryParse(
+                                                              p['profit_marked']
+                                                                      ?.toString() ??
+                                                                  '') ??
+                                                          0) ==
+                                                      1;
                                                   String stockText;
                                                   if (unitsInCarton > 0) {
                                                     stockText =
@@ -648,6 +695,16 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                                                           style: TextStyle(
                                                               color: AppColorsDark
                                                                   .mainTextDark))),
+                                                      DataCell(
+                                                        Checkbox(
+                                                          value: isProfitMarked,
+                                                          onChanged: (value) =>
+                                                              toggleProfitMarked(
+                                                            p,
+                                                            value ?? false,
+                                                          ),
+                                                        ),
+                                                      ),
                                                       DataCell(Text(
                                                           p['barcode']
                                                                   ?.toString() ??
@@ -1054,6 +1111,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
       'units_remainder': remainder,
       'production_date': productionDateController.text.trim(),
       'expiry_date': expiryDateController.text.trim(),
+      'profit_marked': isEdit ? (widget.existing!['profit_marked'] ?? 0) : 0,
     };
 
     showDialog(

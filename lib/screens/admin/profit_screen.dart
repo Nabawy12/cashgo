@@ -23,6 +23,7 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
   DateTime _from = DateTime.now();
   DateTime _to = DateTime.now();
   bool _loading = true;
+  bool _markedOnly = false;
   List<Map<String, dynamic>> _rows = [];
 
   List<Map<String, dynamic>> get _filteredRows {
@@ -53,8 +54,11 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
-      final rows =
-          await DBHelper.instance.getProfitReport(from: _from, to: _to);
+      final rows = await DBHelper.instance.getProfitReport(
+        from: _from,
+        to: _to,
+        markedOnly: _markedOnly,
+      );
       if (mounted) setState(() => _rows = rows);
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -94,7 +98,10 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
         theme: pw.ThemeData.withFont(base: font, bold: font),
         textDirection: pw.TextDirection.rtl,
         build: (_) => [
-          pw.Text('تقرير الأرباح',
+          pw.Text(
+              _markedOnly
+                  ? 'تقرير أرباح المنتجات التي تم تعليمها'
+                  : 'تقرير الأرباح',
               style:
                   pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
           pw.SizedBox(height: 6),
@@ -197,6 +204,29 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
                     onPressed: _load,
                     icon: const Icon(Icons.refresh),
                     label: const Text('تحديث'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      setState(() => _markedOnly = !_markedOnly);
+                      await _load();
+                    },
+                    icon: Icon(
+                      _markedOnly
+                          ? Icons.check_box
+                          : Icons.check_box_outline_blank,
+                      color: Theme.of(context).iconTheme.color,
+                    ),
+                    label: Text(
+                      'المنتجات التي تم تعليمها',
+                      style: TextStyle(color: AppColorsDark.mainTextDark),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(
+                        color: _markedOnly
+                            ? AppColorsDark.mainColor
+                            : AppColorsDark.strokColor,
+                      ),
+                    ),
                   ),
                 ],
               ),
