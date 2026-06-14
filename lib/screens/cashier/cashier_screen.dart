@@ -1131,8 +1131,10 @@ class _CashierScreenState extends State<CashierScreen> {
     List<Map<String, dynamic>> suggestions = [];
     bool searching = false;
     bool useDiscount = false;
+    double selectedLoyaltyDiscount = 0.0;
     String? errorText;
     bool requestedPhoneFocus = false;
+    final loyaltyDiscountController = TextEditingController();
 
     final result = await showDialog<Map<String, dynamic>?>(
       context: context,
@@ -1156,6 +1158,11 @@ class _CashierScreenState extends State<CashierScreen> {
             balance: balance,
             invoiceTotal: invoiceTotal,
           );
+          if (useDiscount && selectedLoyaltyDiscount > applicableDiscount) {
+            selectedLoyaltyDiscount = applicableDiscount;
+            loyaltyDiscountController.text =
+                selectedLoyaltyDiscount.toStringAsFixed(2);
+          }
 
           Future<void> searchCustomer() async {
             final phone = phoneController.text.trim();
@@ -1173,6 +1180,8 @@ class _CashierScreenState extends State<CashierScreen> {
               searching = false;
               foundCustomer = customer;
               useDiscount = false;
+              selectedLoyaltyDiscount = 0.0;
+              loyaltyDiscountController.clear();
               if (customer != null) {
                 nameController.text = (customer['name'] ?? '').toString();
               } else {
@@ -1206,6 +1215,8 @@ class _CashierScreenState extends State<CashierScreen> {
               nameController.text = (customer['name'] ?? '').toString();
               suggestions = [];
               useDiscount = false;
+              selectedLoyaltyDiscount = 0.0;
+              loyaltyDiscountController.clear();
               errorText = null;
             });
           }
@@ -1238,6 +1249,8 @@ class _CashierScreenState extends State<CashierScreen> {
                             setDialogState(() {
                               foundCustomer = null;
                               useDiscount = false;
+                              selectedLoyaltyDiscount = 0.0;
+                              loyaltyDiscountController.clear();
                               nameController.clear();
                             });
                           }
@@ -1348,8 +1361,20 @@ class _CashierScreenState extends State<CashierScreen> {
                                 CheckboxListTile(
                                   contentPadding: EdgeInsets.zero,
                                   value: useDiscount,
-                                  onChanged: (value) => setDialogState(
-                                      () => useDiscount = value ?? false),
+                                  onChanged: (value) {
+                                    setDialogState(() {
+                                      useDiscount = value ?? false;
+                                      selectedLoyaltyDiscount = useDiscount
+                                          ? applicableDiscount
+                                          : 0.0;
+                                      loyaltyDiscountController.text =
+                                          selectedLoyaltyDiscount > 0
+                                              ? selectedLoyaltyDiscount
+                                                  .toStringAsFixed(2)
+                                              : '';
+                                      errorText = null;
+                                    });
+                                  },
                                   title: Text(
                                     'استخدام خصم ${applicableDiscount.toStringAsFixed(2)} جنيه الآن',
                                     style: TextStyle(color: textColor),
@@ -1363,6 +1388,44 @@ class _CashierScreenState extends State<CashierScreen> {
                                             ?.color),
                                   ),
                                 ),
+                              if (useDiscount) ...[
+                                const SizedBox(height: 8),
+                                TextField(
+                                  controller: loyaltyDiscountController,
+                                  keyboardType:
+                                      const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                                  textDirection: TextDirection.ltr,
+                                  textAlign: TextAlign.right,
+                                  decoration: InputDecoration(
+                                    labelText: 'قيمة الخصم المستخدمة',
+                                    helperText:
+                                        'الكاشير يقدر يقلل الخصم فقط ولا يزيد عن المتاح',
+                                  ),
+                                  onChanged: (value) {
+                                    final typed = double.tryParse(
+                                          value.replaceAll(',', ''),
+                                        ) ??
+                                        0.0;
+                                    setDialogState(() {
+                                      if (typed < 0) {
+                                        selectedLoyaltyDiscount = 0.0;
+                                        errorText =
+                                            'قيمة الخصم لا يمكن أن تكون أقل من صفر';
+                                      } else if (typed > applicableDiscount) {
+                                        selectedLoyaltyDiscount =
+                                            applicableDiscount;
+                                        errorText =
+                                            'لا يمكن زيادة الخصم عن ${applicableDiscount.toStringAsFixed(2)} جنيه';
+                                      } else {
+                                        selectedLoyaltyDiscount = typed;
+                                        errorText = null;
+                                      }
+                                    });
+                                  },
+                                ),
+                              ],
                               if (!useDiscount)
                                 Text(
                                   'في حالة عدم الاستخدام، سيضاف 3% من قيمة الفاتورة المدفوعة إلى رصيد العميل.',
@@ -1414,6 +1477,12 @@ class _CashierScreenState extends State<CashierScreen> {
                     Navigator.of(ctx).pop({
                       ...customer,
                       'use_discount': useDiscount,
+                      'selected_loyalty_discount': useDiscount
+                          ? selectedLoyaltyDiscount.clamp(
+                              0.0,
+                              applicableDiscount,
+                            )
+                          : 0.0,
                     });
                   } catch (e) {
                     setDialogState(() => errorText = e.toString());
@@ -1429,6 +1498,7 @@ class _CashierScreenState extends State<CashierScreen> {
     phoneController.dispose();
     nameController.dispose();
     phoneFocusNode.dispose();
+    loyaltyDiscountController.dispose();
     return result;
   }
 
@@ -2072,11 +2142,15 @@ class _CashierScreenState extends State<CashierScreen> {
         }
       }
       final useLoyaltyDiscount = customer['use_discount'] == true;
+      final maxLoyaltyDiscount = _customerLoyaltyDiscountForInvoice(
+        balance: loyaltyBalance,
+        invoiceTotal: totalBeforeLoyalty,
+      );
       final loyaltyDiscount = useLoyaltyDiscount
-          ? _customerLoyaltyDiscountForInvoice(
-              balance: loyaltyBalance,
-              invoiceTotal: totalBeforeLoyalty,
-            )
+          ? (((customer['selected_loyalty_discount'] as num?)?.toDouble() ??
+                  maxLoyaltyDiscount)
+              .clamp(0.0, maxLoyaltyDiscount)
+              .toDouble())
           : 0.0;
       final total =
           (totalBeforeLoyalty - loyaltyDiscount).clamp(0.0, double.infinity);

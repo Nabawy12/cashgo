@@ -1181,8 +1181,10 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
         _pickDoubleFromMap(raw, ['wallet_purchases', 'wallet_expenses']) ??
             (totalExpenses - cashExpenses).clamp(0.0, double.infinity);
     final totalReturns = returnsValue;
-    final netProfit = totalSales - totalExpenses;
-    final drawerBalance = totalSales - cashExpenses;
+    final netSalesAfterReturns =
+        (grossSales - returnsValue).clamp(0.0, double.infinity);
+    final netProfit = netSalesAfterReturns - totalExpenses;
+    final drawerBalance = cashSales - returnsValue - cashExpenses;
 
     String money(double value) => value.toStringAsFixed(2);
 
@@ -1439,8 +1441,7 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                         CrossAxisAlignment.start,
                                     children: [
                                       Center(
-                                          child: Text(
-                                              'المبلغ في الدرج الآن',
+                                          child: Text('المبلغ في الدرج الآن',
                                               style: Theme.of(context)
                                                   .textTheme
                                                   .titleLarge!

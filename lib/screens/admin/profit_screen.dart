@@ -121,11 +121,7 @@ class _ProfitReportScreenState extends State<ProfitReportScreen> {
               'الربح',
             ],
             data: _filteredRows.map((r) {
-              final unitsInCarton =
-                  ((r['units_in_carton'] as num?)?.toDouble() ?? 1);
-              final purchase = ((r['purchase_price'] as num?)?.toDouble() ?? 0);
-              final unitCost =
-                  unitsInCarton > 0 ? purchase / unitsInCarton : purchase;
+              final unitCost = ((r['purchase_price'] as num?)?.toDouble() ?? 0);
               return [
                 (r['product_name'] ?? '').toString(),
                 '${(r['gross_quantity_sold'] as num?)?.toInt() ?? ((r['quantity_sold'] as num?)?.toInt() ?? 0)}',

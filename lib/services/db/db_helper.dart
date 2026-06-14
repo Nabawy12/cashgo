@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.20014');
+    _database = await _initDB('pos_system.db_v2.2033');
     return _database!;
   }
 
@@ -72,6 +72,7 @@ class DBHelper {
         await _ensureShopExternalExpensesTable(db);
         await _ensureCustomersTables(db);
         await _ensureSaleLoyaltyColumns(db);
+        await _migrateUnitModePurchaseCosts(db);
       },
       onOpen: (db) async {
         try {
@@ -153,6 +154,9 @@ class DBHelper {
         } catch (_) {}
         try {
           await _ensureSaleLoyaltyColumns(db);
+        } catch (_) {}
+        try {
+          await _migrateUnitModePurchaseCosts(db);
         } catch (_) {}
       },
     );
@@ -599,11 +603,7 @@ class DBHelper {
       await db.rawUpdate('''
         UPDATE sale_items
         SET purchase_price_per_unit = (
-          SELECT CASE
-            WHEN COALESCE(p.units_in_carton, 0) > 0
-            THEN COALESCE(p.purchase_price, 0) / p.units_in_carton
-            ELSE COALESCE(p.purchase_price, 0)
-          END
+          SELECT COALESCE(p.purchase_price, 0)
           FROM products p WHERE p.id = sale_items.product_id
         )
         WHERE purchase_price_per_unit = 0
@@ -632,6 +632,33 @@ class DBHelper {
           AND COALESCE(returned_quantity,0) = 0
       ''');
       debugPrint('[Migration] sale_items.returned_quantity added');
+    }
+  }
+
+  Future<void> _migrateUnitModePurchaseCosts(Database db) async {
+    final saleItemCols = await db.rawQuery('PRAGMA table_info(sale_items);');
+    if (saleItemCols.isEmpty ||
+        !saleItemCols.any((c) => c['name'] == 'purchase_price_per_unit')) {
+      return;
+    }
+    final updated = await db.rawUpdate('''
+      UPDATE sale_items
+      SET purchase_price_per_unit = (
+        SELECT COALESCE(p.purchase_price, 0)
+        FROM products p
+        WHERE p.id = sale_items.product_id
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM products p
+        WHERE p.id = sale_items.product_id
+          AND COALESCE(p.purchase_price, 0) > 0
+          AND ABS(COALESCE(sale_items.purchase_price_per_unit, 0) - COALESCE(p.purchase_price, 0)) > 0.001
+      )
+    ''');
+    if (updated > 0) {
+      debugPrint(
+          '[Migration] unit-mode sale_items purchase costs repaired: $updated');
     }
   }
 
@@ -979,14 +1006,17 @@ class DBHelper {
 
   Future<int> insertProduct(Map<String, dynamic> product) async {
     final db = await instance.database;
+    final unitQuantity = (product['quantity'] as num?)?.toInt() ??
+        int.tryParse(product['quantity']?.toString() ?? '') ??
+        0;
     return await db.insert('products', {
       'barcode': product['barcode'] ?? '',
       'name': product['name'] ?? '',
       'purchase_price': (product['purchase_price'] ?? 0).toDouble(),
       'selling_price': (product['selling_price'] ?? 0).toDouble(),
-      'units_in_carton': product['units_in_carton'] ?? 0,
-      'quantity': product['quantity'] ?? 0,
-      'units_remainder': product['units_remainder'] ?? 0,
+      'units_in_carton': 1,
+      'quantity': unitQuantity,
+      'units_remainder': 0,
       'production_date': product['production_date'] ?? '',
       'expiry_date': product['expiry_date'] ?? '',
       'profit_marked': product['profit_marked'] ?? 0,
@@ -1014,6 +1044,9 @@ class DBHelper {
 
   Future<int> updateProduct(Map<String, dynamic> product) async {
     final db = await instance.database;
+    final unitQuantity = (product['quantity'] as num?)?.toInt() ??
+        int.tryParse(product['quantity']?.toString() ?? '') ??
+        0;
     return await db.update(
       'products',
       {
@@ -1021,9 +1054,9 @@ class DBHelper {
         'name': product['name'],
         'purchase_price': product['purchase_price'],
         'selling_price': product['selling_price'],
-        'units_in_carton': product['units_in_carton'],
-        'quantity': product['quantity'],
-        'units_remainder': product['units_remainder'] ?? 0,
+        'units_in_carton': 1,
+        'quantity': unitQuantity,
+        'units_remainder': 0,
         'production_date': product['production_date'],
         'expiry_date': product['expiry_date'],
         'profit_marked': product['profit_marked'] ?? 0,
@@ -1174,6 +1207,7 @@ class DBHelper {
   ) async {
     final db = await instance.database;
     await _ensureSaleLoyaltyColumns(db);
+    await _ensureSaleItemsPurchasePriceColumn(db);
     final day = DateTime(date.year, date.month, date.day)
         .toIso8601String()
         .split('T')
@@ -1181,10 +1215,15 @@ class DBHelper {
     final rows = await db.rawQuery(
       '''
       SELECT COUNT(*) AS count
-      FROM sales
-      WHERE customer_id = ?
-        AND COALESCE(is_return,0) = 0
-        AND date(date) = ?
+      FROM sales s
+      WHERE s.customer_id = ?
+        AND COALESCE(s.is_return,0) = 0
+        AND date(s.date) = ?
+        AND EXISTS (
+          SELECT 1 FROM sale_items si
+          WHERE si.sale_id = s.id
+            AND COALESCE(si.returned,0) = 0
+        )
       ''',
       [customerId, day],
     );
@@ -1324,12 +1363,7 @@ class DBHelper {
       );
       if (rows.isNotEmpty) {
         final product = rows.first;
-        final purchasePricePerCarton =
-            (product['purchase_price'] as num?)?.toDouble() ?? 0.0;
-        final unitsInCarton =
-            (product['units_in_carton'] as num?)?.toInt() ?? 1;
-        final uic = unitsInCarton > 0 ? unitsInCarton : 1;
-        unitCost = purchasePricePerCarton / uic;
+        unitCost = (product['purchase_price'] as num?)?.toDouble() ?? 0.0;
       }
     }
     return await db.insert('sale_items', {
@@ -1402,10 +1436,8 @@ class DBHelper {
         final product = rows.isNotEmpty ? rows.first : <String, Object?>{};
         final unitsInCarton =
             (product['units_in_carton'] as num?)?.toInt() ?? 1;
-        final purchasePricePerCarton =
+        final purchasePricePerUnit =
             (product['purchase_price'] as num?)?.toDouble() ?? 0.0;
-        final uic = unitsInCarton > 0 ? unitsInCarton : 1;
-        final purchasePricePerUnit = purchasePricePerCarton / uic;
         await txn.insert('sale_items', {
           'sale_id': saleId,
           'product_id': productId,
@@ -1741,6 +1773,7 @@ class DBHelper {
   ///   but we DO NOT modify sale_items nor sales.total/paid_amount/change_amount.
   /// Apply return/exchange and MODIFY the original sale row and sale_items,
   /// while still logging the action in sale_returns / sale_return_items.
+
   Future<void> applyReturnExchangeToSale({
     required int saleId,
     required Map<int, int> returnsMap,
@@ -1755,81 +1788,31 @@ class DBHelper {
     await _ensureSaleLoyaltyColumns(db);
 
     await db.transaction((txn) async {
-      final saleRows = await txn.query('sales',
-          where: 'id = ?', whereArgs: [saleId], limit: 1);
+      // ── 1. بيانات الفاتورة الأصلية ──────────────────────────────────────────
+      final saleRows =
+      await txn.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
       if (saleRows.isEmpty) throw 'Original sale not found';
+
       final sale = saleRows.first;
       final oldNote = (sale['return_note'] ?? '').toString();
+      final oldTotal = (sale['total'] as num?)?.toDouble() ?? 0.0;
+      final oldPaid = (sale['paid_amount'] as num?)?.toDouble() ?? 0.0;
+      final customerId = (sale['customer_id'] as num?)?.toInt();
+      final rewardEarned = (sale['loyalty_reward_earned'] as num?)?.toInt() ?? 0;
       final now = DateTime.now().toIso8601String();
 
+      // ── 2. سجّل في sale_returns (بدون refund_amount — هيتحسب بعدين) ─────────
       final returnRowId = await txn.insert('sale_returns', {
         'sale_id': saleId,
         'date': now,
         'cashier_username': sale['cashier_username'] ?? '',
-        'paid_delta': paidDelta,
-        'refund_amount': paidDelta < 0 ? paidDelta.abs() : 0.0,
+        'paid_delta': 0.0,
+        'refund_amount': 0.0,
         'note': note,
       });
 
-      final customerId = (sale['customer_id'] as num?)?.toInt();
-      final rewardEarned =
-          (sale['loyalty_reward_earned'] as num?)?.toInt() ?? 0;
-      final rewardRevoked =
-          (sale['loyalty_reward_revoked'] as num?)?.toInt() ?? 0;
-      if (customerId != null && rewardEarned == 1 && rewardRevoked == 0) {
-        final customerRows = await txn.query(
-          'customers',
-          where: 'id = ?',
-          whereArgs: [customerId],
-          limit: 1,
-        );
-        if (customerRows.isNotEmpty) {
-          final currentBalance =
-              (customerRows.first['loyalty_balance'] as num?)?.toDouble() ??
-                  0.0;
-          final earnedRows = await txn.rawQuery(
-            '''
-            SELECT SUM(COALESCE(amount,0)) AS earned
-            FROM loyalty_transactions
-            WHERE sale_id = ? AND type = 'earn'
-            ''',
-            [saleId],
-          );
-          final earnedAmount = earnedRows.isNotEmpty
-              ? _numFromRow(earnedRows.first, 'earned')
-              : 0.0;
-          final amountToRevoke =
-              currentBalance.clamp(0.0, earnedAmount).toDouble();
-          final newBalance =
-              (currentBalance - amountToRevoke).clamp(0.0, double.infinity);
-          await txn.update(
-            'customers',
-            {
-              'loyalty_balance': newBalance,
-              'updated_at': now,
-            },
-            where: 'id = ?',
-            whereArgs: [customerId],
-          );
-          await txn.update(
-            'sales',
-            {'loyalty_reward_revoked': 1},
-            where: 'id = ?',
-            whereArgs: [saleId],
-          );
-          await _recordLoyaltyTransaction(
-            txn,
-            customerId: customerId,
-            saleId: saleId,
-            type: 'revoke',
-            amount: -amountToRevoke,
-            balanceAfter: newBalance,
-            note: 'سحب مكافأة بسبب استرجاع من الفاتورة',
-          );
-          debugPrint(
-              '[Loyalty] revoked=$amountToRevoke customer=$customerId sale=$saleId balance=$newBalance');
-        }
-      }
+      // ── 4. المرتجعات: عدّل sale_items وأرجع المخزون ─────────────────────────
+      double totalReturnedValue = 0.0;
 
       for (final entry in returnsMap.entries) {
         final pid = entry.key;
@@ -1839,32 +1822,30 @@ class DBHelper {
         final itemRows = await txn.query(
           'sale_items',
           where:
-              'sale_id = ? AND product_id = ? AND COALESCE(returned_quantity,0) < COALESCE(quantity,0)',
+          'sale_id = ? AND product_id = ? AND COALESCE(returned_quantity,0) < COALESCE(quantity,0)',
           whereArgs: [saleId, pid],
           limit: 1,
         );
-        if (itemRows.isEmpty) {
-          throw 'هذا المنتج تم استرجاعه بالفعل';
-        }
+        if (itemRows.isEmpty) throw 'هذا المنتج تم استرجاعه بالفعل';
+
         final saleItem = Map<String, dynamic>.from(itemRows.first);
         final soldQty = (saleItem['quantity'] as num?)?.toInt() ?? 0;
-        final alreadyReturned =
-            (saleItem['returned_quantity'] as num?)?.toInt() ?? 0;
-        final availableToReturn = soldQty - alreadyReturned;
-        if (qtyReturn > availableToReturn) {
+        final alreadyReturned = (saleItem['returned_quantity'] as num?)?.toInt() ?? 0;
+        final available = soldQty - alreadyReturned;
+
+        if (qtyReturn > available) {
           throw 'الكمية المطلوبة أكبر من الكمية المتاحة للمرتجع';
         }
-        final prodRows = await txn.query('products',
-            where: 'id = ?', whereArgs: [pid], limit: 1);
-        if (prodRows.isEmpty) throw 'Product $pid not found in products table';
-        final price = ((saleItem['price'] as num?)?.toDouble() ?? 0.0);
+
+        final unitPrice = (saleItem['price'] as num?)?.toDouble() ?? 0.0;
+        totalReturnedValue += unitPrice * qtyReturn;
 
         await txn.insert('sale_return_items', {
           'return_id': returnRowId,
           'product_id': pid,
           'qty': qtyReturn,
           'is_replacement': 0,
-          'price': price,
+          'price': unitPrice,
         });
 
         final saleItemId = (saleItem['id'] as num?)?.toInt();
@@ -1881,73 +1862,188 @@ class DBHelper {
             whereArgs: [saleItemId],
           );
           debugPrint(
-              '[Return] updated sale_item id=$saleItemId product=$pid returnedQty=$newReturnedQty/$soldQty fullyReturned=$fullyReturned');
+              '[Return] sale_item=$saleItemId product=$pid retQty=$newReturnedQty/$soldQty fully=$fullyReturned');
         }
 
+        // أرجع المخزون
+        final prodRows = await txn.query(
+          'products',
+          where: 'id = ?',
+          whereArgs: [pid],
+          limit: 1,
+        );
+        if (prodRows.isEmpty) throw 'Product $pid not found';
+
         final prod = Map<String, dynamic>.from(prodRows.first);
-        final unitsInCarton = (prod['units_in_carton'] as num).toInt();
-        final currentCartons = (prod['quantity'] as num).toInt();
-        final currentRemainder =
-            (prod['units_remainder'] as num?)?.toInt() ?? 0;
-        final newTotal =
-            currentCartons * unitsInCarton + currentRemainder + qtyReturn;
+        final uic = (prod['units_in_carton'] as num).toInt();
+        final cur = (prod['quantity'] as num).toInt() * uic +
+            ((prod['units_remainder'] as num?)?.toInt() ?? 0);
+        final newT = cur + qtyReturn;
+
         await txn.update(
-            'products',
-            {
-              'quantity': unitsInCarton > 0 ? (newTotal ~/ unitsInCarton) : 0,
-              'units_remainder':
-                  unitsInCarton > 0 ? (newTotal % unitsInCarton) : newTotal,
-            },
-            where: 'id = ?',
-            whereArgs: [pid]);
+          'products',
+          {
+            'quantity': uic > 0 ? (newT ~/ uic) : 0,
+            'units_remainder': uic > 0 ? (newT % uic) : newT,
+          },
+          where: 'id = ?',
+          whereArgs: [pid],
+        );
       }
+
+      // ── 5. الاستبدالات: أنقص المخزون ────────────────────────────────────────
+      double totalExchangeValue = 0.0;
 
       for (final entry in additionsMap.entries) {
         final pid = entry.key;
         final qtyAdd = entry.value;
         if (qtyAdd <= 0) continue;
 
-        final prodRows = await txn.query('products',
-            where: 'id = ?', whereArgs: [pid], limit: 1);
+        final prodRows = await txn.query(
+          'products',
+          where: 'id = ?',
+          whereArgs: [pid],
+          limit: 1,
+        );
         if (prodRows.isEmpty) throw 'Replacement product $pid not found';
+
         final prod = Map<String, dynamic>.from(prodRows.first);
-        final unitsInCarton = (prod['units_in_carton'] as num).toInt();
-        final currentCartons = (prod['quantity'] as num).toInt();
-        final currentRemainder =
-            (prod['units_remainder'] as num?)?.toInt() ?? 0;
-        final currentTotal = currentCartons * unitsInCarton + currentRemainder;
-        if (qtyAdd > currentTotal)
-          throw 'Not enough stock for replacement product ${prod['name']}';
-        final price = (prod['selling_price'] as num?)?.toDouble() ?? 0.0;
+        final uic = (prod['units_in_carton'] as num).toInt();
+        final cur = (prod['quantity'] as num).toInt() * uic +
+            ((prod['units_remainder'] as num?)?.toInt() ?? 0);
+
+        if (qtyAdd > cur) throw 'Not enough stock for ${prod['name']}';
+
+        final unitPrice = (prod['selling_price'] as num?)?.toDouble() ?? 0.0;
+        totalExchangeValue += unitPrice * qtyAdd;
 
         await txn.insert('sale_return_items', {
           'return_id': returnRowId,
           'product_id': pid,
           'qty': qtyAdd,
           'is_replacement': 1,
-          'price': price,
+          'price': unitPrice,
         });
 
-        final newTotal = currentTotal - qtyAdd;
+        final newT = cur - qtyAdd;
         await txn.update(
-            'products',
-            {
-              'quantity': unitsInCarton > 0 ? (newTotal ~/ unitsInCarton) : 0,
-              'units_remainder':
-                  unitsInCarton > 0 ? (newTotal % unitsInCarton) : newTotal,
-            },
-            where: 'id = ?',
-            whereArgs: [pid]);
-      }
-
-      final combinedNote = (oldNote.isEmpty ? '' : '$oldNote | ') + note;
-      await txn.update(
-          'sales',
+          'products',
           {
-            'return_note': combinedNote,
+            'quantity': uic > 0 ? (newT ~/ uic) : 0,
+            'units_remainder': uic > 0 ? (newT % uic) : newT,
           },
           where: 'id = ?',
-          whereArgs: [saleId]);
+          whereArgs: [pid],
+        );
+      }
+
+      // ── 6. احسب الـ net وحدّث sale_returns بالقيم الصح ─────────────────────
+      final net = totalExchangeValue - totalReturnedValue;
+      final refundAmount = net < 0 ? -net : 0.0;
+      final extraPaid = net > 0 ? net : 0.0;
+
+      await txn.update(
+        'sale_returns',
+        {
+          'paid_delta': net,
+          'refund_amount': refundAmount,
+        },
+        where: 'id = ?',
+        whereArgs: [returnRowId],
+      );
+
+      // ── 7. عدّل total الفاتورة فقط — paid_amount يفضل زي ما هو ─────────────
+      final newTotal =
+      (oldTotal - totalReturnedValue + totalExchangeValue).clamp(0.0, double.infinity);
+
+      final isCredit = newTotal > oldPaid ? 1 : 0;
+
+      await txn.update(
+        'sales',
+        {
+          'total': newTotal,
+          'is_credit': isCredit,
+          'return_note': (oldNote.isEmpty ? '' : '$oldNote | ') + note,
+        },
+        where: 'id = ?',
+        whereArgs: [saleId],
+      );
+
+      // ── 8. إعادة حساب مكافأة الولاء على إجمالي الفاتورة الجديد ─────────────
+      // السلوك:
+      // - لو الفاتورة كان عليها مكافأة ولاء أصلًا
+      // - نحسب 3% من newTotal
+      // - نطبّق الفرق بين المكافأة الحالية على الفاتورة والمكافأة الجديدة
+      if (customerId != null && rewardEarned == 1) {
+        final loyaltyRows = await txn.rawQuery(
+          '''
+        SELECT COALESCE(SUM(amount), 0) AS applied
+        FROM loyalty_transactions
+        WHERE sale_id = ?
+          AND type IN ('earn', 'adjust', 'revoke')
+        ''',
+          [saleId],
+        );
+
+        final currentRewardApplied = loyaltyRows.isNotEmpty
+            ? _numFromRow(loyaltyRows.first, 'applied')
+            : (oldTotal * 0.03).clamp(0.0, double.infinity);
+
+        final newEarnedAmount = (newTotal * 0.03).clamp(0.0, double.infinity);
+        final deltaReward = newEarnedAmount - currentRewardApplied;
+
+        if (deltaReward.abs() > 0.000001) {
+          final customerRows = await txn.query(
+            'customers',
+            where: 'id = ?',
+            whereArgs: [customerId],
+            limit: 1,
+          );
+
+          if (customerRows.isNotEmpty) {
+            final currentBalance =
+                (customerRows.first['loyalty_balance'] as num?)?.toDouble() ??
+                    0.0;
+
+            final newBalance =
+            (currentBalance + deltaReward).clamp(0.0, double.infinity);
+
+            await txn.update(
+              'customers',
+              {'loyalty_balance': newBalance, 'updated_at': now},
+              where: 'id = ?',
+              whereArgs: [customerId],
+            );
+
+            await _recordLoyaltyTransaction(
+              txn,
+              customerId: customerId,
+              saleId: saleId,
+              type: 'adjust',
+              amount: deltaReward,
+              balanceAfter: newBalance,
+              note: 'إعادة حساب مكافأة الولاء بعد الاسترجاع أو الاستبدال',
+            );
+          }
+        }
+
+        await txn.update(
+          'sales',
+          {
+            'loyalty_reward_earned': newEarnedAmount > 0 ? 1 : 0,
+            'loyalty_reward_revoked': 0,
+          },
+          where: 'id = ?',
+          whereArgs: [saleId],
+        );
+      }
+
+      debugPrint('[ReturnExchange] sale=$saleId '
+          'oldTotal=$oldTotal oldPaid=$oldPaid '
+          'returnedVal=$totalReturnedValue exchangeVal=$totalExchangeValue '
+          'newTotal=$newTotal net=$net '
+          'refund=$refundAmount extraPaid=$extraPaid '
+          'isCredit=$isCredit');
     });
   }
 
@@ -2085,8 +2181,8 @@ class DBHelper {
 
     if (found != null) {
       final pid = (found['id'] as num).toInt();
-      final unitsInCarton = (found['units_in_carton'] as num).toInt();
-      final totalUnitsToAdd = cartons * unitsInCarton + units;
+      const unitsInCarton = 1;
+      final totalUnitsToAdd = cartons + units;
 
       if (totalUnitsToAdd > 0) {
         await increaseProductStockByUnits(pid, totalUnitsToAdd);
@@ -2095,26 +2191,22 @@ class DBHelper {
       double unitPrice = 0.0;
       if (purchasePricePerUnit != null) {
         unitPrice = purchasePricePerUnit;
-      } else if (purchasePricePerCarton != null && unitsInCarton > 0) {
-        unitPrice = purchasePricePerCarton / unitsInCarton;
+      } else if (purchasePricePerCarton != null) {
+        unitPrice = purchasePricePerCarton;
       } else if ((found['purchase_price'] as num?) != null &&
-          (found['purchase_price'] as num) > 0 &&
-          unitsInCarton > 0) {
-        // fallback to stored purchase price (assumed carton price)
-        unitPrice = (found['purchase_price'] as num).toDouble() /
-            (unitsInCarton > 0 ? unitsInCarton : 1);
+          (found['purchase_price'] as num) > 0) {
+        unitPrice = (found['purchase_price'] as num).toDouble();
       }
 
-      double? newCartonPrice;
+      double? newUnitPrice;
       if (purchasePricePerCarton != null) {
-        newCartonPrice = purchasePricePerCarton;
+        newUnitPrice = purchasePricePerCarton;
       } else if (purchasePricePerUnit != null) {
-        newCartonPrice =
-            purchasePricePerUnit * (unitsInCarton > 0 ? unitsInCarton : 1);
+        newUnitPrice = purchasePricePerUnit;
       }
 
-      if (newCartonPrice != null) {
-        await db.update('products', {'purchase_price': newCartonPrice},
+      if (newUnitPrice != null) {
+        await db.update('products', {'purchase_price': newUnitPrice},
             where: 'id = ?', whereArgs: [pid]);
       }
 
@@ -2131,7 +2223,7 @@ class DBHelper {
         'cartons': cartons,
         'units': units,
         'units_in_carton': unitsInCarton,
-        'purchase_price_per_carton': newCartonPrice,
+        'purchase_price_per_carton': newUnitPrice,
         'purchase_price_per_unit': unitPrice > 0 ? unitPrice : null,
         'payment_type': paymentType,
         'paid_amount': paidAmount,
@@ -2171,18 +2263,14 @@ class DBHelper {
         };
       }
 
-      final cartonPrice = purchasePricePerCarton ??
-          (purchasePricePerUnit != null
-              ? purchasePricePerUnit * unitsInCartonIfNew
-              : null) ??
-          0.0;
+      final unitPurchasePrice =
+          purchasePricePerUnit ?? purchasePricePerCarton ?? 0.0;
 
-      final initialCartons = cartons;
-      final initialRemainder = units;
-      final totalUnits = initialCartons * unitsInCartonIfNew + initialRemainder;
+      final initialCartons = cartons + units;
+      const initialRemainder = 0;
+      final totalUnits = initialCartons;
 
-      final unitPrice = purchasePricePerUnit ??
-          (unitsInCartonIfNew > 0 ? (cartonPrice / unitsInCartonIfNew) : 0.0);
+      final unitPrice = unitPurchasePrice;
       final totalCost = unitPrice * totalUnits;
       double due = totalCost - paidAmount;
       if (due < 0) due = 0.0;
@@ -2190,9 +2278,9 @@ class DBHelper {
       final newId = await db.insert('products', {
         'barcode': b,
         'name': n,
-        'purchase_price': cartonPrice,
+        'purchase_price': unitPurchasePrice,
         'selling_price': sellingPricePerUnitIfNew,
-        'units_in_carton': unitsInCartonIfNew,
+        'units_in_carton': 1,
         'quantity': initialCartons,
         'units_remainder': initialRemainder,
         'production_date': '',
@@ -2210,8 +2298,8 @@ class DBHelper {
         'cashier_username': receivedBy,
         'cartons': cartons,
         'units': units,
-        'units_in_carton': unitsInCartonIfNew,
-        'purchase_price_per_carton': cartonPrice,
+        'units_in_carton': 1,
+        'purchase_price_per_carton': unitPurchasePrice,
         'purchase_price_per_unit': unitPrice > 0 ? unitPrice : null,
         'payment_type': paymentType,
         'paid_amount': paidAmount,
@@ -3420,31 +3508,48 @@ class DBHelper {
     debugPrint(
         '[CloseShiftSummaryDiagnostic] cashier=${cashierName.trim()} fromDateTime=$fromDateTime toDateTime=$toDateTime salesRange=${diagnosticRows.isNotEmpty ? diagnosticRows.first : {}}');
 
-    final cashRows = await db.rawQuery(
+    double originalSaleTotal(Map<String, Object?> row) {
+      final subtotal = _numFromRow(row, 'items_subtotal');
+      if (subtotal <= 0) return _numFromRow(row, 'total');
+      final discountType = (row['discount_type'] ?? 'fixed').toString();
+      final discountValue = _numFromRow(row, 'discount_value');
+      final loyaltyDiscount = _numFromRow(row, 'loyalty_discount');
+      var discountAmount = 0.0;
+      if (discountType == 'percent') {
+        discountAmount = subtotal * (discountValue / 100.0);
+      } else {
+        discountAmount = discountValue;
+      }
+      if (discountAmount < 0) discountAmount = 0.0;
+      if (discountAmount > subtotal) discountAmount = subtotal;
+      final total = subtotal - discountAmount - loyaltyDiscount;
+      return total.clamp(0.0, double.infinity).toDouble();
+    }
+
+    final cashSaleRows = await db.rawQuery(
       '''
-      SELECT SUM(
-        CASE
-          WHEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0)) > 0
-          THEN ((COALESCE(paid_amount,0) - COALESCE(change_amount,0)) - COALESCE(drawer_withdrawn_amount,0))
-          ELSE 0
-        END
-	      ) AS cash_sales
-	      FROM sales
-	      WHERE LOWER(TRIM(COALESCE(payment_method,''))) = 'cash'
-	        AND NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
-	        AND (
-	          (
-	            TRIM(COALESCE(cashier_username,'')) = ?
-	            AND (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
-	            AND datetime(date) BETWEEN datetime(?) AND datetime(?)
-	          )
-	          OR
-	          (
-	            TRIM(COALESCE(credit_paid_by,'')) = ?
-	            AND datetime(credit_paid_at) BETWEEN datetime(?) AND datetime(?)
-	          )
-	        )
-	      ''',
+      SELECT s.*,
+             COALESCE((
+               SELECT SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0))
+               FROM sale_items si
+               WHERE si.sale_id = s.id
+             ), COALESCE(s.total,0)) AS items_subtotal
+      FROM sales s
+      WHERE LOWER(TRIM(COALESCE(s.payment_method,''))) = 'cash'
+        AND NOT (COALESCE(s.is_return,0) = 1 AND COALESCE(s.return_of_sale_id,0) > 0)
+        AND (
+          (
+            TRIM(COALESCE(s.cashier_username,'')) = ?
+            AND (s.credit_paid_at IS NULL OR TRIM(COALESCE(s.credit_paid_at,'')) = '')
+            AND datetime(s.date) BETWEEN datetime(?) AND datetime(?)
+          )
+          OR
+          (
+            TRIM(COALESCE(s.credit_paid_by,'')) = ?
+            AND datetime(s.credit_paid_at) BETWEEN datetime(?) AND datetime(?)
+          )
+        )
+		      ''',
       [
         cashierName.trim(),
         fromDateTime,
@@ -3454,8 +3559,12 @@ class DBHelper {
         toDateTime,
       ],
     );
-    final cashSales =
-        cashRows.isNotEmpty ? _numFromRow(cashRows.first, 'cash_sales') : 0.0;
+    final cashSales = cashSaleRows.fold(0.0, (sum, row) {
+      final originalCash = originalSaleTotal(row);
+      final withdrawn = _numFromRow(row, 'drawer_withdrawn_amount');
+      final net = (originalCash - withdrawn).clamp(0.0, double.infinity);
+      return sum + net;
+    });
 
     final unpaidCreditRows = await db.rawQuery(
       '''
@@ -3481,23 +3590,28 @@ class DBHelper {
 
     final salesRows = await db.rawQuery(
       '''
-	      SELECT SUM(COALESCE(total,0)) AS gross_sales
-	      FROM sales
-	      WHERE NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
-	        AND NOT (COALESCE(is_credit,0) = 1 AND COALESCE(paid_amount,0) < COALESCE(total,0))
-	        AND (
-	          (
-	            TRIM(COALESCE(cashier_username,'')) = ?
-	            AND (credit_paid_at IS NULL OR TRIM(COALESCE(credit_paid_at,'')) = '')
-	            AND datetime(date) BETWEEN datetime(?) AND datetime(?)
-	          )
-	          OR
-	          (
-	            TRIM(COALESCE(credit_paid_by,'')) = ?
-	            AND datetime(credit_paid_at) BETWEEN datetime(?) AND datetime(?)
-	          )
-	        )
-	      ''',
+      SELECT s.*,
+             COALESCE((
+               SELECT SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0))
+               FROM sale_items si
+               WHERE si.sale_id = s.id
+             ), COALESCE(s.total,0)) AS items_subtotal
+      FROM sales s
+      WHERE NOT (COALESCE(s.is_return,0) = 1 AND COALESCE(s.return_of_sale_id,0) > 0)
+        AND NOT (COALESCE(s.is_credit,0) = 1 AND COALESCE(s.paid_amount,0) < COALESCE(s.total,0))
+        AND (
+          (
+            TRIM(COALESCE(s.cashier_username,'')) = ?
+            AND (s.credit_paid_at IS NULL OR TRIM(COALESCE(s.credit_paid_at,'')) = '')
+            AND datetime(s.date) BETWEEN datetime(?) AND datetime(?)
+          )
+          OR
+          (
+            TRIM(COALESCE(s.credit_paid_by,'')) = ?
+            AND datetime(s.credit_paid_at) BETWEEN datetime(?) AND datetime(?)
+          )
+        )
+		      ''',
       [
         cashierName.trim(),
         fromDateTime,
@@ -3507,9 +3621,10 @@ class DBHelper {
         toDateTime,
       ],
     );
-    final grossSales = salesRows.isNotEmpty
-        ? _numFromRow(salesRows.first, 'gross_sales')
-        : 0.0;
+    final grossSales = salesRows.fold(
+      0.0,
+      (sum, row) => sum + originalSaleTotal(row),
+    );
 
     final returnsRows = await db.rawQuery(
       '''
@@ -3922,93 +4037,89 @@ class DBHelper {
   }) async {
     final db = await database;
     await _ensureProductProfitMarkedColumn(db);
+    await _migrateUnitModePurchaseCosts(db);
+
     final fromStr = DateTime(from.year, from.month, from.day).toIso8601String();
-    final toStr =
-        DateTime(to.year, to.month, to.day, 23, 59, 59).toIso8601String();
+    final toStr = DateTime(to.year, to.month, to.day, 23, 59, 59).toIso8601String();
+
     final rows = await db.rawQuery(
       '''
-        WITH sale_subtotals AS (
-          SELECT sale_id,
-                 SUM(COALESCE(quantity,0) * COALESCE(price,0)) AS subtotal
-          FROM sale_items
-          GROUP BY sale_id
-        ),
-        eligible_sales AS (
-          SELECT *,
-                 CASE
-                   WHEN credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != ''
-                   THEN credit_paid_at
-                   ELSE date
-                 END AS profit_date
-          FROM sales
-          WHERE COALESCE(is_return,0) = 0
-            AND (
-              COALESCE(is_credit,0) = 0
-              OR (credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != '')
-            )
+    WITH eligible_sales AS (
+      SELECT *,
+             CASE
+               WHEN credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != ''
+               THEN credit_paid_at
+               ELSE date
+             END AS profit_date
+      FROM sales
+      WHERE COALESCE(is_return,0) = 0
+        AND (
+          COALESCE(is_credit,0) = 0
+          OR (credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != '')
         )
-	      SELECT
-	        p.id AS product_id,
-	        p.name AS product_name,
-	        p.barcode AS barcode,
-	        COALESCE(p.purchase_price,0) AS purchase_price,
-	        COALESCE(p.selling_price,0) AS selling_price,
-	        COALESCE(p.units_in_carton,1) AS units_in_carton,
-	        COALESCE(p.profit_marked,0) AS profit_marked,
-	        SUM(COALESCE(si.quantity,0)) AS gross_quantity_sold,
-	        COALESCE(ret.returned_qty, 0) AS returned_quantity,
-	        SUM(COALESCE(si.quantity,0)) - COALESCE(ret.returned_qty, 0) AS quantity_sold,
-	        (SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0) *
-            CASE
-              WHEN COALESCE(ss.subtotal,0) > 0 THEN COALESCE(s.total,0) / ss.subtotal
-              ELSE 1
-            END
-          ) - COALESCE(ret.returned_revenue, 0)) AS revenue,
-	        (SUM(((COALESCE(si.price,0) *
-            CASE
-              WHEN COALESCE(ss.subtotal,0) > 0 THEN COALESCE(s.total,0) / ss.subtotal
-              ELSE 1
-            END
-          ) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) - COALESCE(ret.returned_profit, 0)) AS profit
-	      FROM sale_items si
-	      JOIN eligible_sales s ON s.id = si.sale_id
-        LEFT JOIN sale_subtotals ss ON ss.sale_id = si.sale_id
-	      JOIN products p ON p.id = si.product_id
-	      LEFT JOIN (
-	        SELECT
-	          sri.product_id,
-	          SUM(COALESCE(sri.qty, 0)) AS returned_qty,
-	          SUM(COALESCE(sri.qty, 0) * COALESCE(sri.price, 0) *
-              CASE
-                WHEN COALESCE(ss2.subtotal,0) > 0 THEN COALESCE(s2.total,0) / ss2.subtotal
-                ELSE 1
-              END
-            ) AS returned_revenue,
-	          SUM(COALESCE(sri.qty, 0) * ((COALESCE(sri.price, 0) *
-              CASE
-                WHEN COALESCE(ss2.subtotal,0) > 0 THEN COALESCE(s2.total,0) / ss2.subtotal
-                ELSE 1
-              END
-            ) - COALESCE(si2.purchase_price_per_unit, 0))) AS returned_profit
-	        FROM sale_return_items sri
-	        JOIN sale_returns sr ON sr.id = sri.return_id
-          JOIN eligible_sales s2 ON s2.id = sr.sale_id
-	        JOIN sale_items si2 ON si2.sale_id = sr.sale_id AND si2.product_id = sri.product_id
-          LEFT JOIN sale_subtotals ss2 ON ss2.sale_id = sr.sale_id
-	        WHERE COALESCE(sri.is_replacement, 0) = 0
-	          AND datetime(sr.date) >= datetime(?)
-	          AND datetime(sr.date) <= datetime(?)
-	        GROUP BY sri.product_id
-	      ) ret ON ret.product_id = p.id
-	      WHERE datetime(s.profit_date) >= datetime(?)
-	        AND datetime(s.profit_date) <= datetime(?)
-	        AND (? = 0 OR COALESCE(p.profit_marked,0) = 1)
-	      GROUP BY p.id, p.name, p.barcode, p.purchase_price, p.selling_price, p.units_in_carton, p.profit_marked
-	      HAVING quantity_sold > 0
-	      ORDER BY profit DESC
-	      ''',
+    )
+    SELECT
+      p.id AS product_id,
+      p.name AS product_name,
+      p.barcode AS barcode,
+      COALESCE(p.purchase_price,0) AS purchase_price,
+      COALESCE(p.selling_price,0) AS selling_price,
+      COALESCE(p.units_in_carton,1) AS units_in_carton,
+      COALESCE(p.profit_marked,0) AS profit_marked,
+      SUM(COALESCE(si.quantity,0)) AS gross_quantity_sold,
+      COALESCE(ret.returned_qty, 0) AS returned_quantity,
+      SUM(COALESCE(si.quantity,0)) - COALESCE(ret.returned_qty, 0) AS quantity_sold,
+      (
+        SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0))
+        - COALESCE(ret.returned_revenue, 0)
+      ) AS revenue,
+      (
+        SUM(
+          (COALESCE(si.price,0) - COALESCE(si.purchase_price_per_unit,0))
+          * COALESCE(si.quantity,0)
+        )
+        - COALESCE(ret.returned_profit, 0)
+      ) AS profit
+    FROM sale_items si
+    JOIN eligible_sales s ON s.id = si.sale_id
+    JOIN products p ON p.id = si.product_id
+    LEFT JOIN (
+      SELECT
+        sri.product_id,
+        SUM(COALESCE(sri.qty, 0)) AS returned_qty,
+        SUM(COALESCE(sri.qty, 0) * COALESCE(sri.price, 0)) AS returned_revenue,
+        SUM(
+          COALESCE(sri.qty, 0)
+          * (COALESCE(sri.price, 0) - COALESCE(si2.purchase_price_per_unit, 0))
+        ) AS returned_profit
+      FROM sale_return_items sri
+      JOIN sale_returns sr ON sr.id = sri.return_id
+      JOIN eligible_sales s2 ON s2.id = sr.sale_id
+      JOIN sale_items si2
+        ON si2.sale_id = sr.sale_id
+       AND si2.product_id = sri.product_id
+      WHERE COALESCE(sri.is_replacement, 0) = 0
+        AND datetime(sr.date) >= datetime(?)
+        AND datetime(sr.date) <= datetime(?)
+      GROUP BY sri.product_id
+    ) ret ON ret.product_id = p.id
+    WHERE datetime(s.profit_date) >= datetime(?)
+      AND datetime(s.profit_date) <= datetime(?)
+      AND (? = 0 OR COALESCE(p.profit_marked,0) = 1)
+    GROUP BY
+      p.id,
+      p.name,
+      p.barcode,
+      p.purchase_price,
+      p.selling_price,
+      p.units_in_carton,
+      p.profit_marked
+    HAVING quantity_sold > 0
+    ORDER BY profit DESC
+    ''',
       [fromStr, toStr, fromStr, toStr, markedOnly ? 1 : 0],
     );
+
     return rows.map((r) => Map<String, dynamic>.from(r)).toList();
   }
 
@@ -4101,6 +4212,7 @@ class DBHelper {
     await _ensureSaleReturnsColumns(db);
     await _ensurePurchaseReceiptsTable(db);
     await _ensurePurchaseReceiptsColumns(db);
+    await _migrateUnitModePurchaseCosts(db);
 
     final from = DateTime(year, month, 1);
     final to = DateTime(year, month + 1, 0, 23, 59, 59);
@@ -4109,154 +4221,142 @@ class DBHelper {
 
     final salesRows = await db.rawQuery(
       '''
-      WITH sale_subtotals AS (
-        SELECT sale_id,
-               SUM(COALESCE(quantity,0) * COALESCE(price,0)) AS subtotal
-        FROM sale_items
-        GROUP BY sale_id
-      ),
-      eligible_sales AS (
-        SELECT *,
-               CASE
-                 WHEN credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != ''
-                 THEN credit_paid_at
-                 ELSE date
-               END AS profit_date
-        FROM sales
-        WHERE COALESCE(is_return,0) = 0
-          AND (
-            COALESCE(is_credit,0) = 0
-            OR (credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != '')
-          )
-      )
-      SELECT date(s.profit_date) AS day,
-             SUM(((COALESCE(si.price,0) *
-               CASE
-                 WHEN COALESCE(ss.subtotal,0) > 0 THEN COALESCE(s.total,0) / ss.subtotal
-                 ELSE 1
-               END
-             ) - COALESCE(si.purchase_price_per_unit,0)) * COALESCE(si.quantity,0)) AS sales_profit
-      FROM sale_items si
-      JOIN eligible_sales s ON s.id = si.sale_id
-      LEFT JOIN sale_subtotals ss ON ss.sale_id = si.sale_id
-      WHERE datetime(s.profit_date) >= datetime(?)
-        AND datetime(s.profit_date) <= datetime(?)
-      GROUP BY date(s.profit_date)
-      ''',
+    WITH eligible_sales AS (
+      SELECT *,
+             CASE
+               WHEN credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != ''
+               THEN credit_paid_at
+               ELSE date
+             END AS profit_date
+      FROM sales
+      WHERE COALESCE(is_return,0) = 0
+        AND (
+          COALESCE(is_credit,0) = 0
+          OR (credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != '')
+        )
+    )
+    SELECT date(s.profit_date) AS day,
+           SUM(
+             (
+               COALESCE(si.price,0) - COALESCE(si.purchase_price_per_unit,0)
+             ) * COALESCE(si.quantity,0)
+           ) AS sales_profit
+    FROM sale_items si
+    JOIN eligible_sales s ON s.id = si.sale_id
+    WHERE datetime(s.profit_date) >= datetime(?)
+      AND datetime(s.profit_date) <= datetime(?)
+    GROUP BY date(s.profit_date)
+    ''',
       [fromStr, toStr],
     );
 
     final returnsRows = await db.rawQuery(
       '''
-      WITH sale_subtotals AS (
-        SELECT sale_id,
-               SUM(COALESCE(quantity,0) * COALESCE(price,0)) AS subtotal
-        FROM sale_items
-        GROUP BY sale_id
-      ),
-      eligible_sales AS (
-        SELECT *,
-               CASE
-                 WHEN credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != ''
-                 THEN credit_paid_at
-                 ELSE date
-               END AS profit_date
-        FROM sales
-        WHERE COALESCE(is_return,0) = 0
-          AND (
-            COALESCE(is_credit,0) = 0
-            OR (credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != '')
-          )
-      )
-      SELECT date(sr.date) AS day,
-             SUM(COALESCE(sri.qty,0) * ((COALESCE(sri.price,0) *
-               CASE
-                 WHEN COALESCE(ss.subtotal,0) > 0 THEN COALESCE(s.total,0) / ss.subtotal
-                 ELSE 1
-               END
-             ) - COALESCE(si.purchase_price_per_unit,0))) AS returned_profit
-      FROM sale_return_items sri
-      JOIN sale_returns sr ON sr.id = sri.return_id
-      JOIN eligible_sales s ON s.id = sr.sale_id
-      JOIN sale_items si ON si.sale_id = sr.sale_id AND si.product_id = sri.product_id
-      LEFT JOIN sale_subtotals ss ON ss.sale_id = sr.sale_id
-      WHERE COALESCE(sri.is_replacement,0) = 0
-        AND datetime(sr.date) >= datetime(?)
-        AND datetime(sr.date) <= datetime(?)
-      GROUP BY date(sr.date)
-      ''',
+    WITH eligible_sales AS (
+      SELECT *,
+             CASE
+               WHEN credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != ''
+               THEN credit_paid_at
+               ELSE date
+             END AS profit_date
+      FROM sales
+      WHERE COALESCE(is_return,0) = 0
+        AND (
+          COALESCE(is_credit,0) = 0
+          OR (credit_paid_at IS NOT NULL AND TRIM(COALESCE(credit_paid_at,'')) != '')
+        )
+    )
+    SELECT date(sr.date) AS day,
+           SUM(
+             COALESCE(sri.qty, 0)
+             * (COALESCE(sri.price, 0) - COALESCE(si2.purchase_price_per_unit, 0))
+           ) AS returned_profit
+    FROM sale_return_items sri
+    JOIN sale_returns sr ON sr.id = sri.return_id
+    JOIN eligible_sales s2 ON s2.id = sr.sale_id
+    JOIN sale_items si2
+      ON si2.sale_id = sr.sale_id
+     AND si2.product_id = sri.product_id
+    WHERE COALESCE(sri.is_replacement, 0) = 0
+      AND datetime(sr.date) >= datetime(?)
+      AND datetime(sr.date) <= datetime(?)
+    GROUP BY date(sr.date)
+    ''',
       [fromStr, toStr],
     );
 
     final expensesRows = await db.rawQuery(
       '''
-      SELECT date(expense_date) AS day,
-             SUM(COALESCE(amount,0)) AS external_expenses
-      FROM shop_external_expenses
-      WHERE datetime(expense_date) >= datetime(?)
-        AND datetime(expense_date) <= datetime(?)
-      GROUP BY date(expense_date)
-      ''',
+    SELECT date(expense_date) AS day,
+           SUM(COALESCE(amount,0)) AS external_expenses
+    FROM shop_external_expenses
+    WHERE datetime(expense_date) >= datetime(?)
+      AND datetime(expense_date) <= datetime(?)
+    GROUP BY date(expense_date)
+    ''',
       [fromStr, toStr],
     );
 
     final purchasesRows = await db.rawQuery(
       '''
-      SELECT date(created_at) AS day,
-             SUM(
-               CASE
-                 WHEN (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) > 0
-                 THEN (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0))
-                 ELSE COALESCE(paid_amount,0)
-               END
-             ) AS paid_purchases
-      FROM purchase_receipts
-      WHERE datetime(created_at) >= datetime(?)
-        AND datetime(created_at) <= datetime(?)
-        AND (
-          (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) > 0
-          OR COALESCE(paid_amount,0) > 0
-        )
-      GROUP BY date(created_at)
-      ''',
+    SELECT date(created_at) AS day,
+           SUM(
+             CASE
+               WHEN (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) > 0
+               THEN (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0))
+               ELSE COALESCE(paid_amount,0)
+             END
+           ) AS paid_purchases
+    FROM purchase_receipts
+    WHERE datetime(created_at) >= datetime(?)
+      AND datetime(created_at) <= datetime(?)
+      AND (
+        (COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) > 0
+        OR COALESCE(paid_amount,0) > 0
+      )
+    GROUP BY date(created_at)
+    ''',
       [fromStr, toStr],
     );
 
     final salesByDay = <String, double>{};
     for (final row in salesRows) {
       salesByDay[(row['day'] ?? '').toString()] =
-          _numFromRow(row, 'sales_profit');
+          (row['sales_profit'] as num?)?.toDouble() ?? 0.0;
     }
 
     final returnsByDay = <String, double>{};
     for (final row in returnsRows) {
       returnsByDay[(row['day'] ?? '').toString()] =
-          _numFromRow(row, 'returned_profit').abs();
+          (row['returned_profit'] as num?)?.toDouble() ?? 0.0;
     }
 
     final expensesByDay = <String, double>{};
     for (final row in expensesRows) {
       expensesByDay[(row['day'] ?? '').toString()] =
-          _numFromRow(row, 'external_expenses');
+          (row['external_expenses'] as num?)?.toDouble() ?? 0.0;
     }
 
     final paidPurchasesByDay = <String, double>{};
     for (final row in purchasesRows) {
       paidPurchasesByDay[(row['day'] ?? '').toString()] =
-          _numFromRow(row, 'paid_purchases');
+          (row['paid_purchases'] as num?)?.toDouble() ?? 0.0;
     }
 
     final daysInMonth = DateTime(year, month + 1, 0).day;
     final out = <Map<String, dynamic>>[];
+
     for (var day = 1; day <= daysInMonth; day++) {
       final d = DateTime(year, month, day);
       final key =
           '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
       final grossProfit = salesByDay[key] ?? 0.0;
       final returnsProfit = returnsByDay[key] ?? 0.0;
       final externalExpenses = expensesByDay[key] ?? 0.0;
       final paidPurchases = paidPurchasesByDay[key] ?? 0.0;
       final shopProfit = grossProfit - returnsProfit;
+
       out.add({
         'date': key,
         'gross_profit': grossProfit,
@@ -4267,6 +4367,7 @@ class DBHelper {
         'net_profit': shopProfit - externalExpenses - paidPurchases,
       });
     }
+
     return out;
   }
 
@@ -4280,17 +4381,9 @@ class DBHelper {
       SELECT
         *,
         (COALESCE(quantity,0) * COALESCE(units_in_carton,1) + COALESCE(units_remainder,0)) AS total_units,
-        CASE
-          WHEN COALESCE(units_in_carton,0) > 0
-          THEN COALESCE(purchase_price,0) / units_in_carton
-          ELSE COALESCE(purchase_price,0)
-        END AS unit_purchase_price,
+        COALESCE(purchase_price,0) AS unit_purchase_price,
         ((COALESCE(quantity,0) * COALESCE(units_in_carton,1) + COALESCE(units_remainder,0)) *
-          CASE
-            WHEN COALESCE(units_in_carton,0) > 0
-            THEN COALESCE(purchase_price,0) / units_in_carton
-            ELSE COALESCE(purchase_price,0)
-          END
+          COALESCE(purchase_price,0)
         ) AS inventory_value
       FROM products
       WHERE (? = 0 OR COALESCE(profit_marked,0) = 1)

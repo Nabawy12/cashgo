@@ -11,7 +11,7 @@ import '../../models/product.dart';
 class ProcessReturnDialog extends StatefulWidget {
   final int originalSaleId;
   final List<Map<String, dynamic>>
-      items; // items from getSaleItemsBySaleId (passed by caller)
+  items; // items from getSaleItemsBySaleId (passed by caller)
   final String cashierUsername;
   final void Function() onDone; // notify parent to refresh
 
@@ -29,7 +29,8 @@ class ProcessReturnDialog extends StatefulWidget {
 
 class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
   final TextEditingController _replacementBarcodeController =
-      TextEditingController();
+  TextEditingController();
+  final FocusNode _replacementSearchFocus = FocusNode();
   bool _processing = false;
   bool _isExchange = false;
 
@@ -42,6 +43,10 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
   // replacement product info stored with keys used later: 'selling_price' and 'total_units', 'name', 'barcode'
   final Map<int, Map<String, dynamic>> _replacementProducts = {};
 
+  // inline name-search state (mirrors cashier screen behaviour)
+  List<Map<String, dynamic>> _inlineSearchResults = [];
+  bool _inlineLoading = false;
+
   @override
   void initState() {
     super.initState();
@@ -52,13 +57,14 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
       _selected[pid] = false;
       final orig = _originalQty(pid);
       _selectedQty[pid] =
-          orig > 0 ? 1 : 0; // default to 1 if original had stock
+      orig > 0 ? 1 : 0; // default to 1 if original had stock
     }
   }
 
   @override
   void dispose() {
     _replacementBarcodeController.dispose();
+    _replacementSearchFocus.dispose();
     super.dispose();
   }
 
@@ -163,50 +169,71 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     if (cur > 1) setState(() => _replacementQty[pid] = cur - 1);
   }
 
+  void _addReplacementProductMap(Map<String, dynamic> apiProduct) {
+    final product = Product.fromMap(apiProduct);
+    final pid = product.id;
+    if (pid == null) return;
+    final available = product.totalUnits ?? 0;
+    if (available <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('المنتج نفذ من المخزن'),
+        ),
+      ));
+      return;
+    }
+
+    setState(() {
+      _replacementProducts[pid] = {
+        'id': pid,
+        'name': product.name ?? '',
+        'barcode': product.barcode ?? '',
+        'selling_price': product.sellingPrice?.toDouble() ?? 0.0,
+        'total_units': product.totalUnits ?? 0,
+      };
+      final cur = _replacementQty[pid] ?? 0;
+      _replacementQty[pid] = (cur + 1) <= available ? (cur + 1) : available;
+    });
+  }
+
   /// Use ProductApi.getProductByBarcode (API lookup) instead of DB
   Future<void> _addReplacementByBarcode(String barcode) async {
     final code = barcode.trim();
     if (code.isEmpty) return;
 
     try {
-      final apiProduct = await ProductApi.getProductByBarcode(code);
-      if (apiProduct == null) {
+      // fetch ALL products sharing this barcode (some items may share codes)
+      final all = await ProductApi.getAllProducts();
+      final matches = all
+          .where((p) => (p['barcode']?.toString() ?? '').trim() == code)
+          .toList();
+
+      if (matches.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Directionality(
             textDirection: TextDirection.rtl,
             child: Text('المنتج غير موجود'),
           ),
         ));
-        _replacementBarcodeController.clear();
+        _clearReplacementSearch();
         return;
       }
 
-      final product = Product.fromMap(apiProduct);
-      final pid = product.id!;
-      final available = product.totalUnits ?? 0;
-      if (available <= 0) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Directionality(
-            textDirection: TextDirection.rtl,
-            child: Text('المنتج نفذ من المخزن'),
-          ),
-        ));
-        _replacementBarcodeController.clear();
+      Map<String, dynamic>? chosen;
+      if (matches.length == 1) {
+        chosen = matches.first;
+      } else {
+        chosen = await _showProductChoiceDialog(matches);
+      }
+
+      if (chosen == null) {
+        _clearReplacementSearch();
         return;
       }
 
-      setState(() {
-        _replacementProducts[pid] = {
-          'id': pid,
-          'name': product.name ?? '',
-          'barcode': product.barcode ?? code,
-          'selling_price': product.sellingPrice?.toDouble() ?? 0.0,
-          'total_units': product.totalUnits ?? 0,
-        };
-        final cur = _replacementQty[pid] ?? 0;
-        _replacementQty[pid] = (cur + 1) <= available ? (cur + 1) : available;
-      });
-      _replacementBarcodeController.clear();
+      _addReplacementProductMap(chosen);
+      _clearReplacementSearch();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Directionality(
@@ -214,8 +241,125 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
           child: Text('خطأ في جلب المنتج: $e'),
         ),
       ));
-      _replacementBarcodeController.clear();
+      _clearReplacementSearch();
     }
+  }
+
+  Future<void> _searchReplacementsByName(String q) async {
+    final query = q.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _inlineSearchResults = [];
+        _inlineLoading = false;
+      });
+      return;
+    }
+    setState(() => _inlineLoading = true);
+    try {
+      final all = await ProductApi.getAllProducts();
+      final needle = query.toLowerCase();
+      final results = all
+          .where((p) =>
+          (p['name'] ?? '').toString().toLowerCase().contains(needle))
+          .take(50)
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _inlineSearchResults = results;
+        _inlineLoading = false;
+      });
+    } catch (e) {
+      debugPrint('replacement name search error: $e');
+      if (!mounted) return;
+      setState(() {
+        _inlineSearchResults = [];
+        _inlineLoading = false;
+      });
+    }
+  }
+
+  void _clearReplacementSearch() {
+    _replacementBarcodeController.clear();
+    setState(() {
+      _inlineSearchResults = [];
+      _inlineLoading = false;
+    });
+  }
+
+  /// Dialog يعرض أسماء المنتجات فقط عند تكرار نفس الباركود — مطابق لشاشة الكاشير
+  Future<Map<String, dynamic>?> _showProductChoiceDialog(
+      List<Map<String, dynamic>> products,
+      ) {
+    return showDialog<Map<String, dynamic>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            backgroundColor: AppColorsDark.bgColor,
+            title: Center(
+                child: Text('اختر المنتج',
+                    style: TextStyle(color: AppColorsDark.mainTextDark))),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: products.length,
+                separatorBuilder: (_, __) => const Divider(height: 0.5),
+                itemBuilder: (context, i) {
+                  final product = products[i];
+                  final name = (product['name'] ?? '').toString();
+                  final price = (product['selling_price'] as num?)
+                      ?.toDouble()
+                      .toStringAsFixed(2) ??
+                      double.tryParse(
+                          product['selling_price']?.toString() ?? '')
+                          ?.toStringAsFixed(2) ??
+                      '0.00';
+                  final totalUnits = (product['total_units'] as num?)?.toInt();
+                  final cartons = (product['quantity'] as num?)?.toInt() ?? 0;
+                  final unitsInCarton =
+                      (product['units_in_carton'] as num?)?.toInt() ?? 0;
+                  final remainder =
+                      (product['units_remainder'] as num?)?.toInt() ?? 0;
+                  final available =
+                      totalUnits ?? (cartons * unitsInCarton + remainder);
+                  return ListTile(
+                    title: Text(name,
+                        style: TextStyle(
+                            color: AppColorsDark.mainTextDark, fontSize: 18)),
+                    subtitle: Text(
+                      'السعر: $price  •  المتاح: $available',
+                      style: TextStyle(color: AppColorsDark.mainTextLight),
+                    ),
+                    onTap: () {
+                      Navigator.of(context).pop(product);
+                    },
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                style: TextButton.styleFrom(
+                  backgroundColor: AppColorsDark.bgCardColor,
+                ),
+                onPressed: () => Navigator.of(ctx).pop(null),
+                child: Text(
+                  'إلغاء',
+                  style: TextStyle(
+                    color: Theme.of(context).brightness == Brightness.light
+                        ? Colors.black
+                        : Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   // Update local meta for offline cash/credit totals.
@@ -224,7 +368,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
       final meta = await Hive.openBox('meta');
       double cash = (meta.get('lastOfflineSale_cash') as num? ?? 0).toDouble();
       double credit =
-          (meta.get('lastOfflineSale_credit') as num? ?? 0).toDouble();
+      (meta.get('lastOfflineSale_credit') as num? ?? 0).toDouble();
 
       final pm = paymentMethod.toLowerCase();
       if (pm == 'cash') {
@@ -335,7 +479,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
 
       // determine paymentMethod: use 'cash' for payments, 'refund' when cashier returns money (server will interpret)
       final String paymentMethod =
-          paidAmount > 0 ? 'cash' : (refundAmount > 0 ? 'refund' : 'cash');
+      paidAmount > 0 ? 'cash' : (refundAmount > 0 ? 'refund' : 'cash');
 
       await DBHelper.instance.applyReturnExchangeToSale(
         saleId: widget.originalSaleId,
@@ -396,9 +540,9 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
           children: [
             Expanded(
                 child: Text(
-              name,
-              style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 15),
-            )),
+                  name,
+                  style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 15),
+                )),
             const SizedBox(width: 8),
             Text(
               'متاح : $available',
@@ -423,13 +567,134 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                 )),
             IconButton(
                 onPressed: () => setState(() {
-                      _replacementProducts.remove(pid);
-                      _replacementQty.remove(pid);
-                    }),
+                  _replacementProducts.remove(pid);
+                  _replacementQty.remove(pid);
+                }),
                 icon: Icon(Icons.delete, color: Colors.red.withOpacity(0.8))),
           ],
         ),
       ),
+    );
+  }
+
+  /// Builds the smart "add replacement" search field, mirroring the cashier
+  /// screen: typing letters/Arabic triggers a name search with inline
+  /// results, while typing digits (a barcode) and pressing enter/Add looks
+  /// the product up directly by barcode (handling duplicate-barcode choice).
+  Widget _buildReplacementSearchField() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: CustomFormField(
+                controller: _replacementBarcodeController,
+                focusNode: _replacementSearchFocus,
+                hint: 'امسح الباركود أو اكتب اسم المنتج ثم اضغط إدخال',
+                onChanged: (v) {
+                  final trimmed = v.trim();
+                  final containsLetters =
+                  RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
+                  if (containsLetters) {
+                    _searchReplacementsByName(trimmed);
+                  } else {
+                    setState(() {
+                      _inlineSearchResults = [];
+                      _inlineLoading = false;
+                    });
+                  }
+                },
+                onFieldSubmitted: (v) async {
+                  final trimmed = v.trim();
+                  if (trimmed.isEmpty) return;
+                  final containsLetters =
+                  RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
+                  if (containsLetters) {
+                    if (_inlineSearchResults.isNotEmpty) {
+                      _addReplacementProductMap(_inlineSearchResults.first);
+                      _clearReplacementSearch();
+                    }
+                  } else {
+                    await _addReplacementByBarcode(trimmed);
+                  }
+                },
+              ),
+            ),
+            const SizedBox(width: 8),
+            CustomButton(
+              text: 'أضف',
+              onPressed: () async {
+                final trimmed = _replacementBarcodeController.text.trim();
+                if (trimmed.isEmpty) return;
+                final containsLetters =
+                RegExp(r'[A-Za-z\u0621-\u064A]').hasMatch(trimmed);
+                if (containsLetters) {
+                  if (_inlineSearchResults.isNotEmpty) {
+                    _addReplacementProductMap(_inlineSearchResults.first);
+                    _clearReplacementSearch();
+                  }
+                } else {
+                  await _addReplacementByBarcode(trimmed);
+                }
+              },
+              infinity: false,
+            ),
+          ],
+        ),
+        if (_inlineLoading || _inlineSearchResults.isNotEmpty)
+          Container(
+            margin: const EdgeInsets.only(top: 8),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: AppColorsDark.bgCardColor,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            constraints: const BoxConstraints(maxHeight: 220),
+            child: _inlineLoading
+                ? Center(
+                child: Text('جاري البحث...',
+                    style: TextStyle(color: AppColorsDark.mainTextLight)))
+                : ListView.separated(
+              shrinkWrap: true,
+              itemCount: _inlineSearchResults.length,
+              separatorBuilder: (_, __) =>
+                  Divider(height: 0.5, color: AppColorsDark.strokColor),
+              itemBuilder: (context, i) {
+                final item = _inlineSearchResults[i];
+                final name = (item['name'] ?? '').toString();
+                final barcode = (item['barcode'] ?? '').toString();
+                final price =
+                (item['selling_price'] ?? item['sellingPrice'] ?? '')
+                    .toString();
+                final cartons = (item['quantity'] as num?)?.toInt() ?? 0;
+                final unitsInCarton =
+                    (item['units_in_carton'] as num?)?.toInt() ?? 0;
+                final remainder =
+                    (item['units_remainder'] as num?)?.toInt() ?? 0;
+                final totalUnits = (item['total_units'] as num?)
+                    ?.toInt() ??
+                    (cartons * unitsInCarton + remainder);
+
+                return ListTile(
+                  title: Text(name,
+                      style: TextStyle(
+                          color: AppColorsDark.mainTextDark,
+                          fontSize: 16)),
+                  subtitle: Text(
+                      'باركود: $barcode  •  سعر: $price  •  متاح: $totalUnits',
+                      style: TextStyle(
+                          color: AppColorsDark.mainTextLight,
+                          fontSize: 12)),
+                  onTap: () {
+                    _addReplacementProductMap(item);
+                    _clearReplacementSearch();
+                  },
+                );
+              },
+            ),
+          ),
+      ],
     );
   }
 
@@ -537,6 +802,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                         // clear any replacement items when switching back to simple return
                         _replacementProducts.clear();
                         _replacementQty.clear();
+                        _clearReplacementSearch();
                       });
                     },
                     backgroundColor: AppColorsDark.bgCardColor,
@@ -637,10 +903,10 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                     })),
                                 Expanded(
                                     child: Text(
-                                  '$name',
-                                  style: TextStyle(
-                                      color: AppColorsDark.mainTextDark),
-                                )),
+                                      '$name',
+                                      style: TextStyle(
+                                          color: AppColorsDark.mainTextDark),
+                                    )),
                                 Column(
                                   crossAxisAlignment: CrossAxisAlignment.end,
                                   mainAxisAlignment: MainAxisAlignment.center,
@@ -673,7 +939,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                       icon: Icon(
                                         Icons.remove_circle_outline,
                                         color:
-                                            Theme.of(context).iconTheme.color,
+                                        Theme.of(context).iconTheme.color,
                                       )),
                                   Text(
                                     '$selQty',
@@ -685,7 +951,7 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                                       icon: Icon(
                                         Icons.add_circle_outline,
                                         color:
-                                            Theme.of(context).iconTheme.color,
+                                        Theme.of(context).iconTheme.color,
                                       )),
                                   Text(
                                     ' : كمية الإرجاع',
@@ -706,28 +972,11 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
                 Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
-                      'أضف عناصر بدل (امسح الباركود):',
+                      'أضف عناصر بدل (امسح الباركود أو اكتب الاسم):',
                       style: TextStyle(color: AppColorsDark.mainTextDark),
                     )),
                 const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Expanded(
-                      child: CustomFormField(
-                        controller: _replacementBarcodeController,
-                        hint: 'امسح باركود البديل واضغط إضافة',
-                        onFieldSubmitted: (v) => _addReplacementByBarcode(v),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    CustomButton(
-                      text: 'أضف',
-                      onPressed: () => _addReplacementByBarcode(
-                          _replacementBarcodeController.text),
-                      infinity: false,
-                    ),
-                  ],
-                ),
+                _buildReplacementSearchField(),
                 const SizedBox(height: 10),
                 if (_replacementProducts.isEmpty)
                   Text(
@@ -780,16 +1029,16 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
             onPressed: _processing ? null : _process,
             child: _processing
                 ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2))
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2))
                 : Text(
-                    'تطبيق',
-                    style: TextStyle(
-                        color: Theme.of(context).brightness == Brightness.light
-                            ? Colors.black
-                            : Colors.white),
-                  )),
+              'تطبيق',
+              style: TextStyle(
+                  color: Theme.of(context).brightness == Brightness.light
+                      ? Colors.black
+                      : Colors.white),
+            )),
       ],
     );
   }
