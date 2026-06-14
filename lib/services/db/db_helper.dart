@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.2033');
+    _database = await _initDB('pos_system.db_v2.2060');
     return _database!;
   }
 
@@ -1765,14 +1765,10 @@ class DBHelper {
     );
   }
 
-  /// Apply return/exchange WITHOUT modifying the original sale rows.
-  /// - We create a sale_returns row and sale_return_items (is_replacement = 0 for returned items,
-  ///   is_replacement = 1 for replacements)
-  /// - Adjust product stock accordingly (restore returned units, reduce replacement units)
-  /// - We append return_note on the original sale (so UI knows there's a return),
-  ///   but we DO NOT modify sale_items nor sales.total/paid_amount/change_amount.
-  /// Apply return/exchange and MODIFY the original sale row and sale_items,
-  /// while still logging the action in sale_returns / sale_return_items.
+// =====================================================================
+// REPLACE the entire applyReturnExchangeToSale method in db_helper.dart
+// v2 — fixes drawer double-count bug
+// =====================================================================
 
   Future<void> applyReturnExchangeToSale({
     required int saleId,
@@ -1787,263 +1783,257 @@ class DBHelper {
     await _ensureCustomersTables(db);
     await _ensureSaleLoyaltyColumns(db);
 
+    final bool isExchange = additionsMap.isNotEmpty;
+
     await db.transaction((txn) async {
-      // ── 1. بيانات الفاتورة الأصلية ──────────────────────────────────────────
-      final saleRows =
-      await txn.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
+      // ── 1. بيانات الفاتورة الأصلية ─────────────────────────────────
+      final saleRows = await txn.query(
+        'sales', where: 'id = ?', whereArgs: [saleId], limit: 1,
+      );
       if (saleRows.isEmpty) throw 'Original sale not found';
 
-      final sale = saleRows.first;
-      final oldNote = (sale['return_note'] ?? '').toString();
-      final oldTotal = (sale['total'] as num?)?.toDouble() ?? 0.0;
-      final oldPaid = (sale['paid_amount'] as num?)?.toDouble() ?? 0.0;
-      final customerId = (sale['customer_id'] as num?)?.toInt();
+      final sale         = saleRows.first;
+      final oldNote      = (sale['return_note'] ?? '').toString();
+      final oldTotal     = (sale['total'] as num?)?.toDouble() ?? 0.0;
+      final oldPaid      = (sale['paid_amount'] as num?)?.toDouble() ?? 0.0;
+      final customerId   = (sale['customer_id'] as num?)?.toInt();
       final rewardEarned = (sale['loyalty_reward_earned'] as num?)?.toInt() ?? 0;
-      final now = DateTime.now().toIso8601String();
+      final now          = DateTime.now().toIso8601String();
 
-      // ── 2. سجّل في sale_returns (بدون refund_amount — هيتحسب بعدين) ─────────
+      // ── 2. سجّل في sale_returns ─────────────────────────────────────
       final returnRowId = await txn.insert('sale_returns', {
-        'sale_id': saleId,
-        'date': now,
+        'sale_id':          saleId,
+        'date':             now,
         'cashier_username': sale['cashier_username'] ?? '',
-        'paid_delta': 0.0,
-        'refund_amount': 0.0,
-        'note': note,
+        'paid_delta':       0.0,
+        'refund_amount':    0.0,
+        'note':             note,
       });
 
-      // ── 4. المرتجعات: عدّل sale_items وأرجع المخزون ─────────────────────────
+      // ── 3. المرتجعات: عدّل sale_items وأرجع المخزون ───────────────
       double totalReturnedValue = 0.0;
 
       for (final entry in returnsMap.entries) {
-        final pid = entry.key;
+        final pid       = entry.key;
         final qtyReturn = entry.value;
         if (qtyReturn <= 0) continue;
 
         final itemRows = await txn.query(
           'sale_items',
-          where:
-          'sale_id = ? AND product_id = ? AND COALESCE(returned_quantity,0) < COALESCE(quantity,0)',
+          where: 'sale_id = ? AND product_id = ?'
+              ' AND COALESCE(returned_quantity,0) < COALESCE(quantity,0)',
           whereArgs: [saleId, pid],
           limit: 1,
         );
         if (itemRows.isEmpty) throw 'هذا المنتج تم استرجاعه بالفعل';
 
-        final saleItem = Map<String, dynamic>.from(itemRows.first);
-        final soldQty = (saleItem['quantity'] as num?)?.toInt() ?? 0;
-        final alreadyReturned = (saleItem['returned_quantity'] as num?)?.toInt() ?? 0;
-        final available = soldQty - alreadyReturned;
+        final saleItem   = Map<String, dynamic>.from(itemRows.first);
+        final soldQty    = (saleItem['quantity'] as num?)?.toInt() ?? 0;
+        final alreadyRet = (saleItem['returned_quantity'] as num?)?.toInt() ?? 0;
+        final available  = soldQty - alreadyRet;
 
-        if (qtyReturn > available) {
+        if (qtyReturn > available)
           throw 'الكمية المطلوبة أكبر من الكمية المتاحة للمرتجع';
-        }
 
         final unitPrice = (saleItem['price'] as num?)?.toDouble() ?? 0.0;
         totalReturnedValue += unitPrice * qtyReturn;
 
         await txn.insert('sale_return_items', {
-          'return_id': returnRowId,
-          'product_id': pid,
-          'qty': qtyReturn,
+          'return_id':      returnRowId,
+          'product_id':     pid,
+          'qty':            qtyReturn,
           'is_replacement': 0,
-          'price': unitPrice,
+          'price':          unitPrice,
         });
 
-        final saleItemId = (saleItem['id'] as num?)?.toInt();
+        final saleItemId     = (saleItem['id'] as num?)?.toInt();
+        final newReturnedQty = alreadyRet + qtyReturn;
+        final fullyReturned  = newReturnedQty >= soldQty;
         if (saleItemId != null) {
-          final newReturnedQty = alreadyReturned + qtyReturn;
-          final fullyReturned = newReturnedQty >= soldQty;
           await txn.update(
             'sale_items',
-            {
-              'returned_quantity': newReturnedQty,
-              'returned': fullyReturned ? 1 : 0,
-            },
-            where: 'id = ?',
-            whereArgs: [saleItemId],
+            {'returned_quantity': newReturnedQty, 'returned': fullyReturned ? 1 : 0},
+            where: 'id = ?', whereArgs: [saleItemId],
           );
-          debugPrint(
-              '[Return] sale_item=$saleItemId product=$pid retQty=$newReturnedQty/$soldQty fully=$fullyReturned');
         }
 
         // أرجع المخزون
         final prodRows = await txn.query(
-          'products',
-          where: 'id = ?',
-          whereArgs: [pid],
-          limit: 1,
+          'products', where: 'id = ?', whereArgs: [pid], limit: 1,
         );
         if (prodRows.isEmpty) throw 'Product $pid not found';
-
         final prod = Map<String, dynamic>.from(prodRows.first);
-        final uic = (prod['units_in_carton'] as num).toInt();
-        final cur = (prod['quantity'] as num).toInt() * uic +
-            ((prod['units_remainder'] as num?)?.toInt() ?? 0);
+        final uic  = (prod['units_in_carton'] as num).toInt();
+        final cur  = (prod['quantity'] as num).toInt() * uic
+            + ((prod['units_remainder'] as num?)?.toInt() ?? 0);
         final newT = cur + qtyReturn;
-
         await txn.update(
           'products',
           {
-            'quantity': uic > 0 ? (newT ~/ uic) : 0,
-            'units_remainder': uic > 0 ? (newT % uic) : newT,
+            'quantity':        uic > 0 ? (newT ~/ uic) : 0,
+            'units_remainder': uic > 0 ? (newT % uic)  : newT,
           },
-          where: 'id = ?',
-          whereArgs: [pid],
+          where: 'id = ?', whereArgs: [pid],
         );
       }
 
-      // ── 5. الاستبدالات: أنقص المخزون ────────────────────────────────────────
+      // ── 4. الاستبدالات: أنقص المخزون + أضف كـ sale_item حقيقي ────
       double totalExchangeValue = 0.0;
 
       for (final entry in additionsMap.entries) {
-        final pid = entry.key;
+        final pid    = entry.key;
         final qtyAdd = entry.value;
         if (qtyAdd <= 0) continue;
 
         final prodRows = await txn.query(
-          'products',
-          where: 'id = ?',
-          whereArgs: [pid],
-          limit: 1,
+          'products', where: 'id = ?', whereArgs: [pid], limit: 1,
         );
         if (prodRows.isEmpty) throw 'Replacement product $pid not found';
-
         final prod = Map<String, dynamic>.from(prodRows.first);
-        final uic = (prod['units_in_carton'] as num).toInt();
-        final cur = (prod['quantity'] as num).toInt() * uic +
-            ((prod['units_remainder'] as num?)?.toInt() ?? 0);
 
+        final uic  = (prod['units_in_carton'] as num).toInt();
+        final cur  = (prod['quantity'] as num).toInt() * uic
+            + ((prod['units_remainder'] as num?)?.toInt() ?? 0);
         if (qtyAdd > cur) throw 'Not enough stock for ${prod['name']}';
 
-        final unitPrice = (prod['selling_price'] as num?)?.toDouble() ?? 0.0;
-        totalExchangeValue += unitPrice * qtyAdd;
+        final unitSellPrice     = (prod['selling_price'] as num?)?.toDouble() ?? 0.0;
+        final unitPurchasePrice = (prod['purchase_price'] as num?)?.toDouble() ?? 0.0;
+        totalExchangeValue += unitSellPrice * qtyAdd;
 
         await txn.insert('sale_return_items', {
-          'return_id': returnRowId,
-          'product_id': pid,
-          'qty': qtyAdd,
+          'return_id':      returnRowId,
+          'product_id':     pid,
+          'qty':            qtyAdd,
           'is_replacement': 1,
-          'price': unitPrice,
+          'price':          unitSellPrice,
+        });
+
+        await txn.insert('sale_items', {
+          'sale_id':                 saleId,
+          'product_id':              pid,
+          'quantity':                qtyAdd,
+          'price':                   unitSellPrice,
+          'purchase_price_per_unit': unitPurchasePrice,
+          'returned':                0,
+          'returned_quantity':       0,
         });
 
         final newT = cur - qtyAdd;
         await txn.update(
           'products',
           {
-            'quantity': uic > 0 ? (newT ~/ uic) : 0,
-            'units_remainder': uic > 0 ? (newT % uic) : newT,
+            'quantity':        uic > 0 ? (newT ~/ uic) : 0,
+            'units_remainder': uic > 0 ? (newT % uic)  : newT,
           },
-          where: 'id = ?',
-          whereArgs: [pid],
+          where: 'id = ?', whereArgs: [pid],
         );
       }
 
-      // ── 6. احسب الـ net وحدّث sale_returns بالقيم الصح ─────────────────────
+      // ── 5. احسب الفرق الصافي ───────────────────────────────────────
       final net = totalExchangeValue - totalReturnedValue;
-      final refundAmount = net < 0 ? -net : 0.0;
-      final extraPaid = net > 0 ? net : 0.0;
 
-      await txn.update(
-        'sale_returns',
-        {
-          'paid_delta': net,
-          'refund_amount': refundAmount,
-        },
-        where: 'id = ?',
-        whereArgs: [returnRowId],
-      );
+      // ── 6. حدّث الفاتورة ───────────────────────────────────────────
+      double newTotal;
+      double newPaid;
+      double newChange;
+      int    isCredit;
 
-      // ── 7. عدّل total الفاتورة فقط — paid_amount يفضل زي ما هو ─────────────
-      final newTotal =
-      (oldTotal - totalReturnedValue + totalExchangeValue).clamp(0.0, double.infinity);
+      if (isExchange) {
+        // استبدال: paid_amount يتغير بالفرق
+        newTotal  = (oldTotal + net).clamp(0.0, double.infinity);
+        newPaid   = (oldPaid  + net).clamp(0.0, double.infinity);
+        newChange = newPaid > newTotal ? newPaid - newTotal : 0.0;
+        isCredit  = newPaid < newTotal ? 1 : 0;
 
-      final isCredit = newTotal > oldPaid ? 1 : 0;
+        await txn.update('sales', {
+          'total':         newTotal,
+          'paid_amount':   newPaid,
+          'change_amount': newChange,
+          'is_credit':     isCredit,
+          'return_note':   (oldNote.isEmpty ? '' : '$oldNote | ') + note,
+        }, where: 'id = ?', whereArgs: [saleId]);
 
-      await txn.update(
-        'sales',
-        {
-          'total': newTotal,
-          'is_credit': isCredit,
-          'return_note': (oldNote.isEmpty ? '' : '$oldNote | ') + note,
-        },
-        where: 'id = ?',
-        whereArgs: [saleId],
-      );
+      } else {
+        // مرتجع حقيقي: احسب الإجمالي من الأيتمز الغير مرتجعة فعلياً
+        final remainingRows = await txn.rawQuery(
+          '''
+          SELECT SUM((quantity - COALESCE(returned_quantity,0)) * price) AS remaining_total
+          FROM sale_items
+          WHERE sale_id = ? AND (quantity - COALESCE(returned_quantity,0)) > 0
+          ''',
+          [saleId],
+        );
+        newTotal  = remainingRows.isNotEmpty
+            ? (_numFromRow(remainingRows.first, 'remaining_total'))
+            : 0.0;
+        newPaid   = oldPaid;  // paid_amount يفضل زي ما هو (280)
+        newChange = 0.0;      // ← صفر عشان cashSales = paid_amount - change = 280 - 0 = 280
+        isCredit  = 0;
 
-      // ── 8. إعادة حساب مكافأة الولاء على إجمالي الفاتورة الجديد ─────────────
-      // السلوك:
-      // - لو الفاتورة كان عليها مكافأة ولاء أصلًا
-      // - نحسب 3% من newTotal
-      // - نطبّق الفرق بين المكافأة الحالية على الفاتورة والمكافأة الجديدة
+        // سجّل قيمة المرتجع في sale_returns
+        await txn.update('sale_returns', {
+          'refund_amount': totalReturnedValue,
+          'paid_delta':    -totalReturnedValue,
+        }, where: 'id = ?', whereArgs: [returnRowId]);
+
+        await txn.update('sales', {
+          'total':         newTotal,
+          'change_amount': newChange,
+          'return_note':   (oldNote.isEmpty ? '' : '$oldNote | ') + note,
+        }, where: 'id = ?', whereArgs: [saleId]);
+      }
+
+      // ── 7. مكافأة الولاء ───────────────────────────────────────────
       if (customerId != null && rewardEarned == 1) {
         final loyaltyRows = await txn.rawQuery(
           '''
-        SELECT COALESCE(SUM(amount), 0) AS applied
-        FROM loyalty_transactions
-        WHERE sale_id = ?
-          AND type IN ('earn', 'adjust', 'revoke')
-        ''',
+          SELECT COALESCE(SUM(amount), 0) AS applied
+          FROM loyalty_transactions
+          WHERE sale_id = ? AND type IN ('earn', 'adjust', 'revoke')
+          ''',
           [saleId],
         );
-
         final currentRewardApplied = loyaltyRows.isNotEmpty
             ? _numFromRow(loyaltyRows.first, 'applied')
             : (oldTotal * 0.03).clamp(0.0, double.infinity);
-
         final newEarnedAmount = (newTotal * 0.03).clamp(0.0, double.infinity);
-        final deltaReward = newEarnedAmount - currentRewardApplied;
+        final deltaReward     = newEarnedAmount - currentRewardApplied;
 
         if (deltaReward.abs() > 0.000001) {
           final customerRows = await txn.query(
-            'customers',
-            where: 'id = ?',
-            whereArgs: [customerId],
-            limit: 1,
+            'customers', where: 'id = ?', whereArgs: [customerId], limit: 1,
           );
-
           if (customerRows.isNotEmpty) {
             final currentBalance =
-                (customerRows.first['loyalty_balance'] as num?)?.toDouble() ??
-                    0.0;
-
-            final newBalance =
-            (currentBalance + deltaReward).clamp(0.0, double.infinity);
-
+                (customerRows.first['loyalty_balance'] as num?)?.toDouble() ?? 0.0;
+            final newBalance = (currentBalance + deltaReward).clamp(0.0, double.infinity);
             await txn.update(
               'customers',
               {'loyalty_balance': newBalance, 'updated_at': now},
-              where: 'id = ?',
-              whereArgs: [customerId],
+              where: 'id = ?', whereArgs: [customerId],
             );
-
             await _recordLoyaltyTransaction(
               txn,
-              customerId: customerId,
-              saleId: saleId,
-              type: 'adjust',
-              amount: deltaReward,
+              customerId:   customerId,
+              saleId:       saleId,
+              type:         'adjust',
+              amount:       deltaReward,
               balanceAfter: newBalance,
-              note: 'إعادة حساب مكافأة الولاء بعد الاسترجاع أو الاستبدال',
+              note:         'إعادة حساب مكافأة الولاء بعد الاسترجاع أو الاستبدال',
             );
           }
         }
-
-        await txn.update(
-          'sales',
-          {
-            'loyalty_reward_earned': newEarnedAmount > 0 ? 1 : 0,
-            'loyalty_reward_revoked': 0,
-          },
-          where: 'id = ?',
-          whereArgs: [saleId],
-        );
+        await txn.update('sales', {
+          'loyalty_reward_earned':  newEarnedAmount > 0 ? 1 : 0,
+          'loyalty_reward_revoked': 0,
+        }, where: 'id = ?', whereArgs: [saleId]);
       }
 
       debugPrint('[ReturnExchange] sale=$saleId '
+          'isExchange=$isExchange '
           'oldTotal=$oldTotal oldPaid=$oldPaid '
-          'returnedVal=$totalReturnedValue exchangeVal=$totalExchangeValue '
-          'newTotal=$newTotal net=$net '
-          'refund=$refundAmount extraPaid=$extraPaid '
-          'isCredit=$isCredit');
+          'returned=$totalReturnedValue exchange=$totalExchangeValue net=$net '
+          'newTotal=$newTotal newPaid=$newPaid newChange=$newChange isCredit=$isCredit');
     });
   }
 
@@ -3497,158 +3487,99 @@ class DBHelper {
     await _ensureShiftSettingsTable(db);
 
     final openingBalance = await getFixedShiftOpeningBalance();
-    final diagnosticRows = await db.rawQuery(
-      '''
-      SELECT COUNT(*) AS sales_count, MIN(date) AS min_date, MAX(date) AS max_date
-      FROM sales
-      WHERE TRIM(COALESCE(cashier_username,'')) = ?
-      ''',
-      [cashierName.trim()],
-    );
-    debugPrint(
-        '[CloseShiftSummaryDiagnostic] cashier=${cashierName.trim()} fromDateTime=$fromDateTime toDateTime=$toDateTime salesRange=${diagnosticRows.isNotEmpty ? diagnosticRows.first : {}}');
-
-    double originalSaleTotal(Map<String, Object?> row) {
-      final subtotal = _numFromRow(row, 'items_subtotal');
-      if (subtotal <= 0) return _numFromRow(row, 'total');
-      final discountType = (row['discount_type'] ?? 'fixed').toString();
-      final discountValue = _numFromRow(row, 'discount_value');
-      final loyaltyDiscount = _numFromRow(row, 'loyalty_discount');
-      var discountAmount = 0.0;
-      if (discountType == 'percent') {
-        discountAmount = subtotal * (discountValue / 100.0);
-      } else {
-        discountAmount = discountValue;
-      }
-      if (discountAmount < 0) discountAmount = 0.0;
-      if (discountAmount > subtotal) discountAmount = subtotal;
-      final total = subtotal - discountAmount - loyaltyDiscount;
-      return total.clamp(0.0, double.infinity).toDouble();
-    }
-
-    final cashSaleRows = await db.rawQuery(
-      '''
-      SELECT s.*,
-             COALESCE((
-               SELECT SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0))
-               FROM sale_items si
-               WHERE si.sale_id = s.id
-             ), COALESCE(s.total,0)) AS items_subtotal
-      FROM sales s
-      WHERE LOWER(TRIM(COALESCE(s.payment_method,''))) = 'cash'
-        AND NOT (COALESCE(s.is_return,0) = 1 AND COALESCE(s.return_of_sale_id,0) > 0)
-        AND (
-          (
-            TRIM(COALESCE(s.cashier_username,'')) = ?
-            AND (s.credit_paid_at IS NULL OR TRIM(COALESCE(s.credit_paid_at,'')) = '')
-            AND datetime(s.date) BETWEEN datetime(?) AND datetime(?)
-          )
-          OR
-          (
-            TRIM(COALESCE(s.credit_paid_by,'')) = ?
-            AND datetime(s.credit_paid_at) BETWEEN datetime(?) AND datetime(?)
-          )
-        )
-		      ''',
-      [
-        cashierName.trim(),
-        fromDateTime,
-        toDateTime,
-        cashierName.trim(),
-        fromDateTime,
-        toDateTime,
-      ],
-    );
-    final cashSales = cashSaleRows.fold(0.0, (sum, row) {
-      final originalCash = originalSaleTotal(row);
-      final withdrawn = _numFromRow(row, 'drawer_withdrawn_amount');
-      final net = (originalCash - withdrawn).clamp(0.0, double.infinity);
-      return sum + net;
-    });
-
-    final unpaidCreditRows = await db.rawQuery(
-      '''
-      SELECT COUNT(*) AS excluded_unpaid_credit,
-             SUM(COALESCE(total,0) - COALESCE(paid_amount,0)) AS unpaid_credit_total
-      FROM sales
-      WHERE TRIM(COALESCE(cashier_username,'')) = ?
-        AND NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
-        AND COALESCE(is_credit,0) = 1
-        AND COALESCE(paid_amount,0) < COALESCE(total,0)
-        AND datetime(date) BETWEEN datetime(?) AND datetime(?)
-      ''',
-      [cashierName.trim(), fromDateTime, toDateTime],
-    );
-    final excludedUnpaidCredit = unpaidCreditRows.isNotEmpty
-        ? _numFromRow(unpaidCreditRows.first, 'excluded_unpaid_credit').toInt()
-        : 0;
-    final unpaidCreditTotal = unpaidCreditRows.isNotEmpty
-        ? _numFromRow(unpaidCreditRows.first, 'unpaid_credit_total')
-        : 0.0;
-    debugPrint(
-        '[CloseShiftSummary] cashier=${cashierName.trim()} excludedUnpaidCreditSales=$excludedUnpaidCredit unpaidCreditTotal=$unpaidCreditTotal from=$fromDateTime to=$toDateTime');
 
     final salesRows = await db.rawQuery(
       '''
-      SELECT s.*,
-             COALESCE((
-               SELECT SUM(COALESCE(si.quantity,0) * COALESCE(si.price,0))
-               FROM sale_items si
-               WHERE si.sale_id = s.id
-             ), COALESCE(s.total,0)) AS items_subtotal
-      FROM sales s
-      WHERE NOT (COALESCE(s.is_return,0) = 1 AND COALESCE(s.return_of_sale_id,0) > 0)
-        AND NOT (COALESCE(s.is_credit,0) = 1 AND COALESCE(s.paid_amount,0) < COALESCE(s.total,0))
-        AND (
-          (
-            TRIM(COALESCE(s.cashier_username,'')) = ?
-            AND (s.credit_paid_at IS NULL OR TRIM(COALESCE(s.credit_paid_at,'')) = '')
-            AND datetime(s.date) BETWEEN datetime(?) AND datetime(?)
-          )
-          OR
-          (
-            TRIM(COALESCE(s.credit_paid_by,'')) = ?
-            AND datetime(s.credit_paid_at) BETWEEN datetime(?) AND datetime(?)
-          )
+    SELECT s.paid_amount,
+           s.change_amount,
+           s.drawer_withdrawn_amount,
+           COALESCE((
+             SELECT SUM(COALESCE(sr.refund_amount,0))
+             FROM sale_returns sr
+             WHERE sr.sale_id = s.id
+           ), 0) AS total_refund
+    FROM sales s
+    WHERE NOT (COALESCE(s.is_return,0) = 1 AND COALESCE(s.return_of_sale_id,0) > 0)
+      AND NOT (COALESCE(s.is_credit,0) = 1 AND COALESCE(s.paid_amount,0) < COALESCE(s.total,0))
+      AND LOWER(TRIM(COALESCE(s.payment_method,''))) = 'cash'
+      AND (
+        (
+          TRIM(COALESCE(s.cashier_username,'')) = ?
+          AND (s.credit_paid_at IS NULL OR TRIM(COALESCE(s.credit_paid_at,'')) = '')
+          AND datetime(s.date) BETWEEN datetime(?) AND datetime(?)
         )
-		      ''',
+        OR
+        (
+          TRIM(COALESCE(s.credit_paid_by,'')) = ?
+          AND datetime(s.credit_paid_at) BETWEEN datetime(?) AND datetime(?)
+        )
+      )
+    ''',
       [
-        cashierName.trim(),
-        fromDateTime,
-        toDateTime,
-        cashierName.trim(),
-        fromDateTime,
-        toDateTime,
+        cashierName.trim(), fromDateTime, toDateTime,
+        cashierName.trim(), fromDateTime, toDateTime,
       ],
     );
-    final grossSales = salesRows.fold(
-      0.0,
-      (sum, row) => sum + originalSaleTotal(row),
-    );
 
-    final returnsRows = await db.rawQuery(
+    // paid_amount هو القيمة الأصلية الكاملة (change_amount = 0 بعد المرتجع)
+    // فلا نضيف refund عشان مش محتاجينه
+    final grossSales = salesRows.fold(0.0, (sum, row) {
+      final paid      = _numFromRow(row, 'paid_amount');
+      final change    = _numFromRow(row, 'change_amount');
+      final withdrawn = _numFromRow(row, 'drawer_withdrawn_amount');
+      return sum + (paid - change - withdrawn).clamp(0.0, double.infinity);
+    });
+
+    final cashSales = grossSales;
+
+    // ── فواتير آجلة غير مدفوعة ──────────────────────────────────────
+    final unpaidCreditRows = await db.rawQuery(
       '''
-      SELECT SUM(CASE WHEN COALESCE(refund_amount,0) > 0 THEN -COALESCE(refund_amount,0) ELSE COALESCE(paid_delta,0) END) AS returns_delta
-      FROM sale_returns
-      WHERE TRIM(COALESCE(cashier_username,'')) = ?
-        AND datetime(date) BETWEEN datetime(?) AND datetime(?)
-      ''',
+    SELECT COUNT(*) AS excluded,
+           SUM(COALESCE(total,0) - COALESCE(paid_amount,0)) AS unpaid_credit_total
+    FROM sales
+    WHERE TRIM(COALESCE(cashier_username,'')) = ?
+      AND NOT (COALESCE(is_return,0) = 1 AND COALESCE(return_of_sale_id,0) > 0)
+      AND COALESCE(is_credit,0) = 1
+      AND COALESCE(paid_amount,0) < COALESCE(total,0)
+      AND datetime(date) BETWEEN datetime(?) AND datetime(?)
+    ''',
       [cashierName.trim(), fromDateTime, toDateTime],
     );
-    final returnsDelta = returnsRows.isNotEmpty
-        ? _numFromRow(returnsRows.first, 'returns_delta')
+    final unpaidCreditTotal = unpaidCreditRows.isNotEmpty
+        ? _numFromRow(unpaidCreditRows.first, 'unpaid_credit_total')
         : 0.0;
 
+    // ── المرتجعات: من refund_amount فقط ─────────────────────────────
+    final returnRows = await db.rawQuery(
+      '''
+    SELECT SUM(COALESCE(sr.refund_amount, 0)) AS returned_value
+    FROM sale_returns sr
+    WHERE datetime(sr.date) BETWEEN datetime(?) AND datetime(?)
+      AND EXISTS (
+        SELECT 1 FROM sales s2
+        WHERE s2.id = sr.sale_id
+          AND TRIM(COALESCE(s2.cashier_username,'')) = ?
+      )
+    ''',
+      [fromDateTime, toDateTime, cashierName.trim()],
+    );
+    final returnedValue = returnRows.isNotEmpty
+        ? _numFromRow(returnRows.first, 'returned_value')
+        : 0.0;
+
+    final returnsDelta = -returnedValue;
+
+    // ── المصروفات ────────────────────────────────────────────────────
     final expenseRows = await db.rawQuery(
       '''
-      SELECT SUM(COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) AS total_expenses,
-             SUM(COALESCE(paid_cash,0)) AS cash_expenses,
-             SUM(COALESCE(paid_wallet,0)) AS wallet_expenses
-      FROM purchase_receipts
-      WHERE TRIM(COALESCE(cashier_username,'')) = ?
-        AND datetime(created_at) > datetime(?)
-        AND datetime(created_at) <= datetime(?)
-      ''',
+    SELECT SUM(COALESCE(paid_cash,0) + COALESCE(paid_wallet,0)) AS total_expenses,
+           SUM(COALESCE(paid_cash,0))                            AS cash_expenses
+    FROM purchase_receipts
+    WHERE TRIM(COALESCE(cashier_username,'')) = ?
+      AND datetime(created_at) > datetime(?)
+      AND datetime(created_at) <= datetime(?)
+    ''',
       [cashierName.trim(), fromDateTime, toDateTime],
     );
     final totalExpenses = expenseRows.isNotEmpty
@@ -3657,26 +3588,31 @@ class DBHelper {
     final cashExpenses = expenseRows.isNotEmpty
         ? _numFromRow(expenseRows.first, 'cash_expenses')
         : 0.0;
-    final totalSales = (grossSales + returnsDelta).clamp(0.0, double.infinity);
-    final netProfit = totalSales - totalExpenses;
-    final returnsImpactOnCash = returnsDelta < 0 ? returnsDelta : 0.0;
-    final closingBalance =
-        openingBalance + cashSales + returnsImpactOnCash - cashExpenses;
+
+    // ── الملخص النهائي ───────────────────────────────────────────────
+    final totalSales     = (grossSales + returnsDelta).clamp(0.0, double.infinity);
+    final netProfit      = totalSales - totalExpenses;
+    final closingBalance = openingBalance + grossSales + returnsDelta - cashExpenses;
 
     debugPrint(
-        '[CloseShiftSummary] cashier=${cashierName.trim()} from=$fromDateTime to=$toDateTime gross=$grossSales cash=$cashSales expenses=$totalExpenses returns=$returnsDelta totalSales=$totalSales returnsCashImpact=$returnsImpactOnCash closing=$closingBalance');
+      '[CloseShiftSummary] cashier=${cashierName.trim()} '
+          'from=$fromDateTime to=$toDateTime '
+          'gross=$grossSales returned=$returnedValue returnsDelta=$returnsDelta '
+          'expenses=$totalExpenses totalSales=$totalSales '
+          'closing=$closingBalance',
+    );
 
     return {
-      'opening_balance': openingBalance,
-      'cash_sales': cashSales,
-      'gross_sales': grossSales,
-      'returns_delta': returnsDelta,
+      'opening_balance':     openingBalance,
+      'cash_sales':          cashSales,
+      'gross_sales':         grossSales,
+      'returns_delta':       returnsDelta,
       'unpaid_credit_total': unpaidCreditTotal,
-      'cash_expenses': cashExpenses,
-      'total_sales': totalSales,
-      'total_expenses': totalExpenses,
-      'net_profit': netProfit,
-      'closing_balance': closingBalance,
+      'cash_expenses':       cashExpenses,
+      'total_sales':         totalSales,
+      'total_expenses':      totalExpenses,
+      'net_profit':          netProfit,
+      'closing_balance':     closingBalance,
     };
   }
 

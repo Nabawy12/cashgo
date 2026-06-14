@@ -78,11 +78,15 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     });
     if (found.isEmpty) return 0;
     final it = found.first;
-    return (it['qty'] as num?)?.toInt() ??
+
+    final qty = (it['qty'] as num?)?.toInt() ??
         (it['quantity'] as num?)?.toInt() ??
-        (it['count'] as num?)?.toInt() ??
         (int.tryParse(it['qty']?.toString() ?? '') ??
             (int.tryParse(it['quantity']?.toString() ?? '') ?? 0));
+
+    final returnedQty = (it['returned_quantity'] as num?)?.toInt() ?? 0;
+
+    return (qty - returnedQty).clamp(0, qty);
   }
 
   // compute line total using the original unit price from the sale record
