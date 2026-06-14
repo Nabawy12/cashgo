@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.203');
+    _database = await _initDB('pos_system.db_v2.2009');
     return _database!;
   }
 

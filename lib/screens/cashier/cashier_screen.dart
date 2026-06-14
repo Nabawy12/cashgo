@@ -966,6 +966,17 @@ class _CashierScreenState extends State<CashierScreen> {
     return subtotal;
   }
 
+  double _customerLoyaltyDiscountForInvoice({
+    required double balance,
+    required double invoiceTotal,
+  }) {
+    final maxDiscountByMinimumInvoice =
+        (invoiceTotal - 100.0).clamp(0.0, double.infinity).toDouble();
+    final maxAllowed =
+        maxDiscountByMinimumInvoice < 50.0 ? maxDiscountByMinimumInvoice : 50.0;
+    return balance.clamp(0.0, maxAllowed).toDouble();
+  }
+
   void _addQuickPaid(double amount) {
     final current = _paid;
     final newPaid = current + amount;
@@ -1141,9 +1152,10 @@ class _CashierScreenState extends State<CashierScreen> {
           }
           final balance =
               (foundCustomer?['loyalty_balance'] as num?)?.toDouble() ?? 0.0;
-          final applicableDiscount = balance
-              .clamp(0.0, invoiceTotal < 50.0 ? invoiceTotal : 50.0)
-              .toDouble();
+          final applicableDiscount = _customerLoyaltyDiscountForInvoice(
+            balance: balance,
+            invoiceTotal: invoiceTotal,
+          );
 
           Future<void> searchCustomer() async {
             final phone = phoneController.text.trim();
@@ -1270,7 +1282,10 @@ class _CashierScreenState extends State<CashierScreen> {
                                           ?.toDouble() ??
                                       0.0;
                               final suggestionAvailableDiscount =
-                                  suggestionBalance.clamp(0.0, 50.0).toDouble();
+                                  _customerLoyaltyDiscountForInvoice(
+                                balance: suggestionBalance,
+                                invoiceTotal: invoiceTotal,
+                              );
                               return ListTile(
                                 dense: true,
                                 leading: const Icon(Icons.person_outline),
@@ -1340,7 +1355,7 @@ class _CashierScreenState extends State<CashierScreen> {
                                     style: TextStyle(color: textColor),
                                   ),
                                   subtitle: Text(
-                                    'أقصى خصم للفاتورة الواحدة 50 جنيه، ويتم خصم المستخدم من رصيد العميل',
+                                    'أقصى خصم للفاتورة الواحدة 50 جنيه، ولا يقل إجمالي الفاتورة بعد الخصم عن 100 جنيه',
                                     style: TextStyle(
                                         color: Theme.of(ctx)
                                             .textTheme
@@ -2058,9 +2073,10 @@ class _CashierScreenState extends State<CashierScreen> {
       }
       final useLoyaltyDiscount = customer['use_discount'] == true;
       final loyaltyDiscount = useLoyaltyDiscount
-          ? loyaltyBalance
-              .clamp(0.0, totalBeforeLoyalty < 50.0 ? totalBeforeLoyalty : 50.0)
-              .toDouble()
+          ? _customerLoyaltyDiscountForInvoice(
+              balance: loyaltyBalance,
+              invoiceTotal: totalBeforeLoyalty,
+            )
           : 0.0;
       final total =
           (totalBeforeLoyalty - loyaltyDiscount).clamp(0.0, double.infinity);
