@@ -173,42 +173,66 @@ class _SettingsPageState extends State<SettingsPage>
   Future<String?> _requireAdminPassword() async {
     if (_adminPassword != null && _adminPassword!.isNotEmpty)
       return _adminPassword;
+
     final ctrl = TextEditingController();
+    String? errorText;
+
     final res = await showDialog<String?>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        backgroundColor: AppColorsDark.bgColor,
-        title: Text('مطلوب كلمة مرور المشرف',
-            style: TextStyle(color: AppColorsDark.mainTextDark)),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text('أدخل كلمة مرور المشرف لتنفيذ العملية',
-              style: TextStyle(color: AppColorsDark.mainTextLight)),
-          const SizedBox(height: 8),
-          CustomFormField(
-            controller: ctrl,
-            hint: 'كلمة المرور',
-            isPassword: true,
-          ),
-        ]),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, null),
-              child: Text('إلغاء',
-                  style: TextStyle(
-                      color: Theme.of(context).brightness == Brightness.light
-                          ? Colors.black
-                          : Colors.white,
-                      fontSize: 17))),
-          TextButton(
-              onPressed: () => Navigator.pop(context, ctrl.text.trim()),
-              child: Text('تأكيد',
-                  style: TextStyle(
-                      color: Theme.of(context).brightness == Brightness.light
-                          ? Colors.black
-                          : Colors.white,
-                      fontSize: 17))),
-        ],
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: AppColorsDark.bgColor,
+          title: Text('مطلوب كلمة مرور المشرف',
+              style: TextStyle(color: AppColorsDark.mainTextDark)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('أدخل كلمة مرور المشرف لتنفيذ العملية',
+                style: TextStyle(color: AppColorsDark.mainTextLight)),
+            const SizedBox(height: 8),
+            CustomFormField(
+              controller: ctrl,
+              hint: 'كلمة المرور',
+              isPassword: true,
+            ),
+            if (errorText != null) ...[
+              const SizedBox(height: 8),
+              Text(errorText!,
+                  style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
+            ],
+          ]),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, null),
+                child: Text('إلغاء',
+                    style: TextStyle(
+                        color: Theme.of(context).brightness == Brightness.light
+                            ? Colors.black
+                            : Colors.white,
+                        fontSize: 17))),
+            TextButton(
+                onPressed: () async {
+                  final entered = ctrl.text.trim();
+                  if (entered.isEmpty) {
+                    setDialogState(() => errorText = 'اكتب كلمة المرور');
+                    return;
+                  }
+                  // تحقق فعلي من كلمة مرور المشرف عبر تسجيل الدخول محلياً
+                  final valid = await DBHelper.instance
+                      .login(_adminUsername, entered);
+                  if (valid == null || (valid['role'] ?? '') != 'admin') {
+                    setDialogState(() => errorText = 'كلمة المرور غير صحيحة');
+                    return;
+                  }
+                  Navigator.pop(ctx, entered);
+                },
+                child: Text('تأكيد',
+                    style: TextStyle(
+                        color: Theme.of(context).brightness == Brightness.light
+                            ? Colors.black
+                            : Colors.white,
+                        fontSize: 17))),
+          ],
+        ),
       ),
     );
     if (res == null || res.isEmpty) return null;

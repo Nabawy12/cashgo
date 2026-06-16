@@ -419,16 +419,22 @@ class _receiptsScreenState extends State<receiptsScreen> {
     if (saleId != 0 && saleItemsCache.containsKey(saleId)) {
       final items = saleItemsCache[saleId]!;
       currentItemsTotal = items.fold<double>(0.0, (p, it) {
-        final qty = (it['quantity'] as num?)?.toDouble() ?? 0.0;
+        final qty = (it['quantity'] as num?)?.toInt() ?? 0;
+        final returnedQty = (it['returned_quantity'] as num?)?.toInt() ?? 0;
+        final remainingQty = (qty - returnedQty).clamp(0, qty);
         final price = (it['price'] as num?)?.toDouble() ?? 0.0;
-        return p + qty * price;
+        return p + (remainingQty * price);
       });
     } else {
       currentItemsTotal = (s['total'] as num?)?.toDouble() ?? 0.0;
     }
 
     final info = _extractDiscountInfo(s, currentItemsTotal: currentItemsTotal);
-    return (info['effective_total'] as double?) ?? currentItemsTotal;
+    final effectiveTotalAfterDiscount =
+        (info['effective_total'] as double?) ?? currentItemsTotal;
+    final loyaltyDiscount = (s['loyalty_discount'] as num?)?.toDouble() ?? 0.0;
+    return (effectiveTotalAfterDiscount - loyaltyDiscount)
+        .clamp(0.0, double.infinity);
   }
 
   @override
@@ -955,972 +961,1001 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                       ),
                                                       showIcon: true,
                                                       content: Padding(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .symmetric(
-                                                                horizontal: 25,
-                                                                vertical: 25),
+                                                        padding: const EdgeInsets.symmetric(
+                                                            horizontal: 25,
+                                                            vertical: 25),
                                                         child: Builder(
                                                             builder: (context) {
-                                                          final items =
-                                                              saleItemsCache[
-                                                                      saleId] ??
-                                                                  [];
-                                                          final returnsMeta =
-                                                              saleReturnsCache[
-                                                                      saleId] ??
-                                                                  [];
-                                                          final sums =
+                                                              final items =
+                                                                  saleItemsCache[
+                                                                  saleId] ??
+                                                                      [];
+                                                              final returnsMeta =
+                                                                  saleReturnsCache[
+                                                                  saleId] ??
+                                                                      [];
+                                                              final sums =
                                                               _computeReturnSums(
                                                                   saleId);
-                                                          final paidDeltaSum =
+                                                              final paidDeltaSum =
                                                               _sumPaidDeltaForSale(
                                                                   saleId);
-                                                          final refundedVal =
-                                                              sums['refunded'] ??
-                                                                  0.0;
-                                                          final addedVal =
-                                                              sums['added'] ??
-                                                                  0.0;
-                                                          final currentItemsTotal =
+                                                              final refundedVal =
+                                                                  sums['refunded'] ??
+                                                                      0.0;
+                                                              final addedVal =
+                                                                  sums['added'] ??
+                                                                      0.0;
+
+                                                              // ── تعديل 3: حساب الإجمالي على أساس الكمية المتبقية بعد المرتجع ──
+                                                              final currentItemsTotal =
                                                               items
                                                                   .fold<double>(
-                                                                      0.0,
+                                                                  0.0,
                                                                       (p, it) {
-                                                            final qty = (it['quantity']
-                                                                        as num?)
-                                                                    ?.toInt() ??
-                                                                0;
-                                                            final price = (it[
-                                                                            'price']
-                                                                        as num?)
-                                                                    ?.toDouble() ??
-                                                                0.0;
-                                                            return p +
-                                                                (qty * price);
-                                                          });
+                                                                    final qty = (it['quantity']
+                                                                    as num?)
+                                                                        ?.toInt() ??
+                                                                        0;
+                                                                    final returnedQty = (it['returned_quantity']
+                                                                    as num?)
+                                                                        ?.toInt() ??
+                                                                        0;
+                                                                    final remainingQty =
+                                                                    (qty - returnedQty)
+                                                                        .clamp(0, qty);
+                                                                    final price = (it[
+                                                                    'price']
+                                                                    as num?)
+                                                                        ?.toDouble() ??
+                                                                        0.0;
+                                                                    return p +
+                                                                        (remainingQty * price);
+                                                                  });
 
-                                                          // <-- replaced discount logic: use helper to extract discount info -->
-                                                          final info =
+                                                              // <-- replaced discount logic: use helper to extract discount info -->
+                                                              final info =
                                                               _extractDiscountInfo(
                                                                   s,
                                                                   currentItemsTotal:
-                                                                      currentItemsTotal);
-                                                          final double
+                                                                  currentItemsTotal);
+                                                              final double
                                                               originalTotalFromMeta =
-                                                              (info['original_total']
-                                                                      as double?) ??
-                                                                  currentItemsTotal;
-                                                          final String
+                                                                  (info['original_total']
+                                                                  as double?) ??
+                                                                      currentItemsTotal;
+                                                              final String
                                                               discountTypeUsed =
-                                                              (info['discount_type']
-                                                                      as String?) ??
-                                                                  'fixed';
-                                                          final double
+                                                                  (info['discount_type']
+                                                                  as String?) ??
+                                                                      'fixed';
+                                                              final double
                                                               discountValueUsed =
-                                                              (info['discount_value']
-                                                                      as double?) ??
-                                                                  0.0;
-                                                          final double
+                                                                  (info['discount_value']
+                                                                  as double?) ??
+                                                                      0.0;
+                                                              final double
                                                               discountAmount =
-                                                              (info['discount_amount']
-                                                                      as double?) ??
-                                                                  0.0;
-                                                          final double
+                                                                  (info['discount_amount']
+                                                                  as double?) ??
+                                                                      0.0;
+                                                              final double
                                                               effectiveTotalAfterDiscount =
-                                                              (info['effective_total']
-                                                                      as double?) ??
-                                                                  currentItemsTotal;
-                                                          final customerName =
+                                                                  (info['effective_total']
+                                                                  as double?) ??
+                                                                      currentItemsTotal;
+                                                              final customerName =
                                                               (s['customer_name'] ??
-                                                                      '')
+                                                                  '')
                                                                   .toString();
-                                                          final customerPhone =
+                                                              final customerPhone =
                                                               (s['customer_phone'] ??
-                                                                      '')
+                                                                  '')
                                                                   .toString();
-                                                          final loyaltyDiscount =
-                                                              (s['loyalty_discount']
-                                                                          as num?)
+                                                              final loyaltyDiscount =
+                                                                  (s['loyalty_discount']
+                                                                  as num?)
                                                                       ?.toDouble() ??
-                                                                  0.0;
-                                                          final finalTotalAfterLoyalty =
+                                                                      0.0;
+
+                                                              // ── تعديل 1: الإجمالي النهائي بعد خصم الولاء ──
+                                                              final finalTotalAfterLoyalty =
                                                               (effectiveTotalAfterDiscount -
-                                                                      loyaltyDiscount)
+                                                                  loyaltyDiscount)
                                                                   .clamp(
-                                                                      0.0,
-                                                                      double
-                                                                          .infinity);
+                                                                  0.0,
+                                                                  double
+                                                                      .infinity);
 
-                                                          String discountLabel =
-                                                              '';
-                                                          if (discountAmount >
-                                                              0) {
-                                                            if (discountTypeUsed ==
-                                                                'percent') {
-                                                              discountLabel =
+                                                              String discountLabel =
+                                                                  '';
+                                                              if (discountAmount >
+                                                                  0) {
+                                                                if (discountTypeUsed ==
+                                                                    'percent') {
+                                                                  discountLabel =
                                                                   ' • خصم ${discountValueUsed.toStringAsFixed(2)}% (${discountAmount.toStringAsFixed(2)})';
-                                                            } else {
-                                                              discountLabel =
+                                                                } else {
+                                                                  discountLabel =
                                                                   ' • خصم بالجنيه (${discountAmount.toStringAsFixed(2)})';
-                                                            }
-                                                          }
+                                                                }
+                                                              }
 
-                                                          final double
+                                                              final double
                                                               originalTotalBefore =
                                                               (currentItemsTotal +
                                                                   refundedVal -
                                                                   addedVal);
 
-                                                          // المبلغ الذي كان مسجلاً على الفاتورة قبل أي إجراءات
-                                                          final double
+                                                              // المبلغ الذي كان مسجلاً على الفاتورة قبل أي إجراءات
+                                                              final double
                                                               originalPaidBefore =
                                                               (salePaidFromAPI)
                                                                   .clamp(
-                                                                      0.0,
-                                                                      double
-                                                                          .infinity);
+                                                                  0.0,
+                                                                  double
+                                                                      .infinity);
 
-                                                          // المبلغ الإضافي الذي سجله سجل المرتجع/الاستبدال (قد يكون موجبًا أو سالبًا)
-                                                          final double
+                                                              // المبلغ الإضافي الذي سجله سجل المرتجع/الاستبدال (قد يكون موجبًا أو سالبًا)
+                                                              final double
                                                               extraPaid =
-                                                              paidDeltaSum;
+                                                                  paidDeltaSum;
 
-                                                          // إجمالي ما دفعه العميل فعليًا بعد العملية
-                                                          final double
+                                                              // إجمالي ما دفعه العميل فعليًا بعد العملية
+                                                              final double
                                                               totalPaidByCustomer =
                                                               (originalPaidBefore +
-                                                                      extraPaid)
+                                                                  extraPaid)
                                                                   .clamp(
-                                                                      0.0,
-                                                                      double
-                                                                          .infinity);
+                                                                  0.0,
+                                                                  double
+                                                                      .infinity);
 
-                                                          // حساب التغيير الذي أعطي للعميل أثناء الفاتورة الأصلية (إن وُجد)
-                                                          final double
+                                                              // حساب التغيير الذي أعطي للعميل أثناء الفاتورة الأصلية (إن وُجد)
+                                                              final double
                                                               originalChangeGiven =
                                                               (originalPaidBefore >
-                                                                      originalTotalBefore)
+                                                                  originalTotalBefore)
                                                                   ? (originalPaidBefore -
-                                                                      originalTotalBefore)
+                                                                  originalTotalBefore)
                                                                   : 0.0;
 
-                                                          // مبالغ معروضة (نستثني التغيير المعاد للعميل من المبالغ الفعلية المعروضة)
-                                                          final double
+                                                              // مبالغ معروضة (نستثني التغيير المعاد للعميل من المبالغ الفعلية المعروضة)
+                                                              final double
                                                               displayOriginalPaid =
                                                               (originalPaidBefore -
-                                                                      originalChangeGiven)
+                                                                  originalChangeGiven)
                                                                   .clamp(
-                                                                      0.0,
-                                                                      double
-                                                                          .infinity);
-                                                          final double
+                                                                  0.0,
+                                                                  double
+                                                                      .infinity);
+                                                              final double
                                                               displayEffectivePaid =
                                                               (totalPaidByCustomer -
-                                                                      originalChangeGiven)
+                                                                  originalChangeGiven)
                                                                   .clamp(
-                                                                      0.0,
-                                                                      double
-                                                                          .infinity);
+                                                                  0.0,
+                                                                  double
+                                                                      .infinity);
 
-                                                          // الفروقات النهائية
-                                                          final double
+                                                              // الفروقات النهائية
+                                                              final double
                                                               paidDifference =
-                                                              displayEffectivePaid -
-                                                                  displayOriginalPaid;
-                                                          final double
+                                                                  displayEffectivePaid -
+                                                                      displayOriginalPaid;
+                                                              final double
                                                               absPaidDifference =
                                                               paidDifference
                                                                   .abs();
 
-                                                          final double
+                                                              final double
                                                               effectiveTotal =
-                                                              effectiveTotalAfterDiscount;
-                                                          final double
-                                                              effectiveRemaining =
-                                                              (displayEffectivePaid <
-                                                                      effectiveTotal)
-                                                                  ? (effectiveTotal -
-                                                                      displayEffectivePaid)
+                                                                  effectiveTotalAfterDiscount;
+                                                              final double effectiveRemaining =
+                                                              (displayEffectivePaid < effectiveTotal)
+                                                                  ? (effectiveTotal - displayEffectivePaid)
                                                                   : 0.0;
-                                                          final double
-                                                              originalRemaining =
-                                                              (displayOriginalPaid <
-                                                                      originalTotalBefore)
-                                                                  ? (originalTotalBefore -
-                                                                      displayOriginalPaid)
+                                                              final double originalRemaining =
+                                                              (displayOriginalPaid < originalTotalBefore)
+                                                                  ? (originalTotalBefore - displayOriginalPaid)
                                                                   : 0.0;
 
-                                                          if (items.isEmpty &&
-                                                              _groupReturnItemsByReturnId(
+                                                              if (items.isEmpty &&
+                                                                  _groupReturnItemsByReturnId(
                                                                       saleId)
-                                                                  .isEmpty) {
-                                                            return const Padding(
-                                                              padding:
+                                                                      .isEmpty) {
+                                                                return const Padding(
+                                                                  padding:
                                                                   EdgeInsets
                                                                       .all(8.0),
-                                                              child:
+                                                                  child:
                                                                   EmptyStateCard(
-                                                                icon: Icons
-                                                                    .inventory_2_outlined,
-                                                                title:
+                                                                    icon: Icons
+                                                                        .inventory_2_outlined,
+                                                                    title:
                                                                     'لا توجد عناصر',
-                                                                message:
+                                                                    message:
                                                                     'لا توجد عناصر مسجلة لهذه الفاتورة.',
-                                                                margin:
+                                                                    margin:
                                                                     EdgeInsets
                                                                         .zero,
-                                                              ),
-                                                            );
-                                                          }
+                                                                  ),
+                                                                );
+                                                              }
 
-                                                          Color badgeColor;
-                                                          IconData badgeIcon;
-                                                          String badgeText;
-                                                          if (paymentLabel ==
-                                                              'كرديت') {
-                                                            badgeColor = Colors
-                                                                .blueAccent;
-                                                            badgeIcon = Icons
-                                                                .credit_card;
-                                                            badgeText =
+                                                              // ── تعديل 2: فحص هل الفاتورة مرتجعة بالكامل ──
+                                                              final bool allItemsReturned = items.isNotEmpty &&
+                                                                  items.every((it) {
+                                                                    final qty = (it['quantity'] as num?)?.toInt() ?? 0;
+                                                                    final returnedQty = (it['returned_quantity'] as num?)?.toInt() ?? 0;
+                                                                    return qty > 0 && returnedQty >= qty;
+                                                                  });
+
+                                                              Color badgeColor;
+                                                              IconData badgeIcon;
+                                                              String badgeText;
+                                                              if (allItemsReturned) {
+                                                                badgeColor = Colors.grey;
+                                                                badgeIcon = Icons.block;
+                                                                badgeText = 'فاتورة مرتجعة بالكامل';
+                                                              } else if (paymentLabel ==
+                                                                  'كرديت') {
+                                                                badgeColor = Colors
+                                                                    .blueAccent;
+                                                                badgeIcon = Icons
+                                                                    .credit_card;
+                                                                badgeText =
                                                                 'مدفوع إلكترونياً (بطاقة/بوابة)';
-                                                          } else if (paymentLabel ==
-                                                              'مدفوعة') {
-                                                            badgeColor =
-                                                                Colors.green;
-                                                            badgeIcon = Icons
-                                                                .attach_money;
-                                                            badgeText =
+                                                              } else if (paymentLabel ==
+                                                                  'مدفوعة') {
+                                                                badgeColor =
+                                                                    Colors.green;
+                                                                badgeIcon = Icons
+                                                                    .attach_money;
+                                                                badgeText =
                                                                 'مدفوعة نقداً';
-                                                          } else {
-                                                            badgeColor =
-                                                                Colors.orange;
-                                                            badgeIcon =
-                                                                Icons.schedule;
-                                                            badgeText =
+                                                              } else {
+                                                                badgeColor =
+                                                                    Colors.orange;
+                                                                badgeIcon =
+                                                                    Icons.schedule;
+                                                                badgeText =
                                                                 'آجل (فاتورة مستحقة)';
-                                                          }
-                                                          final badgeFullText =
-                                                              '$badgeText$discountLabel';
+                                                              }
+                                                              final badgeFullText =
+                                                                  '$badgeText$discountLabel';
 
-                                                          final returnsById =
+                                                              final returnsById =
                                                               _groupReturnItemsByReturnId(
                                                                   saleId);
 
-                                                          return Column(
-                                                            crossAxisAlignment:
+                                                              return Column(
+                                                                crossAxisAlignment:
                                                                 CrossAxisAlignment
                                                                     .end,
-                                                            children: [
-                                                              const Text(
-                                                                  ' : عناصر الفاتورة الأصلية',
-                                                                  style: TextStyle(
-                                                                      fontWeight:
+                                                                children: [
+                                                                  const Text(
+                                                                      ' : عناصر الفاتورة الأصلية',
+                                                                      style: TextStyle(
+                                                                          fontWeight:
                                                                           FontWeight
                                                                               .bold,
-                                                                      color: Colors
-                                                                          .white)),
-                                                              const SizedBox(
-                                                                  height: 15),
-                                                              ListView
-                                                                  .separated(
-                                                                shrinkWrap:
+                                                                          color: Colors
+                                                                              .white)),
+                                                                  const SizedBox(
+                                                                      height: 15),
+                                                                  ListView
+                                                                      .separated(
+                                                                    shrinkWrap:
                                                                     true,
-                                                                physics:
+                                                                    physics:
                                                                     const NeverScrollableScrollPhysics(),
-                                                                itemCount: items
-                                                                    .length,
-                                                                separatorBuilder:
-                                                                    (_, __) =>
+                                                                    itemCount: items
+                                                                        .length,
+                                                                    separatorBuilder:
+                                                                        (_, __) =>
                                                                         Divider(
-                                                                  color: AppColorsDark
-                                                                      .mainColor,
-                                                                ),
-                                                                itemBuilder:
-                                                                    (context,
+                                                                          color: AppColorsDark
+                                                                              .mainColor,
+                                                                        ),
+                                                                    itemBuilder:
+                                                                        (context,
                                                                         i) {
-                                                                  final it =
+                                                                      final it =
                                                                       items[i];
-                                                                  final name = (it[
-                                                                              'product_name'] ??
+                                                                      final name = (it[
+                                                                      'product_name'] ??
                                                                           'منتج')
-                                                                      .toString();
-                                                                  final qty =
-                                                                      (it['quantity'] as num?)
-                                                                              ?.toInt() ??
-                                                                          0;
-                                                                  final price =
-                                                                      (it['price'] as num?)
-                                                                              ?.toDouble() ??
-                                                                          0.0;
-                                                                  final subtotal =
-                                                                      qty *
-                                                                          price;
-                                                                  final barcode =
-                                                                      (it['barcode'] ??
-                                                                              '-')
                                                                           .toString();
-                                                                  final returnedQty = (it['returned_quantity']
-                                                                              as num?)
+                                                                      final qty =
+                                                                          (it['quantity'] as num?)
+                                                                              ?.toInt() ??
+                                                                              0;
+                                                                      final price =
+                                                                          (it['price'] as num?)
+                                                                              ?.toDouble() ??
+                                                                              0.0;
+                                                                      final subtotal =
+                                                                          qty *
+                                                                              price;
+                                                                      final barcode =
+                                                                      (it['barcode'] ??
+                                                                          '-')
+                                                                          .toString();
+                                                                      final returnedQty = (it['returned_quantity']
+                                                                      as num?)
                                                                           ?.toInt() ??
-                                                                      (((it['returned'] as num?)?.toInt() ?? 0) ==
+                                                                          (((it['returned'] as num?)?.toInt() ?? 0) ==
                                                                               1
-                                                                          ? qty
-                                                                          : 0);
-                                                                  final isPartiallyReturned =
-                                                                      returnedQty >
-                                                                          0;
-                                                                  final isFullyReturned =
-                                                                      qty > 0 &&
-                                                                          returnedQty >=
-                                                                              qty;
-                                                                  final returnedSubtotal =
-                                                                      returnedQty *
-                                                                          price;
-                                                                  final itemValueStyle =
+                                                                              ? qty
+                                                                              : 0);
+                                                                      final isPartiallyReturned =
+                                                                          returnedQty >
+                                                                              0;
+                                                                      final isFullyReturned =
+                                                                          qty > 0 &&
+                                                                              returnedQty >=
+                                                                                  qty;
+                                                                      final returnedSubtotal =
+                                                                          returnedQty *
+                                                                              price;
+                                                                      final itemValueStyle =
                                                                       TextStyle(
-                                                                    color: isPartiallyReturned
-                                                                        ? Colors
+                                                                        color: isPartiallyReturned
+                                                                            ? Colors
                                                                             .redAccent
-                                                                        : AppColorsDark
+                                                                            : AppColorsDark
                                                                             .mainTextLight,
-                                                                    fontSize:
+                                                                        fontSize:
                                                                         15,
-                                                                    decoration: isFullyReturned
-                                                                        ? TextDecoration
+                                                                        decoration: isFullyReturned
+                                                                            ? TextDecoration
                                                                             .lineThrough
-                                                                        : TextDecoration
+                                                                            : TextDecoration
                                                                             .none,
-                                                                  );
-                                                                  return Container(
-                                                                    padding: const EdgeInsets
-                                                                        .symmetric(
-                                                                        vertical:
+                                                                      );
+                                                                      return Container(
+                                                                        padding: const EdgeInsets
+                                                                            .symmetric(
+                                                                            vertical:
                                                                             10,
-                                                                        horizontal:
+                                                                            horizontal:
                                                                             8),
-                                                                    decoration:
+                                                                        decoration:
                                                                         BoxDecoration(
-                                                                      color: Colors
-                                                                          .transparent,
-                                                                      borderRadius:
+                                                                          color: Colors
+                                                                              .transparent,
+                                                                          borderRadius:
                                                                           BorderRadius.circular(
                                                                               6),
-                                                                    ),
-                                                                    child:
+                                                                        ),
+                                                                        child:
                                                                         Column(
-                                                                      crossAxisAlignment:
+                                                                          crossAxisAlignment:
                                                                           CrossAxisAlignment
                                                                               .stretch,
-                                                                      children: [
-                                                                        Row(
-                                                                          mainAxisAlignment:
-                                                                              MainAxisAlignment.end,
-                                                                          crossAxisAlignment:
-                                                                              CrossAxisAlignment.center,
                                                                           children: [
-                                                                            Expanded(
-                                                                              child: RichText(
-                                                                                textAlign: TextAlign.right,
-                                                                                text: TextSpan(
-                                                                                  children: [
-                                                                                    TextSpan(
-                                                                                      text: name,
-                                                                                      style: itemValueStyle,
+                                                                            Row(
+                                                                              mainAxisAlignment:
+                                                                              MainAxisAlignment.end,
+                                                                              crossAxisAlignment:
+                                                                              CrossAxisAlignment.center,
+                                                                              children: [
+                                                                                Expanded(
+                                                                                  child: RichText(
+                                                                                    textAlign: TextAlign.right,
+                                                                                    text: TextSpan(
+                                                                                      children: [
+                                                                                        TextSpan(
+                                                                                          text: name,
+                                                                                          style: itemValueStyle,
+                                                                                        ),
+                                                                                        TextSpan(
+                                                                                          text: ' : الاسم',
+                                                                                          style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 13),
+                                                                                        ),
+                                                                                      ],
                                                                                     ),
-                                                                                    TextSpan(
-                                                                                      text: ' : الاسم',
-                                                                                      style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 13),
-                                                                                    ),
-                                                                                  ],
+                                                                                    overflow: TextOverflow.ellipsis,
+                                                                                  ),
                                                                                 ),
-                                                                                overflow: TextOverflow.ellipsis,
-                                                                              ),
+                                                                              ],
                                                                             ),
-                                                                          ],
-                                                                        ),
-                                                                        const SizedBox(
-                                                                            height:
+                                                                            const SizedBox(
+                                                                                height:
                                                                                 12),
-                                                                        if (isPartiallyReturned) ...[
-                                                                          Align(
-                                                                            alignment:
+                                                                            if (isPartiallyReturned) ...[
+                                                                              Align(
+                                                                                alignment:
                                                                                 Alignment.centerRight,
-                                                                            child:
+                                                                                child:
                                                                                 Container(
-                                                                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                                                              decoration: BoxDecoration(
-                                                                                color: Colors.redAccent.withOpacity(0.12),
-                                                                                border: Border.all(color: Colors.redAccent),
-                                                                                borderRadius: BorderRadius.circular(999),
+                                                                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                                                  decoration: BoxDecoration(
+                                                                                    color: Colors.redAccent.withOpacity(0.12),
+                                                                                    border: Border.all(color: Colors.redAccent),
+                                                                                    borderRadius: BorderRadius.circular(999),
+                                                                                  ),
+                                                                                  child: Text(
+                                                                                    isFullyReturned ? 'تم الاسترجاع' : 'تم استرجاع $returnedQty من $qty',
+                                                                                    style: TextStyle(
+                                                                                      color: Colors.redAccent,
+                                                                                      fontWeight: FontWeight.bold,
+                                                                                    ),
+                                                                                  ),
+                                                                                ),
                                                                               ),
-                                                                              child: Text(
-                                                                                isFullyReturned ? 'تم الاسترجاع' : 'تم استرجاع $returnedQty من $qty',
-                                                                                style: TextStyle(
+                                                                              const SizedBox(
+                                                                                  height: 12),
+                                                                            ],
+                                                                            buildLabelValue(
+                                                                                'باركود',
+                                                                                barcode),
+                                                                            const SizedBox(
+                                                                                height:
+                                                                                12),
+                                                                            RichText(
+                                                                              textAlign:
+                                                                              TextAlign.right,
+                                                                              text:
+                                                                              TextSpan(
+                                                                                children: [
+                                                                                  TextSpan(
+                                                                                    text: "$qty × ${price.toStringAsFixed(2)}",
+                                                                                    style: itemValueStyle,
+                                                                                  ),
+                                                                                  TextSpan(
+                                                                                    text: ' : الكميه',
+                                                                                    style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 13),
+                                                                                  ),
+                                                                                ],
+                                                                              ),
+                                                                              overflow:
+                                                                              TextOverflow.ellipsis,
+                                                                            ),
+                                                                            const SizedBox(
+                                                                                height:
+                                                                                12),
+                                                                            RichText(
+                                                                              textAlign:
+                                                                              TextAlign.right,
+                                                                              text:
+                                                                              TextSpan(
+                                                                                children: [
+                                                                                  TextSpan(
+                                                                                    text: subtotal.toStringAsFixed(2),
+                                                                                    style: itemValueStyle,
+                                                                                  ),
+                                                                                  TextSpan(
+                                                                                    text: ' : الإجمالي',
+                                                                                    style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 13),
+                                                                                  ),
+                                                                                ],
+                                                                              ),
+                                                                              overflow:
+                                                                              TextOverflow.ellipsis,
+                                                                            ),
+                                                                            if (isPartiallyReturned) ...[
+                                                                              const SizedBox(
+                                                                                  height: 12),
+                                                                              Text(
+                                                                                'مسترجع: $name - ${returnedSubtotal.toStringAsFixed(2)}',
+                                                                                textAlign:
+                                                                                TextAlign.right,
+                                                                                style:
+                                                                                const TextStyle(
                                                                                   color: Colors.redAccent,
                                                                                   fontWeight: FontWeight.bold,
                                                                                 ),
                                                                               ),
-                                                                            ),
-                                                                          ),
-                                                                          const SizedBox(
-                                                                              height: 12),
-                                                                        ],
-                                                                        buildLabelValue(
-                                                                            'باركود',
-                                                                            barcode),
-                                                                        const SizedBox(
-                                                                            height:
-                                                                                12),
-                                                                        RichText(
-                                                                          textAlign:
-                                                                              TextAlign.right,
-                                                                          text:
-                                                                              TextSpan(
-                                                                            children: [
-                                                                              TextSpan(
-                                                                                text: "$qty × ${price.toStringAsFixed(2)}",
-                                                                                style: itemValueStyle,
-                                                                              ),
-                                                                              TextSpan(
-                                                                                text: ' : الكميه',
-                                                                                style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 13),
-                                                                              ),
                                                                             ],
-                                                                          ),
-                                                                          overflow:
-                                                                              TextOverflow.ellipsis,
+                                                                          ],
                                                                         ),
-                                                                        const SizedBox(
-                                                                            height:
-                                                                                12),
-                                                                        RichText(
-                                                                          textAlign:
-                                                                              TextAlign.right,
-                                                                          text:
-                                                                              TextSpan(
-                                                                            children: [
-                                                                              TextSpan(
-                                                                                text: subtotal.toStringAsFixed(2),
-                                                                                style: itemValueStyle,
-                                                                              ),
-                                                                              TextSpan(
-                                                                                text: ' : الإجمالي',
-                                                                                style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 13),
-                                                                              ),
-                                                                            ],
-                                                                          ),
-                                                                          overflow:
-                                                                              TextOverflow.ellipsis,
-                                                                        ),
-                                                                        if (isPartiallyReturned) ...[
-                                                                          const SizedBox(
-                                                                              height: 12),
-                                                                          Text(
-                                                                            'مسترجع: $name - ${returnedSubtotal.toStringAsFixed(2)}',
-                                                                            textAlign:
-                                                                                TextAlign.right,
-                                                                            style:
-                                                                                const TextStyle(
-                                                                              color: Colors.redAccent,
-                                                                              fontWeight: FontWeight.bold,
-                                                                            ),
-                                                                          ),
-                                                                        ],
-                                                                      ],
-                                                                    ),
-                                                                  );
-                                                                },
-                                                              ),
-                                                              const SizedBox(
-                                                                  height: 12),
-                                                              if (customerPhone
-                                                                      .isNotEmpty ||
-                                                                  customerName
-                                                                      .isNotEmpty) ...[
-                                                                Divider(
-                                                                    color: AppColorsDark
-                                                                        .mainColor),
-                                                                buildLabelValue(
-                                                                    'رقم العميل',
-                                                                    customerPhone
-                                                                            .isEmpty
-                                                                        ? '-'
-                                                                        : customerPhone),
-                                                                if (customerName
-                                                                        .isNotEmpty &&
-                                                                    customerName !=
-                                                                        customerPhone) ...[
+                                                                      );
+                                                                    },
+                                                                  ),
                                                                   const SizedBox(
-                                                                      height:
+                                                                      height: 12),
+                                                                  if (customerPhone
+                                                                      .isNotEmpty ||
+                                                                      customerName
+                                                                          .isNotEmpty) ...[
+                                                                    Divider(
+                                                                        color: AppColorsDark
+                                                                            .mainColor),
+                                                                    buildLabelValue(
+                                                                        'رقم العميل',
+                                                                        customerPhone
+                                                                            .isEmpty
+                                                                            ? '-'
+                                                                            : customerPhone),
+                                                                    if (customerName
+                                                                        .isNotEmpty &&
+                                                                        customerName !=
+                                                                            customerPhone) ...[
+                                                                      const SizedBox(
+                                                                          height:
                                                                           10),
-                                                                  buildLabelValue(
-                                                                      'اسم العميل',
-                                                                      customerName),
-                                                                ],
-                                                                const SizedBox(
-                                                                    height: 10),
-                                                              ],
-                                                              if (discountAmount >
-                                                                  0) ...[
-                                                                Divider(
-                                                                    color: AppColorsDark
-                                                                        .mainColor),
-                                                                buildLabelValue(
-                                                                    'الإجمالي قبل الخصم',
-                                                                    originalTotalFromMeta
-                                                                        .toStringAsFixed(
+                                                                      buildLabelValue(
+                                                                          'اسم العميل',
+                                                                          customerName),
+                                                                    ],
+                                                                    const SizedBox(
+                                                                        height: 10),
+                                                                  ],
+                                                                  if (discountAmount >
+                                                                      0) ...[
+                                                                    Divider(
+                                                                        color: AppColorsDark
+                                                                            .mainColor),
+                                                                    buildLabelValue(
+                                                                        'الإجمالي قبل الخصم',
+                                                                        originalTotalFromMeta
+                                                                            .toStringAsFixed(
                                                                             2)),
-                                                                const SizedBox(
-                                                                    height: 10),
-                                                                buildLabelValue(
-                                                                  discountTypeUsed ==
+                                                                    const SizedBox(
+                                                                        height: 10),
+                                                                    buildLabelValue(
+                                                                      discountTypeUsed ==
                                                                           'percent'
-                                                                      ? 'الخصم (${discountValueUsed.toStringAsFixed(2)}%)'
-                                                                      : 'الخصم مبلغ ثابت',
-                                                                  discountAmount
-                                                                      .toStringAsFixed(
+                                                                          ? 'الخصم (${discountValueUsed.toStringAsFixed(2)}%)'
+                                                                          : 'الخصم مبلغ ثابت',
+                                                                      discountAmount
+                                                                          .toStringAsFixed(
                                                                           2),
-                                                                ),
-                                                                const SizedBox(
-                                                                    height: 10),
-                                                                buildLabelValue(
-                                                                    'الإجمالي بعد الخصم',
-                                                                    effectiveTotalAfterDiscount
-                                                                        .toStringAsFixed(
+                                                                    ),
+                                                                    const SizedBox(
+                                                                        height: 10),
+                                                                    buildLabelValue(
+                                                                        'الإجمالي بعد الخصم',
+                                                                        effectiveTotalAfterDiscount
+                                                                            .toStringAsFixed(
                                                                             2)),
-                                                                const SizedBox(
-                                                                    height: 12),
-                                                              ],
-                                                              if (loyaltyDiscount >
-                                                                  0) ...[
-                                                                Divider(
-                                                                    color: Colors
-                                                                        .orangeAccent),
-                                                                buildLabelValue(
-                                                                  'خصم رصيد العميل المستخدم',
-                                                                  loyaltyDiscount
-                                                                      .toStringAsFixed(
+                                                                    const SizedBox(
+                                                                        height: 12),
+                                                                  ],
+                                                                  if (loyaltyDiscount >
+                                                                      0) ...[
+                                                                    Divider(
+                                                                        color: Colors
+                                                                            .orangeAccent),
+                                                                    buildLabelValue(
+                                                                      'خصم رصيد العميل المستخدم',
+                                                                      loyaltyDiscount
+                                                                          .toStringAsFixed(
                                                                           2),
-                                                                ),
-                                                                const SizedBox(
-                                                                    height: 10),
-                                                                buildLabelValue(
-                                                                  'الإجمالي بعد خصم العميل',
-                                                                  finalTotalAfterLoyalty
-                                                                      .toStringAsFixed(
+                                                                    ),
+                                                                    const SizedBox(
+                                                                        height: 10),
+                                                                    buildLabelValue(
+                                                                      'الإجمالي بعد خصم العميل',
+                                                                      finalTotalAfterLoyalty
+                                                                          .toStringAsFixed(
                                                                           2),
-                                                                ),
-                                                                const SizedBox(
-                                                                    height: 12),
-                                                              ],
-                                                              if (returnsById
-                                                                  .isNotEmpty)
-                                                                Divider(
-                                                                    color: AppColorsDark
-                                                                        .mainColor),
-                                                              ...returnsById
-                                                                  .entries
-                                                                  .map((entry) {
-                                                                final rid =
-                                                                    entry.key;
-                                                                final rows =
-                                                                    entry.value;
-                                                                final meta = (saleReturnsCache[
-                                                                            saleId] ??
+                                                                    ),
+                                                                    const SizedBox(
+                                                                        height: 12),
+                                                                  ],
+                                                                  if (returnsById
+                                                                      .isNotEmpty)
+                                                                    Divider(
+                                                                        color: AppColorsDark
+                                                                            .mainColor),
+                                                                  ...returnsById
+                                                                      .entries
+                                                                      .map((entry) {
+                                                                    final rid =
+                                                                        entry.key;
+                                                                    final rows =
+                                                                        entry.value;
+                                                                    final meta = (saleReturnsCache[
+                                                                    saleId] ??
                                                                         [])
-                                                                    .firstWhere(
-                                                                        (rm) =>
-                                                                            (rm['id']
-                                                                                as int?) ==
+                                                                        .firstWhere(
+                                                                            (rm) =>
+                                                                        (rm['id']
+                                                                        as int?) ==
                                                                             rid,
                                                                         orElse: () =>
-                                                                            {});
-                                                                final rDate =
+                                                                        {});
+                                                                    final rDate =
                                                                     (meta['date'] ??
-                                                                            '')
-                                                                        as String;
-                                                                final returnedRows = rows
-                                                                    .where((r) =>
-                                                                        (r['is_replacement']
-                                                                                as num?)
-                                                                            ?.toInt() ==
+                                                                        '')
+                                                                    as String;
+                                                                    final returnedRows = rows
+                                                                        .where((r) =>
+                                                                    (r['is_replacement']
+                                                                    as num?)
+                                                                        ?.toInt() ==
                                                                         0)
-                                                                    .toList();
-                                                                final replacementRows = rows
-                                                                    .where((r) =>
-                                                                        (r['is_replacement']
-                                                                                as num?)
-                                                                            ?.toInt() ==
+                                                                        .toList();
+                                                                    final replacementRows = rows
+                                                                        .where((r) =>
+                                                                    (r['is_replacement']
+                                                                    as num?)
+                                                                        ?.toInt() ==
                                                                         1)
-                                                                    .toList();
+                                                                        .toList();
 
-                                                                return Card(
-                                                                    margin: const EdgeInsets
-                                                                        .symmetric(
-                                                                        vertical:
+                                                                    return Card(
+                                                                        margin: const EdgeInsets
+                                                                            .symmetric(
+                                                                            vertical:
                                                                             6),
-                                                                    color: AppColorsDark
-                                                                        .bgColor,
-                                                                    child: Padding(
-                                                                        padding: const EdgeInsets.all(8.0),
-                                                                        child: Directionality(
-                                                                          textDirection:
+                                                                        color: AppColorsDark
+                                                                            .bgColor,
+                                                                        child: Padding(
+                                                                            padding: const EdgeInsets.all(8.0),
+                                                                            child: Directionality(
+                                                                              textDirection:
                                                                               TextDirection.rtl,
-                                                                          child:
+                                                                              child:
                                                                               Column(
-                                                                            crossAxisAlignment:
+                                                                                crossAxisAlignment:
                                                                                 CrossAxisAlignment.start,
-                                                                            children: [
-                                                                              Row(
                                                                                 children: [
-                                                                                  Icon(
-                                                                                    Icons.repeat,
-                                                                                    size: 18,
-                                                                                    color: Theme.of(context).iconTheme.color,
-                                                                                  ),
-                                                                                  const SizedBox(width: 8),
-                                                                                  Column(
-                                                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                                                  Row(
                                                                                     children: [
-                                                                                      RichText(
-                                                                                        text: TextSpan(
-                                                                                          children: [
-                                                                                            TextSpan(
-                                                                                              text: 'اليوم: ',
-                                                                                              style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold),
-                                                                                            ),
-                                                                                            TextSpan(
-                                                                                              text: rDate.split('T').first,
-                                                                                              style: TextStyle(color: AppColorsDark.mainTextLight),
-                                                                                            ),
-                                                                                          ],
-                                                                                        ),
+                                                                                      Icon(
+                                                                                        Icons.repeat,
+                                                                                        size: 18,
+                                                                                        color: Theme.of(context).iconTheme.color,
                                                                                       ),
-                                                                                      const SizedBox(height: 10),
-                                                                                      RichText(
-                                                                                        text: TextSpan(
-                                                                                          children: [
-                                                                                            TextSpan(
-                                                                                              text: 'الوقت: ',
-                                                                                              style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold),
+                                                                                      const SizedBox(width: 8),
+                                                                                      Column(
+                                                                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                                                                        children: [
+                                                                                          RichText(
+                                                                                            text: TextSpan(
+                                                                                              children: [
+                                                                                                TextSpan(
+                                                                                                  text: 'اليوم: ',
+                                                                                                  style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold),
+                                                                                                ),
+                                                                                                TextSpan(
+                                                                                                  text: rDate.split('T').first,
+                                                                                                  style: TextStyle(color: AppColorsDark.mainTextLight),
+                                                                                                ),
+                                                                                              ],
                                                                                             ),
-                                                                                            TextSpan(
-                                                                                              text: DateFormat('hh:mm a').format(DateTime.parse(rDate)),
-                                                                                              style: TextStyle(color: AppColorsDark.mainTextLight),
+                                                                                          ),
+                                                                                          const SizedBox(height: 10),
+                                                                                          RichText(
+                                                                                            text: TextSpan(
+                                                                                              children: [
+                                                                                                TextSpan(
+                                                                                                  text: 'الوقت: ',
+                                                                                                  style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold),
+                                                                                                ),
+                                                                                                TextSpan(
+                                                                                                  text: DateFormat('hh:mm a').format(DateTime.parse(rDate)),
+                                                                                                  style: TextStyle(color: AppColorsDark.mainTextLight),
+                                                                                                ),
+                                                                                              ],
                                                                                             ),
-                                                                                          ],
-                                                                                        ),
+                                                                                          ),
+                                                                                        ],
                                                                                       ),
                                                                                     ],
                                                                                   ),
+                                                                                  const SizedBox(height: 20),
+
+                                                                                  // ── تعديل 4: عرض الاستبدال بشكل واضح "من → إلى" ──
+                                                                                  if (replacementRows.isNotEmpty) ...[
+                                                                                    Container(
+                                                                                      padding: const EdgeInsets.all(10),
+                                                                                      margin: const EdgeInsets.symmetric(vertical: 6),
+                                                                                      decoration: BoxDecoration(
+                                                                                        color: Colors.purpleAccent.withOpacity(0.08),
+                                                                                        border: Border.all(color: Colors.purpleAccent),
+                                                                                        borderRadius: BorderRadius.circular(10),
+                                                                                      ),
+                                                                                      child: Column(
+                                                                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                                                                        children: [
+                                                                                          Row(
+                                                                                            children: [
+                                                                                              Icon(Icons.swap_horiz, size: 18, color: Colors.purpleAccent),
+                                                                                              const SizedBox(width: 8),
+                                                                                              Text(
+                                                                                                'تم استبدال المنتج',
+                                                                                                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.purpleAccent, fontSize: 16),
+                                                                                              ),
+                                                                                            ],
+                                                                                          ),
+                                                                                          const SizedBox(height: 10),
+                                                                                          if (returnedRows.isNotEmpty) ...[
+                                                                                            Text('المنتج القديم (تم إرجاعه):',
+                                                                                                style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                                            const SizedBox(height: 6),
+                                                                                            ...returnedRows.map((r) {
+                                                                                              final name = (r['product_name'] ?? 'منتج') as String;
+                                                                                              final qty = (r['qty'] as num?)?.toInt() ?? 0;
+                                                                                              final price = (r['price'] as num?)?.toDouble() ?? 0.0;
+                                                                                              return Padding(
+                                                                                                padding: const EdgeInsets.symmetric(vertical: 4.0),
+                                                                                                child: Text(
+                                                                                                  '$name  •  $qty × ${price.toStringAsFixed(2)} = ${(qty * price).toStringAsFixed(2)}',
+                                                                                                  style: TextStyle(
+                                                                                                    color: Colors.redAccent,
+                                                                                                    decoration: TextDecoration.lineThrough,
+                                                                                                  ),
+                                                                                                ),
+                                                                                              );
+                                                                                            }).toList(),
+                                                                                            const SizedBox(height: 10),
+                                                                                          ],
+                                                                                          Text('المنتج الجديد (البديل):',
+                                                                                              style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                                          const SizedBox(height: 6),
+                                                                                          ...replacementRows.map((r) {
+                                                                                            final name = (r['product_name'] ?? 'منتج') as String;
+                                                                                            final qty = (r['qty'] as num?)?.toInt() ?? 0;
+                                                                                            final price = (r['price'] as num?)?.toDouble() ?? 0.0;
+                                                                                            return Padding(
+                                                                                              padding: const EdgeInsets.symmetric(vertical: 4.0),
+                                                                                              child: Text(
+                                                                                                '$name  •  $qty × ${price.toStringAsFixed(2)} = ${(qty * price).toStringAsFixed(2)}',
+                                                                                                style: TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold),
+                                                                                              ),
+                                                                                            );
+                                                                                          }).toList(),
+                                                                                        ],
+                                                                                      ),
+                                                                                    ),
+                                                                                  ] else if (returnedRows.isNotEmpty) ...[
+                                                                                    Text(
+                                                                                      'العناصر المرجوعة:',
+                                                                                      style: TextStyle(fontWeight: FontWeight.bold, color: AppColorsDark.mainTextDark, fontSize: 17),
+                                                                                    ),
+                                                                                    ...returnedRows.map((r) {
+                                                                                      final name = (r['product_name'] ?? 'منتج') as String;
+                                                                                      final qty = (r['qty'] as num?)?.toInt() ?? 0;
+                                                                                      final price = (r['price'] as num?)?.toDouble() ?? 0.0;
+                                                                                      final total = qty * price;
+                                                                                      return Padding(
+                                                                                        padding: const EdgeInsets.symmetric(vertical: 6.0),
+                                                                                        child: Column(
+                                                                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                                                                          children: [
+                                                                                            RichText(
+                                                                                              text: TextSpan(children: [
+                                                                                                TextSpan(text: 'الاسم: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                                                TextSpan(text: name, style: TextStyle(color: AppColorsDark.mainTextLight)),
+                                                                                              ]),
+                                                                                            ),
+                                                                                            const SizedBox(height: 10),
+                                                                                            RichText(
+                                                                                              text: TextSpan(children: [
+                                                                                                TextSpan(text: 'الكمية: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                                                TextSpan(text: '$qty', style: TextStyle(color: AppColorsDark.mainTextLight)),
+                                                                                              ]),
+                                                                                            ),
+                                                                                            const SizedBox(height: 10),
+                                                                                            RichText(
+                                                                                              text: TextSpan(children: [
+                                                                                                TextSpan(text: 'السعر: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                                                TextSpan(text: price.toStringAsFixed(2), style: TextStyle(color: AppColorsDark.mainTextLight)),
+                                                                                              ]),
+                                                                                            ),
+                                                                                            const SizedBox(height: 10),
+                                                                                            RichText(
+                                                                                              text: TextSpan(children: [
+                                                                                                TextSpan(text: 'الإجمالي: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                                                                                                TextSpan(text: total.toStringAsFixed(2), style: TextStyle(color: AppColorsDark.mainTextLight)),
+                                                                                              ]),
+                                                                                            ),
+                                                                                            const SizedBox(height: 10),
+                                                                                          ],
+                                                                                        ),
+                                                                                      );
+                                                                                    }).toList(),
+                                                                                  ],
                                                                                 ],
                                                                               ),
-                                                                              const SizedBox(height: 20),
-                                                                              if (returnedRows.isNotEmpty)
-                                                                                Text(
-                                                                                  'العناصر المرجوعة:',
-                                                                                  style: TextStyle(fontWeight: FontWeight.bold, color: AppColorsDark.mainTextDark, fontSize: 17),
-                                                                                ),
-                                                                              ...returnedRows.map((r) {
-                                                                                final name = (r['product_name'] ?? 'منتج') as String;
-                                                                                final qty = (r['qty'] as num?)?.toInt() ?? 0;
-                                                                                final price = (r['price'] as num?)?.toDouble() ?? 0.0;
-                                                                                final total = qty * price;
-                                                                                return Padding(
-                                                                                  padding: const EdgeInsets.symmetric(vertical: 6.0),
-                                                                                  child: Column(
-                                                                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                                                                    children: [
-                                                                                      RichText(
-                                                                                        text: TextSpan(children: [
-                                                                                          TextSpan(text: 'الاسم: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
-                                                                                          TextSpan(text: name, style: TextStyle(color: AppColorsDark.mainTextLight)),
-                                                                                        ]),
-                                                                                      ),
-                                                                                      const SizedBox(height: 10),
-                                                                                      RichText(
-                                                                                        text: TextSpan(children: [
-                                                                                          TextSpan(text: 'الكمية: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
-                                                                                          TextSpan(text: '$qty', style: TextStyle(color: AppColorsDark.mainTextLight)),
-                                                                                        ]),
-                                                                                      ),
-                                                                                      const SizedBox(height: 10),
-                                                                                      RichText(
-                                                                                        text: TextSpan(children: [
-                                                                                          TextSpan(text: 'السعر: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
-                                                                                          TextSpan(text: price.toStringAsFixed(2), style: TextStyle(color: AppColorsDark.mainTextLight)),
-                                                                                        ]),
-                                                                                      ),
-                                                                                      const SizedBox(height: 10),
-                                                                                      RichText(
-                                                                                        text: TextSpan(children: [
-                                                                                          TextSpan(text: 'الإجمالي: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
-                                                                                          TextSpan(text: total.toStringAsFixed(2), style: TextStyle(color: AppColorsDark.mainTextLight)),
-                                                                                        ]),
-                                                                                      ),
-                                                                                      const SizedBox(height: 10),
-                                                                                    ],
-                                                                                  ),
-                                                                                );
-                                                                              }).toList(),
-                                                                              if (replacementRows.isNotEmpty)
-                                                                                Padding(
-                                                                                  padding: EdgeInsets.only(top: 8.0),
-                                                                                  child: Text(
-                                                                                    'البدائل (مقابل المرجوع):',
-                                                                                    style: TextStyle(fontWeight: FontWeight.bold, color: AppColorsDark.mainTextDark, fontSize: 17),
-                                                                                  ),
-                                                                                ),
-                                                                              ...replacementRows.map((r) {
-                                                                                final name = (r['product_name'] ?? 'منتج') as String;
-                                                                                final qty = (r['qty'] as num?)?.toInt() ?? 0;
-                                                                                final price = (r['price'] as num?)?.toDouble() ?? 0.0;
-                                                                                final total = qty * price;
-                                                                                return Padding(
-                                                                                  padding: const EdgeInsets.symmetric(vertical: 6.0, horizontal: 12.0),
-                                                                                  child: Column(
-                                                                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                                                                    children: [
-                                                                                      RichText(
-                                                                                        text: TextSpan(children: [
-                                                                                          TextSpan(text: 'الاسم: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
-                                                                                          TextSpan(text: name, style: TextStyle(color: AppColorsDark.mainTextLight)),
-                                                                                        ]),
-                                                                                      ),
-                                                                                      const SizedBox(height: 10),
-                                                                                      RichText(
-                                                                                        text: TextSpan(children: [
-                                                                                          TextSpan(text: 'الكمية: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
-                                                                                          TextSpan(text: '$qty', style: TextStyle(color: AppColorsDark.mainTextLight)),
-                                                                                        ]),
-                                                                                      ),
-                                                                                      const SizedBox(height: 10),
-                                                                                      RichText(
-                                                                                        text: TextSpan(children: [
-                                                                                          TextSpan(text: 'السعر: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
-                                                                                          TextSpan(text: price.toStringAsFixed(2), style: TextStyle(color: AppColorsDark.mainTextLight)),
-                                                                                        ]),
-                                                                                      ),
-                                                                                      const SizedBox(height: 10),
-                                                                                      RichText(
-                                                                                        text: TextSpan(children: [
-                                                                                          TextSpan(text: 'الإجمالي: ', style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
-                                                                                          TextSpan(text: total.toStringAsFixed(2), style: TextStyle(color: AppColorsDark.mainTextLight)),
-                                                                                        ]),
-                                                                                      ),
-                                                                                      const SizedBox(height: 10),
-                                                                                    ],
-                                                                                  ),
-                                                                                );
-                                                                              }).toList(),
-                                                                            ],
-                                                                          ),
-                                                                        )));
-                                                              }).toList(),
-                                                              Divider(
-                                                                  color: AppColorsDark
-                                                                      .mainColor),
-                                                              const SizedBox(
-                                                                  height: 10),
-                                                              Column(
-                                                                crossAxisAlignment:
-                                                                    CrossAxisAlignment
-                                                                        .stretch,
-                                                                children: [
-                                                                  Text(
-                                                                    'ملخص مالي مبسّط',
-                                                                    textAlign:
-                                                                        TextAlign
-                                                                            .right,
-                                                                    style: TextStyle(
-                                                                        fontWeight:
-                                                                            FontWeight
-                                                                                .bold,
-                                                                        fontSize:
-                                                                            17,
-                                                                        color: AppColorsDark
-                                                                            .mainTextDark),
-                                                                  ),
-                                                                  const SizedBox(
-                                                                      height:
-                                                                          12),
-                                                                  Row(
-                                                                    textDirection:
-                                                                        TextDirection
-                                                                            .rtl,
-                                                                    children: [
-                                                                      Expanded(
-                                                                        child:
-                                                                            Column(
-                                                                          crossAxisAlignment:
-                                                                              CrossAxisAlignment.end,
-                                                                          children: [
-                                                                            Text(':قبل الإجراء',
-                                                                                style: TextStyle(fontWeight: FontWeight.bold, color: AppColorsDark.mainTextDark)),
-                                                                            const SizedBox(height: 10),
-                                                                            Text(
-                                                                              'إجمالي الفاتورة: ${originalTotalBefore.toStringAsFixed(2)}',
-                                                                              textAlign: TextAlign.right,
-                                                                              style: TextStyle(color: AppColorsDark.mainTextDark),
-                                                                            ),
-                                                                            const SizedBox(height: 10),
-                                                                            Text('المشتري دفع: ${originalPaidBefore.toStringAsFixed(2)}',
-                                                                                textAlign: TextAlign.right,
-                                                                                style: TextStyle(fontWeight: FontWeight.bold, color: AppColorsDark.mainTextDark)),
-                                                                            const SizedBox(height: 10),
-                                                                            if (originalChangeGiven >
-                                                                                0)
-                                                                              Text(
-                                                                                'الكاشير رجع للعميل: ${originalChangeGiven.toStringAsFixed(2)}',
-                                                                                textAlign: TextAlign.right,
-                                                                                style: TextStyle(color: AppColorsDark.mainTextLight, fontStyle: FontStyle.italic),
-                                                                              ),
-                                                                            const SizedBox(height: 10),
-                                                                          ],
-                                                                        ),
-                                                                      ),
-                                                                      const SizedBox(
-                                                                          width:
-                                                                              16),
-                                                                      Expanded(
-                                                                        child:
-                                                                            Column(
-                                                                          crossAxisAlignment:
-                                                                              CrossAxisAlignment.end,
-                                                                          children: [
-                                                                            Text(':بعد الإجراء',
-                                                                                style: TextStyle(fontWeight: FontWeight.bold, color: AppColorsDark.mainTextDark)),
-                                                                            const SizedBox(height: 10),
-                                                                            Text('إجمالي الفاتورة الآن: ${effectiveTotal.toStringAsFixed(2)}',
-                                                                                textAlign: TextAlign.right,
-                                                                                style: TextStyle(color: AppColorsDark.mainTextDark)),
-                                                                            const SizedBox(height: 10),
-                                                                            Builder(builder:
-                                                                                (_) {
-                                                                              if (paidDifference > 0) {
-                                                                                return Text('المشتري دفع فرق: ${paidDifference.toStringAsFixed(2)}', textAlign: TextAlign.right, style: TextStyle(color: Colors.green, fontSize: 16));
-                                                                              } else if (paidDifference < 0) {
-                                                                                return Text('المشتري استلم فرق: ${absPaidDifference.toStringAsFixed(2)}', textAlign: TextAlign.right, style: TextStyle(color: Colors.red, fontSize: 16));
-                                                                              } else {
-                                                                                return Text('لم يحدث فرق في المبلغ المدفوع', textAlign: TextAlign.right, style: TextStyle(fontSize: 16, color: AppColorsDark.mainTextLight));
-                                                                              }
-                                                                            }),
-                                                                            if (originalRemaining.abs() >
-                                                                                0.001)
-                                                                              Text('متبقي على العميل الآن: ${effectiveRemaining.toStringAsFixed(2)}', textAlign: TextAlign.right, style: TextStyle(color: (displayEffectivePaid < effectiveTotal) ? Colors.red : Colors.green)),
-                                                                          ],
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ),
-                                                                  const SizedBox(
-                                                                      height:
-                                                                          12),
+                                                                            )));
+                                                                  }).toList(),
                                                                   Divider(
                                                                       color: AppColorsDark
                                                                           .mainColor),
                                                                   const SizedBox(
-                                                                      height:
-                                                                          8),
+                                                                      height: 10),
                                                                   Column(
                                                                     crossAxisAlignment:
-                                                                        CrossAxisAlignment
-                                                                            .end,
+                                                                    CrossAxisAlignment
+                                                                        .stretch,
                                                                     children: [
                                                                       Text(
-                                                                          '${cashier.isNotEmpty ? cashier : 'غير معروف'} : المسؤول عن العملية',
-                                                                          textAlign: TextAlign
-                                                                              .right,
-                                                                          style: TextStyle(
-                                                                              fontWeight: FontWeight.bold,
-                                                                              color: AppColorsDark.mainTextDark)),
+                                                                        'ملخص مالي مبسّط',
+                                                                        textAlign:
+                                                                        TextAlign
+                                                                            .right,
+                                                                        style: TextStyle(
+                                                                            fontWeight:
+                                                                            FontWeight
+                                                                                .bold,
+                                                                            fontSize:
+                                                                            17,
+                                                                            color: AppColorsDark
+                                                                                .mainTextDark),
+                                                                      ),
                                                                       const SizedBox(
                                                                           height:
-                                                                              15),
-                                                                      Builder(
-                                                                          builder:
-                                                                              (_) {
-                                                                        if (paidDeltaSum >
-                                                                            0) {
-                                                                          return Text(
-                                                                              'أثناء الاستبدال/المرتجع، دفع المشتري مبلغًا إضافيًّا قدره ${paidDeltaSum.toStringAsFixed(2)} (الكاشير استلم هذا المبلغ).',
-                                                                              textAlign: TextAlign.right,
-                                                                              style: TextStyle(fontStyle: FontStyle.italic, color: AppColorsDark.mainTextLight, fontWeight: FontWeight.w300));
-                                                                        } else if (paidDeltaSum <
-                                                                            0) {
-                                                                          return Text(
-                                                                              'أثناء الاستبدال/المرتجع، أعاد/دفع الكاشير للمشتري مبلغًا قدره ${(-paidDeltaSum).toStringAsFixed(2)}.',
-                                                                              textAlign: TextAlign.right,
-                                                                              style: TextStyle(fontStyle: FontStyle.italic, color: AppColorsDark.mainTextLight, fontWeight: FontWeight.w300));
-                                                                        } else {
-                                                                          return Text(
-                                                                              'خلال العملية لم يحدث أي دفع/استلام نقدي إضافي',
-                                                                              textAlign: TextAlign.right,
-                                                                              style: TextStyle(fontStyle: FontStyle.italic, color: AppColorsDark.mainTextLight, fontSize: 10, fontWeight: FontWeight.w300));
-                                                                        }
-                                                                      }),
-                                                                    ],
-                                                                  ),
-                                                                ],
-                                                              ),
-                                                              const SizedBox(
-                                                                  height: 12),
-                                                              Align(
-                                                                alignment: Alignment
-                                                                    .centerRight,
-                                                                child:
-                                                                    Container(
-                                                                  padding: const EdgeInsets
-                                                                      .symmetric(
-                                                                      vertical:
-                                                                          8,
-                                                                      horizontal:
                                                                           12),
-                                                                  decoration:
-                                                                      BoxDecoration(
-                                                                    border: Border.all(
-                                                                        color:
-                                                                            badgeColor,
-                                                                        width:
-                                                                            1.6),
-                                                                    color: badgeColor
-                                                                        .withOpacity(
-                                                                            0.08),
-                                                                    borderRadius:
-                                                                        BorderRadius
-                                                                            .circular(8),
-                                                                  ),
-                                                                  child: Row(
-                                                                    mainAxisSize:
-                                                                        MainAxisSize
-                                                                            .min,
-                                                                    children: [
-                                                                      Icon(
-                                                                          badgeIcon,
-                                                                          size:
-                                                                              18,
-                                                                          color:
-                                                                              badgeColor),
+                                                                      Row(
+                                                                        textDirection:
+                                                                        TextDirection
+                                                                            .rtl,
+                                                                        children: [
+                                                                          Expanded(
+                                                                            child:
+                                                                            Column(
+                                                                              crossAxisAlignment:
+                                                                              CrossAxisAlignment.end,
+                                                                              children: [
+                                                                                Text(':قبل الإجراء',
+                                                                                    style: TextStyle(fontWeight: FontWeight.bold, color: AppColorsDark.mainTextDark)),
+                                                                                const SizedBox(height: 10),
+                                                                                Text(
+                                                                                  'إجمالي الفاتورة: ${originalTotalBefore.toStringAsFixed(2)}',
+                                                                                  textAlign: TextAlign.right,
+                                                                                  style: TextStyle(color: AppColorsDark.mainTextDark),
+                                                                                ),
+                                                                                const SizedBox(height: 10),
+                                                                                Text('المشتري دفع: ${originalPaidBefore.toStringAsFixed(2)}',
+                                                                                    textAlign: TextAlign.right,
+                                                                                    style: TextStyle(fontWeight: FontWeight.bold, color: AppColorsDark.mainTextDark)),
+                                                                                const SizedBox(height: 10),
+                                                                                if (originalChangeGiven >
+                                                                                    0)
+                                                                                  Text(
+                                                                                    'الكاشير رجع للعميل: ${originalChangeGiven.toStringAsFixed(2)}',
+                                                                                    textAlign: TextAlign.right,
+                                                                                    style: TextStyle(color: AppColorsDark.mainTextLight, fontStyle: FontStyle.italic),
+                                                                                  ),
+                                                                                const SizedBox(height: 10),
+                                                                              ],
+                                                                            ),
+                                                                          ),
+                                                                          const SizedBox(
+                                                                              width:
+                                                                              16),
+                                                                          Expanded(
+                                                                            child:
+                                                                            Column(
+                                                                              crossAxisAlignment:
+                                                                              CrossAxisAlignment.end,
+                                                                              children: [
+                                                                                Text(':بعد الإجراء',
+                                                                                    style: TextStyle(fontWeight: FontWeight.bold, color: AppColorsDark.mainTextDark)),
+                                                                                const SizedBox(height: 10),
+                                                                                Text('إجمالي الفاتورة الآن: ${effectiveTotal.toStringAsFixed(2)}',
+                                                                                    textAlign: TextAlign.right,
+                                                                                    style: TextStyle(color: AppColorsDark.mainTextDark)),
+                                                                                const SizedBox(height: 10),
+                                                                                Builder(builder:
+                                                                                    (_) {
+                                                                                  if (paidDifference > 0) {
+                                                                                    return Text('المشتري دفع فرق: ${paidDifference.toStringAsFixed(2)}', textAlign: TextAlign.right, style: TextStyle(color: Colors.green, fontSize: 16));
+                                                                                  } else if (paidDifference < 0) {
+                                                                                    return Text('المشتري استلم فرق: ${absPaidDifference.toStringAsFixed(2)}', textAlign: TextAlign.right, style: TextStyle(color: Colors.red, fontSize: 16));
+                                                                                  } else {
+                                                                                    return Text('لم يحدث فرق في المبلغ المدفوع', textAlign: TextAlign.right, style: TextStyle(fontSize: 16, color: AppColorsDark.mainTextLight));
+                                                                                  }
+                                                                                }),
+                                                                                if (originalRemaining.abs() >
+                                                                                    0.001)
+                                                                                  Text('متبقي على العميل الآن: ${effectiveRemaining.toStringAsFixed(2)}', textAlign: TextAlign.right, style: TextStyle(color: (displayEffectivePaid < effectiveTotal) ? Colors.red : Colors.green)),
+                                                                              ],
+                                                                            ),
+                                                                          ),
+                                                                        ],
+                                                                      ),
                                                                       const SizedBox(
-                                                                          width:
-                                                                              8),
-                                                                      Text(
-                                                                        badgeFullText,
-                                                                        style: TextStyle(
-                                                                            color:
-                                                                                badgeColor,
-                                                                            fontWeight:
-                                                                                FontWeight.bold),
+                                                                          height:
+                                                                          12),
+                                                                      Divider(
+                                                                          color: AppColorsDark
+                                                                              .mainColor),
+                                                                      const SizedBox(
+                                                                          height:
+                                                                          8),
+                                                                      Column(
+                                                                        crossAxisAlignment:
+                                                                        CrossAxisAlignment
+                                                                            .end,
+                                                                        children: [
+                                                                          Text(
+                                                                              '${cashier.isNotEmpty ? cashier : 'غير معروف'} : المسؤول عن العملية',
+                                                                              textAlign: TextAlign
+                                                                                  .right,
+                                                                              style: TextStyle(
+                                                                                  fontWeight: FontWeight.bold,
+                                                                                  color: AppColorsDark.mainTextDark)),
+                                                                          const SizedBox(
+                                                                              height:
+                                                                              15),
+                                                                          Builder(
+                                                                              builder:
+                                                                                  (_) {
+                                                                                if (paidDeltaSum >
+                                                                                    0) {
+                                                                                  return Text(
+                                                                                      'أثناء الاستبدال/المرتجع، دفع المشتري مبلغًا إضافيًّا قدره ${paidDeltaSum.toStringAsFixed(2)} (الكاشير استلم هذا المبلغ).',
+                                                                                      textAlign: TextAlign.right,
+                                                                                      style: TextStyle(fontStyle: FontStyle.italic, color: AppColorsDark.mainTextLight, fontWeight: FontWeight.w300));
+                                                                                } else if (paidDeltaSum < 0) {
+                                                                                  return Text(
+                                                                                      'أثناء الاستبدال/المرتجع، أعاد/دفع الكاشير للمشتري مبلغًا قدره ${(-paidDeltaSum).toStringAsFixed(2)}.',
+                                                                                      textAlign: TextAlign.right,
+                                                                                      style: TextStyle(fontStyle: FontStyle.italic, color: AppColorsDark.mainTextLight, fontWeight: FontWeight.w300));
+                                                                                } else {
+                                                                                  return Text(
+                                                                                      'خلال العملية لم يحدث أي دفع/استلام نقدي إضافي',
+                                                                                      textAlign: TextAlign.right,
+                                                                                      style: TextStyle(fontStyle: FontStyle.italic, color: AppColorsDark.mainTextLight, fontSize: 10, fontWeight: FontWeight.w300));
+                                                                                }
+                                                                              }),
+                                                                        ],
                                                                       ),
                                                                     ],
                                                                   ),
-                                                                ),
-                                                              ),
-                                                            ],
-                                                          );
-                                                        }),
+                                                                  const SizedBox(
+                                                                      height: 12),
+                                                                  Align(
+                                                                    alignment: Alignment
+                                                                        .centerRight,
+                                                                    child:
+                                                                    Container(
+                                                                      padding: const EdgeInsets
+                                                                          .symmetric(
+                                                                          vertical:
+                                                                          8,
+                                                                          horizontal:
+                                                                          12),
+                                                                      decoration:
+                                                                      BoxDecoration(
+                                                                        border: Border.all(
+                                                                            color:
+                                                                            badgeColor,
+                                                                            width:
+                                                                            1.6),
+                                                                        color: badgeColor
+                                                                            .withOpacity(
+                                                                            0.08),
+                                                                        borderRadius:
+                                                                        BorderRadius
+                                                                            .circular(8),
+                                                                      ),
+                                                                      child: Row(
+                                                                        mainAxisSize:
+                                                                        MainAxisSize
+                                                                            .min,
+                                                                        children: [
+                                                                          Icon(
+                                                                              badgeIcon,
+                                                                              size:
+                                                                              18,
+                                                                              color:
+                                                                              badgeColor),
+                                                                          const SizedBox(
+                                                                              width:
+                                                                              8),
+                                                                          Text(
+                                                                            badgeFullText,
+                                                                            style: TextStyle(
+                                                                                color:
+                                                                                badgeColor,
+                                                                                fontWeight:
+                                                                                FontWeight.bold),
+                                                                          ),
+                                                                        ],
+                                                                      ),
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              );
+                                                            }),
                                                       ),
                                                     ),
                                                   );

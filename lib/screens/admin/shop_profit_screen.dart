@@ -19,6 +19,7 @@ class _ShopProfitScreenState extends State<ShopProfitScreen> {
   List<Map<String, dynamic>> _dailyRows = [];
   List<Map<String, dynamic>> _expenses = [];
   List<Map<String, dynamic>> _paidPurchases = [];
+  double _totalLoyaltyDiscounts = 0.0;
 
   double get _totalProfit => _dailyRows.fold<double>(
         0.0,
@@ -31,13 +32,14 @@ class _ShopProfitScreenState extends State<ShopProfitScreen> {
       );
 
   double get _totalPaidPurchases => _paidPurchases.fold<double>(
+
         0.0,
         (sum, row) => sum + ((row['paid_total'] as num?)?.toDouble() ?? 0.0),
       );
 
   double get _totalExpenses => _totalExternalExpenses + _totalPaidPurchases;
 
-  double get _netProfit => _totalProfit - _totalExpenses;
+  double get _netProfit => _totalProfit - _totalExpenses - _totalLoyaltyDiscounts;
 
   DateTime get _monthStart =>
       DateTime(_selectedMonth.year, _selectedMonth.month, 1);
@@ -66,16 +68,22 @@ class _ShopProfitScreenState extends State<ShopProfitScreen> {
         from: _monthStart,
         to: _monthEnd,
       );
+      final loyaltyDiscounts = await DBHelper.instance.getTotalLoyaltyDiscounts(
+        from: _monthStart,
+        to: _monthEnd,
+      );
       if (!mounted) return;
       setState(() {
         _dailyRows = rows;
         _expenses = expenses;
         _paidPurchases = paidPurchases;
+        _totalLoyaltyDiscounts = loyaltyDiscounts;
       });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
+
 
   Future<void> _pickMonth() async {
     final picked = await showDatePicker(
@@ -457,6 +465,9 @@ class _ShopProfitScreenState extends State<ShopProfitScreen> {
                   const SizedBox(width: 8),
                   _summaryCard(
                       'مجمل المصاريف', _totalExpenses, Colors.redAccent),
+                  const SizedBox(width: 8),
+                  _summaryCard(
+                      'خصومات العملاء', _totalLoyaltyDiscounts, Colors.orangeAccent),
                   const SizedBox(width: 8),
                   _summaryCard(
                     'الصافي',

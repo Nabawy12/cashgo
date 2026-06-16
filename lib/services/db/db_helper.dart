@@ -26,7 +26,7 @@ class DBHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('pos_system.db_v2.2060');
+    _database = await _initDB('pos_system.db_v2.2061');
     return _database!;
   }
 
@@ -558,6 +558,36 @@ class DBHelper {
         'ALTER TABLE sales ADD COLUMN loyalty_reward_earned INTEGER NOT NULL DEFAULT 0;');
     await addIfMissing('loyalty_reward_revoked',
         'ALTER TABLE sales ADD COLUMN loyalty_reward_revoked INTEGER NOT NULL DEFAULT 0;');
+  }
+
+
+
+
+  ////////////////
+
+
+
+  Future<double> getTotalLoyaltyDiscounts({
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    final db = await database;
+    await _ensureSaleLoyaltyColumns(db);
+    final fromStr = DateTime(from.year, from.month, from.day).toIso8601String();
+    final toStr =
+    DateTime(to.year, to.month, to.day, 23, 59, 59).toIso8601String();
+    final rows = await db.rawQuery(
+      '''
+    SELECT SUM(COALESCE(loyalty_discount,0)) AS total_discount
+    FROM sales
+    WHERE datetime(date) >= datetime(?)
+      AND datetime(date) <= datetime(?)
+    ''',
+      [fromStr, toStr],
+    );
+    return rows.isNotEmpty
+        ? (_numFromRow(rows.first, 'total_discount'))
+        : 0.0;
   }
 
   Future<void> _ensureCustomersTables(Database db) async {
