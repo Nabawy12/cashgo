@@ -2089,7 +2089,7 @@ class _CashierScreenState extends State<CashierScreen> {
       final meta = await Hive.openBox('meta');
       double cash = (meta.get('lastOfflineSale_cash') as num? ?? 0).toDouble();
       double credit =
-          (meta.get('lastOfflineSale_credit') as num? ?? 0).toDouble();
+      (meta.get('lastOfflineSale_credit') as num? ?? 0).toDouble();
       final p = pm.toLowerCase();
       if (p == 'cash')
         cash += amount;
@@ -2110,7 +2110,7 @@ class _CashierScreenState extends State<CashierScreen> {
 
     final subtotal = _total;
     final normalizedDiscountType =
-        (_discountType == 'amount') ? 'fixed' : _discountType;
+    (_discountType == 'amount') ? 'fixed' : _discountType;
     double discountAmount = 0.0;
     if (normalizedDiscountType == 'percent' && _discountValue > 0) {
       discountAmount = subtotal * (_discountValue.clamp(0.0, 100.0) / 100.0);
@@ -2118,7 +2118,7 @@ class _CashierScreenState extends State<CashierScreen> {
       discountAmount = _discountValue > subtotal ? subtotal : _discountValue;
     }
     final totalBeforeLoyalty =
-        (subtotal - discountAmount).clamp(0.0, double.infinity);
+    (subtotal - discountAmount).clamp(0.0, double.infinity);
 
     if (mounted) setState(() => _saving = true);
 
@@ -2133,14 +2133,9 @@ class _CashierScreenState extends State<CashierScreen> {
       final customerPhone = (customer['phone'] ?? '').toString();
       final loyaltyBalance =
           (customer['loyalty_balance'] as num?)?.toDouble() ?? 0.0;
-      if (customerId != null) {
-        final todayInvoices = await DBHelper.instance
-            .getCustomerInvoiceCountForDate(customerId, DateTime.now());
-        if (todayInvoices >= 2) {
-          _showSnackSafe('هذا العميل وصل للحد الأقصى اليومي: فاتورتين فقط');
-          return;
-        }
-      }
+
+      // تم إلغاء الحد الأقصى لعدد الفواتير اليومية للعميل — العميل يقدر يعمل فواتير غير محدودة
+
       final useLoyaltyDiscount = customer['use_discount'] == true;
       final maxLoyaltyDiscount = _customerLoyaltyDiscountForInvoice(
         balance: loyaltyBalance,
@@ -2148,12 +2143,12 @@ class _CashierScreenState extends State<CashierScreen> {
       );
       final loyaltyDiscount = useLoyaltyDiscount
           ? (((customer['selected_loyalty_discount'] as num?)?.toDouble() ??
-                  maxLoyaltyDiscount)
-              .clamp(0.0, maxLoyaltyDiscount)
-              .toDouble())
+          maxLoyaltyDiscount)
+          .clamp(0.0, maxLoyaltyDiscount)
+          .toDouble())
           : 0.0;
       final total =
-          (totalBeforeLoyalty - loyaltyDiscount).clamp(0.0, double.infinity);
+      (totalBeforeLoyalty - loyaltyDiscount).clamp(0.0, double.infinity);
 
       final paid = (paymentMethod == 'card' || paymentMethod == 'wallet')
           ? total
