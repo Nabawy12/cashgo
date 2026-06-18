@@ -40,10 +40,11 @@ flutter_lints: ^6.0.0
 msix: ^3.17.0
 
 msix_config:
-display_name: CashGo
-publisher_display_name: Zeyad Nabawy
-identity_name: CashGo
-msix_version: 1.0.0.0
+display_name: CashGO_VAPE
+publisher_display_name: ZeyadNabawy
+identity_name: Cashgosystem.CashGOVAPE
+publisher: CN=65B4ED42-702C-4FB6-9A7D-4DDD713C0CA5
+msix_version: 1.0.0.
 
 flutter:
 uses-material-design: true
