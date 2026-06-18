@@ -1,62 +1,64 @@
 name: Build Flutter Windows App and Publish Release
 
 on:
-push:
-branches: [ master, ci-windows-build ]
-workflow_dispatch:
+  push:
+    branches:
+      - master
+      - ci-windows-build
+  workflow_dispatch:
 
 permissions:
-contents: write
+  contents: write
 
 jobs:
-build:
-runs-on: windows-latest
-  
-  ```
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
+  build:
+    runs-on: windows-latest
 
-  - name: Install Flutter
-    uses: subosito/flutter-action@v2
-    with:
-      channel: stable
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  - name: Enable Windows support
-    run: flutter config --enable-windows-desktop
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
 
-  - name: Install dependencies
-    run: flutter pub get
+      - name: Enable Windows support
+        run: flutter config --enable-windows-desktop
 
-  - name: Build Windows release
-    run: flutter build windows --release
+      - name: Install dependencies
+        run: flutter pub get
 
-  - name: Create MSIX package
-    run: dart run msix:create
+      - name: Build Windows release
+        run: flutter build windows --release
 
-  - name: Create ZIP package
-    run: |
-      if (Test-Path -Path build/windows/x64/runner/Release) {
-        Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath CashGo-windows.zip -Force
-      } else {
-        Write-Error "Release folder not found!"
-      }
+      - name: Create MSIX package
+        run: dart run msix:create
 
-  - name: Upload artifacts
-    uses: actions/upload-artifact@v4
-    with:
-      name: CashGo-build
-      path: |
-        CashGo-windows.zip
-        *.msix
+      - name: Create ZIP package
+        shell: pwsh
+        run: |
+          if (Test-Path "build/windows/x64/runner/Release") {
+            Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath CashGo-windows.zip -Force
+          } else {
+            throw "Release folder not found!"
+          }
 
-  - name: Create GitHub Release
-    uses: softprops/action-gh-release@v1
-    with:
-      tag_name: v${{ github.run_number }}
-      name: Release v${{ github.run_number }}
-      files: |
-        CashGo-windows.zip
-        *.msix
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CashGo-build
+          path: |
+            CashGo-windows.zip
+            *.msix
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          files: |
+            CashGo-windows.zip
+            *.msix
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
