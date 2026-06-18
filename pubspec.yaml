@@ -44,6 +44,8 @@ msix_config:
   publisher: CN=65B4ED42-702C-4FB6-9A7D-4DDD713C0CA5
   msix_version: 1.0.0.0
 
+  install_certificate: false
+
 flutter:
   uses-material-design: true
 
