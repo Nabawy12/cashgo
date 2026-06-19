@@ -1,6 +1,4 @@
 // lib/main.dart
-import 'dart:io';
-
 import 'package:cashgo/services/Api/Admin/Products.dart';
 import 'package:cashgo/services/app_settings_controller.dart';
 import 'package:cashgo/services/cashier/close_shieft.dart';
@@ -9,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
-import 'screens/shared/device_locked_screen.dart';
 import 'screens/shared/login_screen.dart';
 import 'screens/admin/dashboard_screen.dart';
 import 'screens/cashier/cashier_screen.dart';
@@ -21,54 +18,35 @@ final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  bool isAllowed = false;
-  try {
-    final hostname = Platform.localHostname.trim().toLowerCase();
-    const allowedHostnames = [
-      'macbook-air-with-zeyad.local',
-      'desktop-463r073',
-      'desktop-6p83kj5',
-      'desktop-a9k3m6m'
-    ];
-    isAllowed = allowedHostnames.contains(hostname);
-  } catch (_) {
-    isAllowed = false;
-  }
-
   await Hive.initFlutter();
-  // open boxes used by the code
   await Hive.openBox('products');
   await Hive.openBox('sales');
   await Hive.openBox('users');
   await Hive.openBox('financial_accounts');
   await Hive.openBox('close_shifts');
   await Hive.openBox('meta');
-
   await Hive.openBox('ops');
-  // init product api boxes
+
   await ProductApi.initBoxes();
-  await ProductApi.initBoxes();
-  final box = await Hive.openBox('products');
+
+  final box = Hive.box('products');
   for (final k in box.keys) {
     print('product key=$k value=${box.get(k)}');
   }
 
-  // start sync manager
   await SyncManager.init();
-  await Hive.openBox('ops');
   final api = ApiServiceClose_shieft();
-  await api.migrateOldCloseShiftOps(); // لو ضفتها في نفس الملف
-  await SyncManager.init();
+  await api.migrateOldCloseShiftOps();
   SyncManager.start();
+
   await initializeDateFormatting('ar');
   await AppSettingsController.loadThemeMode();
-  runApp(MyApp(isAllowed: isAllowed));
+
+  runApp(const MyApp());
 }
 
 class MyApp extends StatefulWidget {
-  final bool isAllowed;
-
-  const MyApp({super.key, required this.isAllowed});
+  const MyApp({super.key});
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -84,29 +62,27 @@ class _MyAppState extends State<MyApp> {
         debugShowCheckedModeBanner: false,
         navigatorKey: appNavigatorKey,
         themeMode: themeMode,
-        home: widget.isAllowed ? LoginScreen() : const DeviceLockedScreen(),
-        routes: widget.isAllowed
-            ? {
-                '/admin': (context) {
-                  final username =
-                      ModalRoute.of(context)?.settings.arguments?.toString() ??
-                          'admin';
-                  return AdminDashboardScreen(username: username);
-                },
-                CashierScreen.routName: (context) {
-                  final args = ModalRoute.of(context)?.settings.arguments;
-                  String username = 'cashier';
-                  if (args is Map && args['username'] != null) {
-                    username = args['username'].toString();
-                  } else if (args is String && args.isNotEmpty) {
-                    username = args;
-                  }
-                  return CashierScreen(cashierUsername: username);
-                },
-                receiptsScreen.routeName: (context) => const receiptsScreen(),
-                CreditsScreen.routeName: (context) => const CreditsScreen(),
-              }
-            : const {},
+        home: LoginScreen(), // ✅ كل الأجهزة تفتح Login مباشرة
+        routes: {
+          '/admin': (context) {
+            final username =
+                ModalRoute.of(context)?.settings.arguments?.toString() ??
+                    'admin';
+            return AdminDashboardScreen(username: username);
+          },
+          CashierScreen.routName: (context) {
+            final args = ModalRoute.of(context)?.settings.arguments;
+            String username = 'cashier';
+            if (args is Map && args['username'] != null) {
+              username = args['username'].toString();
+            } else if (args is String && args.isNotEmpty) {
+              username = args;
+            }
+            return CashierScreen(cashierUsername: username);
+          },
+          receiptsScreen.routeName: (context) => const receiptsScreen(),
+          CreditsScreen.routeName: (context) => const CreditsScreen(),
+        },
         theme: _buildTheme(Brightness.light),
         darkTheme: _buildTheme(Brightness.dark),
       ),
@@ -116,9 +92,9 @@ class _MyAppState extends State<MyApp> {
   ThemeData _buildTheme(Brightness brightness) {
     final isLight = brightness == Brightness.light;
     final background =
-        isLight ? AppColorsLight.bgColor : const Color(0xff1A1C28);
+    isLight ? AppColorsLight.bgColor : const Color(0xff1A1C28);
     final surface =
-        isLight ? AppColorsLight.bgCardColor : const Color(0xff262935);
+    isLight ? AppColorsLight.bgCardColor : const Color(0xff262935);
     final onSurface = isLight ? Colors.black : Colors.white;
     final iconColor = isLight ? Colors.black : const Color(0xff808B97);
     final mutedText = isLight ? Colors.grey.shade800 : const Color(0xff808B97);
@@ -223,7 +199,7 @@ class _MyAppState extends State<MyApp> {
         todayForegroundColor: WidgetStateProperty.all(onSurface),
         todayBackgroundColor: WidgetStateProperty.all(AppColorsLight.mainColor),
         rangePickerBackgroundColor:
-            AppColorsLight.mainColor.withValues(alpha: 0.5),
+        AppColorsLight.mainColor.withValues(alpha: 0.5),
         weekdayStyle: TextStyle(color: mutedText),
         yearStyle: TextStyle(color: mutedText),
         headerHeadlineStyle: TextStyle(color: mutedText),
