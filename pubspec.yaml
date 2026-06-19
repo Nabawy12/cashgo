@@ -45,6 +45,7 @@ msix_config:
   store: true
   install_certificate: false
   vc_redist: true
+  logo_path: assets/icons/icon.png
 
 flutter_launcher_icons:
   windows:
