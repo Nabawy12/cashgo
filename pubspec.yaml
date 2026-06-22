@@ -41,11 +41,13 @@ msix_config:
   publisher_display_name: ZeyadNabawy
   identity_name: Cashgosystem.CashGOVAPE
   publisher: CN=65B4ED42-702C-4FB6-9A7D-4DDD713C0CA5
-  msix_version: 1.0.0.0
+  msix_version: 1.0.1.0
   store: true
   install_certificate: false
   vc_redist: true
   logo_path: assets/icons/icon.png
+  tile_icon_path: assets/icons/icon.png
+  vs_generated_images_folder_path: assets/icons
 
 flutter_launcher_icons:
   windows:
