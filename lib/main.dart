@@ -34,10 +34,24 @@ Future<void> main() async {
     print('product key=$k value=${box.get(k)}');
   }
 
-  await SyncManager.init();
-  final api = ApiServiceClose_shieft();
-  await api.migrateOldCloseShiftOps();
-  SyncManager.start();
+  try {
+    await SyncManager.init();
+  } catch (e) {
+    print('SyncManager init error: $e');
+  }
+
+  try {
+    final api = ApiServiceClose_shieft();
+    await api.migrateOldCloseShiftOps();
+  } catch (e) {
+    print('migrateOldCloseShiftOps error: $e');
+  }
+
+  try {
+    SyncManager.start();
+  } catch (e) {
+    print('SyncManager start error: $e');
+  }
 
   await initializeDateFormatting('ar');
   await AppSettingsController.loadThemeMode();
@@ -62,7 +76,7 @@ class _MyAppState extends State<MyApp> {
         debugShowCheckedModeBanner: false,
         navigatorKey: appNavigatorKey,
         themeMode: themeMode,
-        home: LoginScreen(), // ✅ كل الأجهزة تفتح Login مباشرة
+        home: LoginScreen(),
         routes: {
           '/admin': (context) {
             final username =
