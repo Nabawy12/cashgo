@@ -6,7 +6,7 @@ import 'package:cashgo/utils/colors.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:intl/date_symbol_data_local.dart';
-
+import 'dart:async';
 import 'screens/shared/login_screen.dart';
 import 'screens/admin/dashboard_screen.dart';
 import 'screens/cashier/cashier_screen.dart';
@@ -16,48 +16,87 @@ import 'screens/admin/stock_screen.dart';
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  await Hive.initFlutter();
-  await Hive.openBox('products');
-  await Hive.openBox('sales');
-  await Hive.openBox('users');
-  await Hive.openBox('financial_accounts');
-  await Hive.openBox('close_shifts');
-  await Hive.openBox('meta');
-  await Hive.openBox('ops');
+    String? fatalError;
 
-  await ProductApi.initBoxes();
+    try {
+      await Hive.initFlutter();
+      await Hive.openBox('products');
+      await Hive.openBox('sales');
+      await Hive.openBox('users');
+      await Hive.openBox('financial_accounts');
+      await Hive.openBox('close_shifts');
+      await Hive.openBox('meta');
+      await Hive.openBox('ops');
 
-  final box = Hive.box('products');
-  for (final k in box.keys) {
-    print('product key=$k value=${box.get(k)}');
-  }
+      await ProductApi.initBoxes();
 
-  try {
-    await SyncManager.init();
-  } catch (e) {
-    print('SyncManager init error: $e');
-  }
+      try {
+        await SyncManager.init();
+      } catch (e) {
+        print('SyncManager init error: $e');
+      }
 
-  try {
-    final api = ApiServiceClose_shieft();
-    await api.migrateOldCloseShiftOps();
-  } catch (e) {
-    print('migrateOldCloseShiftOps error: $e');
-  }
+      try {
+        final api = ApiServiceClose_shieft();
+        await api.migrateOldCloseShiftOps();
+      } catch (e) {
+        print('migrateOldCloseShiftOps error: $e');
+      }
 
-  try {
-    SyncManager.start();
-  } catch (e) {
-    print('SyncManager start error: $e');
-  }
+      try {
+        SyncManager.start();
+      } catch (e) {
+        print('SyncManager start error: $e');
+      }
 
-  await initializeDateFormatting('ar');
-  await AppSettingsController.loadThemeMode();
+      await initializeDateFormatting('ar');
+      await AppSettingsController.loadThemeMode();
+    } catch (e, stack) {
+      fatalError = e.toString();
+      debugPrint('FATAL INIT ERROR: $e\n$stack');
+    }
 
-  runApp(const MyApp());
+    runApp(fatalError == null
+        ? const MyApp()
+        : ErrorBootApp(error: fatalError!));
+  }, (error, stack) {
+    debugPrint('UNCAUGHT ZONE ERROR: $error\n$stack');
+  });
 }
+
+
+
+class ErrorBootApp extends StatelessWidget {
+  final String error;
+  const ErrorBootApp({super.key, required this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                const SizedBox(height: 16),
+                const Text('حدث خطأ عند بدء التشغيل'),
+                const SizedBox(height: 8),
+                Text(error, style: const TextStyle(fontSize: 12)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 
 class MyApp extends StatefulWidget {
   const MyApp({super.key});

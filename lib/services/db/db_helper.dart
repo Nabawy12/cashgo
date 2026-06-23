@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -38,10 +39,30 @@ class DBHelper {
         databaseFactory = databaseFactoryFfi;
       } catch (e) {
         print('sqflite_common_ffi init failed: $e');
+        rethrow; // امنع التطبيق من الاستمرار بحالة DB factory غير صحيحة
       }
     }
-    final dbPath = await getDatabasesPath();
+
+    String dbPath;
+    try {
+      if (!kIsWeb &&
+          (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+        // مسار مضمون يشتغل جوه AppContainer sandbox
+        final dir = await getApplicationSupportDirectory();
+        if (!await dir.exists()) {
+          await dir.create(recursive: true);
+        }
+        dbPath = dir.path;
+      } else {
+        dbPath = await getDatabasesPath();
+      }
+    } catch (e) {
+      print('Failed to resolve db directory: $e');
+      rethrow;
+    }
+
     final path = join(dbPath, fileName);
+    print('DB path resolved to: $path');
 
     return await openDatabase(
       path,

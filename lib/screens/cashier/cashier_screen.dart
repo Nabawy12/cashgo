@@ -412,9 +412,7 @@ class _CashierScreenState extends State<CashierScreen> {
             // 1) نفحّص وندفع أي ops معلق (لو عندك SyncManager)
             try {
               await SyncManager.flushOnce();
-              debugPrint('[networkBack] SyncManager.flushOnce succeeded');
             } catch (e, st) {
-              debugPrint('[networkBack] SyncManager.flushOnce failed: $e\n$st');
             }
 
             // 2) جلب و مزامنة الـ financials من السيرفر (لو عندك دالة جاهزة)

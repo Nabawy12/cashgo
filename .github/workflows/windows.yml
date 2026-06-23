@@ -35,6 +35,18 @@ jobs:
       - name: Build Windows release
         run: flutter build windows --release
 
+      - name: Verify sqlite3.dll exists
+        shell: pwsh
+        run: |
+          $dllPath = "build/windows/x64/runner/Release/sqlite3.dll"
+          if (Test-Path $dllPath) {
+            Write-Host "✅ sqlite3.dll found at $dllPath"
+          } else {
+            Write-Host "❌ sqlite3.dll NOT FOUND!"
+            Get-ChildItem -Path "build/windows/x64/runner/Release" -Recurse
+            throw "sqlite3.dll missing from build output!"
+          }
+
       - name: Create MSIX package
         run: flutter pub run msix:create
 
