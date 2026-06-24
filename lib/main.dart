@@ -1,12 +1,16 @@
-// lib/main.dart
+// lib/main.dart  (تعديل مدمج مع كل اللي اتفقنا عليه قبل كده)
+
+import 'dart:async';
+import 'package:cashgo/screens/shared/device_locked_screen.dart';
 import 'package:cashgo/services/Api/Admin/Products.dart';
 import 'package:cashgo/services/app_settings_controller.dart';
 import 'package:cashgo/services/cashier/close_shieft.dart';
+import 'package:cashgo/screens/shared/locked_screen.dart';
 import 'package:cashgo/utils/colors.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:intl/date_symbol_data_local.dart';
-import 'dart:async';
+
 import 'screens/shared/login_screen.dart';
 import 'screens/admin/dashboard_screen.dart';
 import 'screens/cashier/cashier_screen.dart';
@@ -20,6 +24,7 @@ Future<void> main() async {
     WidgetsFlutterBinding.ensureInitialized();
 
     String? fatalError;
+    bool appIsLocked = false;
 
     try {
       await Hive.initFlutter();
@@ -54,20 +59,34 @@ Future<void> main() async {
 
       await initializeDateFormatting('ar');
       await AppSettingsController.loadThemeMode();
+
+      // ── فحص حالة التفعيل / الفترة التجريبية ──────────────────────
+      await ActivationService.ensureFirstRunDate();
+      appIsLocked = await ActivationService.isLocked();
     } catch (e, stack) {
       fatalError = e.toString();
       debugPrint('FATAL INIT ERROR: $e\n$stack');
     }
 
-    runApp(fatalError == null
-        ? const MyApp()
-        : ErrorBootApp(error: fatalError!));
+    if (fatalError != null) {
+      runApp(ErrorBootApp(error: fatalError));
+    } else if (appIsLocked) {
+      runApp(MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: LockedScreen(
+          onActivated: () {
+            // بعد التفعيل الناجح نعيد تشغيل التطبيق الطبيعي
+            runApp(const MyApp());
+          },
+        ),
+      ));
+    } else {
+      runApp(const MyApp());
+    }
   }, (error, stack) {
     debugPrint('UNCAUGHT ZONE ERROR: $error\n$stack');
   });
 }
-
-
 
 class ErrorBootApp extends StatelessWidget {
   final String error;
@@ -76,6 +95,7 @@ class ErrorBootApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       home: Scaffold(
         body: Center(
           child: Padding(
@@ -96,7 +116,6 @@ class ErrorBootApp extends StatelessWidget {
     );
   }
 }
-
 
 class MyApp extends StatefulWidget {
   const MyApp({super.key});

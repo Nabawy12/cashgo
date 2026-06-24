@@ -30,6 +30,7 @@ dependencies:
   crypto: ^3.0.6
   path_provider: ^2.1.6
   sqlite3_flutter_libs: ^0.6.0+eol
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:
