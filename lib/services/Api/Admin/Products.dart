@@ -38,7 +38,7 @@ class ProductApi {
   }
 
   static Future<Map<String, dynamic>> getProductsPage({int count = 1}) async {
-    const perPage = 10;
+    const perPage = 50; // <-- هنا فقط
     final page = count < 1 ? 1 : count;
     final all = await getAllProducts();
     final total = all.length;

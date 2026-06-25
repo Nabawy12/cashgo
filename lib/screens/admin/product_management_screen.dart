@@ -1,4 +1,6 @@
 // lib/screens/product_management_screen.dart
+import 'dart:async';
+
 import 'package:cashgo/utils/colors.dart';
 import 'package:cashgo/widgets/custom_button.dart';
 import 'package:flutter/material.dart';
@@ -28,6 +30,9 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   bool loadingMore = false;
   bool allLoaded = false;
 
+  // Auto-load timer: loads next page every second, no scroll needed
+  Timer? _autoLoadTimer;
+
   final ScrollController verticalScrollController = ScrollController();
 
   Color _dialogTextColor(BuildContext ctx) =>
@@ -55,6 +60,13 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         }
       }
     });
+
+    // تحميل تلقائي كل ثانية بدون الحاجة لعمل scroll
+    _autoLoadTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!loading && !loadingMore && !allLoaded) {
+        loadMoreProducts();
+      }
+    });
   }
 
   Future<void> refreshProducts() async {
@@ -67,7 +79,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
 
     try {
       // Try to use paged endpoint (returns meta + rows)
-      final page = await ProductApi.getProductsPage(count: 1);
+      final page = await ProductApi.getProductsPage();
       List<Map<String, dynamic>> rows = [];
       int tp = 1;
       if (page != null && page['rows'] is List) {
@@ -138,8 +150,8 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
           tp = (meta['total_pages'] is int)
               ? meta['total_pages'] as int
               : int.tryParse(
-                      meta['total_pages']?.toString() ?? tp.toString()) ??
-                  tp;
+              meta['total_pages']?.toString() ?? tp.toString()) ??
+              tp;
         } else if (meta.containsKey('total') && meta.containsKey('per_page')) {
           final total = int.tryParse(meta['total']?.toString() ?? '0') ?? 0;
           final perPage =
@@ -163,7 +175,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
       // append unique rows (avoid duplicates by id)
       final existingIds = products.map((e) => e['id']).toSet();
       final newRows =
-          rows.where((r) => !existingIds.contains(r['id'])).toList();
+      rows.where((r) => !existingIds.contains(r['id'])).toList();
 
       setState(() {
         if (newRows.isNotEmpty) {
@@ -439,7 +451,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
               );
             },
             icon:
-                Icon(Icons.qr_code_2, color: Theme.of(context).iconTheme.color),
+            Icon(Icons.qr_code_2, color: Theme.of(context).iconTheme.color),
           ),
           IconButton(
             tooltip: 'تحديث',
@@ -530,464 +542,464 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
                       Expanded(
                         child: filteredProducts.isEmpty
                             ? const EmptyStateCard(
-                                icon: Icons.inventory_2_outlined,
-                                title: 'لا توجد منتجات',
-                                message:
-                                    'أضف منتجاً جديداً أو غيّر كلمات البحث لعرض النتائج.',
-                              )
+                          icon: Icons.inventory_2_outlined,
+                          title: 'لا توجد منتجات',
+                          message:
+                          'أضف منتجاً جديداً أو غيّر كلمات البحث لعرض النتائج.',
+                        )
                             : LayoutBuilder(
-                                builder: (context, constraints) {
-                                  final visibleProducts =
-                                      filteredProducts.where((p) {
-                                    final name =
-                                        (p['name']?.toString() ?? '').trim();
-                                    final barcode =
-                                        (p['barcode']?.toString() ?? '').trim();
-                                    // show if either name أو barcode موجود أو id موجود وصالح
-                                    final hasValidId = p['id'] != null &&
-                                        p['id'].toString().isNotEmpty;
-                                    return name.isNotEmpty ||
-                                        barcode.isNotEmpty ||
-                                        hasValidId;
-                                  }).toList();
+                          builder: (context, constraints) {
+                            final visibleProducts =
+                            filteredProducts.where((p) {
+                              final name =
+                              (p['name']?.toString() ?? '').trim();
+                              final barcode =
+                              (p['barcode']?.toString() ?? '').trim();
+                              // show if either name أو barcode موجود أو id موجود وصالح
+                              final hasValidId = p['id'] != null &&
+                                  p['id'].toString().isNotEmpty;
+                              return name.isNotEmpty ||
+                                  barcode.isNotEmpty ||
+                                  hasValidId;
+                            }).toList();
 
-                                  return SingleChildScrollView(
-                                    scrollDirection: Axis.horizontal,
-                                    child: ConstrainedBox(
-                                      constraints: BoxConstraints(
-                                          minWidth: constraints.maxWidth),
-                                      child: SingleChildScrollView(
-                                        // attach the vertical controller so we can detect reaching bottom
-                                        scrollDirection: Axis.vertical,
-                                        controller: verticalScrollController,
-                                        child: Column(
-                                          children: [
-                                            Container(
-                                              width: constraints
-                                                  .maxWidth, // <-- يجبر الحاوية تأخذ كامل العرض المتاح
-                                              decoration: BoxDecoration(
-                                                border: Border.all(
-                                                    color: AppColorsDark
-                                                        .strokColor,
-                                                    width: 1),
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                              child: DataTable(
-                                                columnSpacing: 18,
-                                                headingRowColor:
-                                                    MaterialStateProperty.all(
-                                                        Theme.of(context)
-                                                            .cardColor),
-                                                dataRowColor:
-                                                    MaterialStateProperty.all(
-                                                        Theme.of(context)
-                                                            .cardColor),
-                                                columns: [
-                                                  DataColumn(
-                                                      label: Text('الرقم',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text(
-                                                          'تقرير الأرباح',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text('الباركود',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text('الاسم',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text('الشراء',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text('البيع',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text('كرتون',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text('الوحدات',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text('الصلاحية',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text('الربح',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                  DataColumn(
-                                                      label: Text('الإجراءات',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                ],
-                                                rows: visibleProducts.map((p) {
-                                                  final profit =
-                                                      computeProductProfit(p);
-                                                  final totalUnits = ((p[
-                                                              'total_units'] ??
-                                                          ((p['quantity'] as num? ??
-                                                                      0) *
-                                                                  (p['units_in_carton']
-                                                                          as num? ??
-                                                                      0) +
-                                                              (p['units_remainder'] ??
-                                                                  0))) as num)
-                                                      .toInt();
-                                                  final cartons =
-                                                      (p['quantity'] as num? ??
-                                                              0)
-                                                          .toInt();
-                                                  final unitsInCarton =
-                                                      (p['units_in_carton']
-                                                                  as num? ??
-                                                              0)
-                                                          .toInt();
-                                                  final remainder =
-                                                      (p['units_remainder'] ??
-                                                          0) as int;
-                                                  final lowStock =
-                                                      totalUnits <= 5;
-                                                  final isProfitMarked = ((p[
-                                                                      'profit_marked']
-                                                                  as num?)
-                                                              ?.toInt() ??
-                                                          int.tryParse(
-                                                              p['profit_marked']
-                                                                      ?.toString() ??
-                                                                  '') ??
-                                                          0) ==
-                                                      1;
-                                                  String stockText;
-                                                  if (unitsInCarton > 0) {
-                                                    stockText =
-                                                        '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
-                                                  } else {
-                                                    stockText =
-                                                        '$totalUnits قطعة';
-                                                  }
-
-                                                  return DataRow(
-                                                    cells: [
-                                                      DataCell(Text(
-                                                          p['id']?.toString() ??
-                                                              '-',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                      DataCell(
-                                                        Checkbox(
-                                                          value: isProfitMarked,
-                                                          onChanged: (value) =>
-                                                              toggleProfitMarked(
-                                                            p,
-                                                            value ?? false,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                      DataCell(Text(
-                                                          p['barcode']
-                                                                  ?.toString() ??
-                                                              '-',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                      DataCell(Text(
-                                                          p['name']
-                                                                  ?.toString() ??
-                                                              '-',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                      DataCell(Text(
-                                                          (p['purchase_price'] !=
-                                                                  null)
-                                                              ? p['purchase_price']
-                                                                  .toString()
-                                                              : '0',
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                      DataCell(Text(
-                                                          (p['selling_price']
-                                                                      as num? ??
-                                                                  0)
-                                                              .toString(),
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                      DataCell(
-                                                        Text(
-                                                          "$cartons",
-                                                          style: TextStyle(
-                                                            color: lowStock
-                                                                ? Colors.red
-                                                                : AppColorsDark
-                                                                    .mainTextDark,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                      DataCell(
-                                                        Text(
-                                                          "$totalUnits",
-                                                          style: TextStyle(
-                                                            color: lowStock
-                                                                ? Colors.red
-                                                                : AppColorsDark
-                                                                    .mainTextDark,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                      DataCell(
-                                                        Container(
-                                                          alignment:
-                                                              Alignment.center,
-                                                          width: 50,
-                                                          child: Text(
-                                                            () {
-                                                              if (p['expiry_date'] ==
-                                                                      null ||
-                                                                  p['expiry_date']
-                                                                      .toString()
-                                                                      .isEmpty)
-                                                                return '-';
-                                                              final expiry = DateTime
-                                                                  .tryParse(p[
-                                                                      'expiry_date']);
-                                                              if (expiry ==
-                                                                  null)
-                                                                return '-';
-                                                              final daysLeft = expiry
-                                                                  .difference(
-                                                                      DateTime
-                                                                          .now())
-                                                                  .inDays;
-                                                              return '$daysLeft';
-                                                            }(),
-                                                            style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark,
-                                                            ),
-                                                            textAlign: TextAlign
-                                                                .center,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                      DataCell(Text(
-                                                          profit
-                                                              .toStringAsFixed(
-                                                                  2),
-                                                          style: TextStyle(
-                                                              color: AppColorsDark
-                                                                  .mainTextDark))),
-                                                      DataCell(Row(
-                                                        children: [
-                                                          IconButton(
-                                                            tooltip: 'تعديل',
-                                                            icon: Icon(
-                                                                Icons.edit,
-                                                                color: AppColorsDark
-                                                                    .mainTextDark),
-                                                            onPressed: () =>
-                                                                openAddEditDialog(
-                                                                    existing:
-                                                                        p),
-                                                          ),
-                                                          const Spacer(),
-                                                          IconButton(
-                                                            tooltip: 'حذف',
-                                                            icon: const Icon(
-                                                                Icons.delete,
-                                                                color:
-                                                                    Colors.red),
-                                                            onPressed:
-                                                                () async {
-                                                              final ok =
-                                                                  await showDialog<
-                                                                      bool>(
-                                                                context:
-                                                                    context,
-                                                                builder: (ctx) =>
-                                                                    AlertDialog(
-                                                                  title: Text(
-                                                                    'حذف المنتج',
-                                                                    style: TextStyle(
-                                                                        color: _dialogTextColor(
-                                                                            ctx)),
-                                                                  ),
-                                                                  content: Text(
-                                                                    'هل تريد حذف "${p['name']}"؟',
-                                                                    style: TextStyle(
-                                                                        color: _dialogTextColor(
-                                                                            ctx)),
-                                                                  ),
-                                                                  actions: [
-                                                                    TextButton(
-                                                                      onPressed: () =>
-                                                                          Navigator.pop(
-                                                                              ctx,
-                                                                              false),
-                                                                      child:
-                                                                          Text(
-                                                                        'إلغاء',
-                                                                        style: TextStyle(
-                                                                            color:
-                                                                                _dialogTextColor(ctx)),
-                                                                      ),
-                                                                    ),
-                                                                    TextButton(
-                                                                      onPressed: () =>
-                                                                          Navigator.pop(
-                                                                              ctx,
-                                                                              true),
-                                                                      child:
-                                                                          Text(
-                                                                        'حذف',
-                                                                        style: TextStyle(
-                                                                            color:
-                                                                                _dialogTextColor(ctx)),
-                                                                      ),
-                                                                    ),
-                                                                  ],
-                                                                ),
-                                                              );
-                                                              if (ok == true) {
-                                                                try {
-                                                                  final deleted =
-                                                                      await ProductApi
-                                                                          .deleteProduct(
-                                                                              p['id']);
-                                                                  if (!context
-                                                                      .mounted) {
-                                                                    return;
-                                                                  }
-                                                                  if (deleted) {
-                                                                    ScaffoldMessenger.of(
-                                                                            context)
-                                                                        .showSnackBar(
-                                                                            const SnackBar(
-                                                                      content:
-                                                                          Directionality(
-                                                                        textDirection:
-                                                                            TextDirection.rtl,
-                                                                        child: Text(
-                                                                            'تم الحذف بنجاح'),
-                                                                      ),
-                                                                    ));
-                                                                    await refreshProducts();
-                                                                  } else {
-                                                                    ScaffoldMessenger.of(
-                                                                            context)
-                                                                        .showSnackBar(
-                                                                            const SnackBar(
-                                                                      content:
-                                                                          Directionality(
-                                                                        textDirection:
-                                                                            TextDirection.rtl,
-                                                                        child: Text(
-                                                                            'فشل الحذف'),
-                                                                      ),
-                                                                    ));
-                                                                  }
-                                                                } catch (e) {
-                                                                  if (!context
-                                                                      .mounted) {
-                                                                    return;
-                                                                  }
-                                                                  await showDialog<
-                                                                      void>(
-                                                                    context:
-                                                                        context,
-                                                                    builder:
-                                                                        (dialogContext) =>
-                                                                            AlertDialog(
-                                                                      title:
-                                                                          Text(
-                                                                        'تعذر الحذف',
-                                                                        style: TextStyle(
-                                                                            color:
-                                                                                _dialogTextColor(dialogContext)),
-                                                                      ),
-                                                                      content:
-                                                                          Text(
-                                                                        'لا يمكن حذف هذا المنتج لأن له سجل مبيعات أو مشتريات.\nيمكنك تعديل الكمية بدلاً من الحذف.',
-                                                                        style: TextStyle(
-                                                                            color:
-                                                                                _dialogTextColor(dialogContext)),
-                                                                      ),
-                                                                      actions: [
-                                                                        TextButton(
-                                                                          onPressed: () =>
-                                                                              Navigator.pop(dialogContext),
-                                                                          child:
-                                                                              Text(
-                                                                            'حسناً',
-                                                                            style:
-                                                                                TextStyle(color: _dialogTextColor(dialogContext)),
-                                                                          ),
-                                                                        ),
-                                                                      ],
-                                                                    ),
-                                                                  );
-                                                                }
-                                                              }
-                                                            },
-                                                          ),
-                                                        ],
-                                                      )),
-                                                    ],
-                                                  );
-                                                }).toList(),
-                                              ),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            if (loadingMore)
-                                              const Padding(
-                                                padding: EdgeInsets.symmetric(
-                                                    vertical: 8.0),
-                                                child: Center(
-                                                    child:
-                                                        CircularProgressIndicator()),
-                                              ),
-                                            if (allLoaded)
-                                              Padding(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                        vertical: 8.0),
-                                                child: Center(
-                                                    child: Text(
-                                                        'لا يوجد منتجات اخرا',
-                                                        style: TextStyle(
-                                                            color: AppColorsDark
-                                                                .mainTextLight))),
-                                              ),
+                            return SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                    minWidth: constraints.maxWidth),
+                                child: SingleChildScrollView(
+                                  // attach the vertical controller so we can detect reaching bottom
+                                  scrollDirection: Axis.vertical,
+                                  controller: verticalScrollController,
+                                  child: Column(
+                                    children: [
+                                      Container(
+                                        width: constraints
+                                            .maxWidth, // <-- يجبر الحاوية تأخذ كامل العرض المتاح
+                                        decoration: BoxDecoration(
+                                          border: Border.all(
+                                              color: AppColorsDark
+                                                  .strokColor,
+                                              width: 1),
+                                          borderRadius:
+                                          BorderRadius.circular(8),
+                                        ),
+                                        child: DataTable(
+                                          columnSpacing: 18,
+                                          headingRowColor:
+                                          MaterialStateProperty.all(
+                                              Theme.of(context)
+                                                  .cardColor),
+                                          dataRowColor:
+                                          MaterialStateProperty.all(
+                                              Theme.of(context)
+                                                  .cardColor),
+                                          columns: [
+                                            DataColumn(
+                                                label: Text('الرقم',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text(
+                                                    'تقرير الأرباح',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text('الباركود',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text('الاسم',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text('الشراء',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text('البيع',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text('كرتون',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text('الوحدات',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text('الصلاحية',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text('الربح',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                            DataColumn(
+                                                label: Text('الإجراءات',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
                                           ],
+                                          rows: visibleProducts.map((p) {
+                                            final profit =
+                                            computeProductProfit(p);
+                                            final totalUnits = ((p[
+                                            'total_units'] ??
+                                                ((p['quantity'] as num? ??
+                                                    0) *
+                                                    (p['units_in_carton']
+                                                    as num? ??
+                                                        0) +
+                                                    (p['units_remainder'] ??
+                                                        0))) as num)
+                                                .toInt();
+                                            final cartons =
+                                            (p['quantity'] as num? ??
+                                                0)
+                                                .toInt();
+                                            final unitsInCarton =
+                                            (p['units_in_carton']
+                                            as num? ??
+                                                0)
+                                                .toInt();
+                                            final remainder =
+                                            (p['units_remainder'] ??
+                                                0) as int;
+                                            final lowStock =
+                                                totalUnits <= 5;
+                                            final isProfitMarked = ((p[
+                                            'profit_marked']
+                                            as num?)
+                                                ?.toInt() ??
+                                                int.tryParse(
+                                                    p['profit_marked']
+                                                        ?.toString() ??
+                                                        '') ??
+                                                0) ==
+                                                1;
+                                            String stockText;
+                                            if (unitsInCarton > 0) {
+                                              stockText =
+                                              '$cartons كرتونة + $remainder قطعة = $totalUnits قطعة';
+                                            } else {
+                                              stockText =
+                                              '$totalUnits قطعة';
+                                            }
+
+                                            return DataRow(
+                                              cells: [
+                                                DataCell(Text(
+                                                    p['id']?.toString() ??
+                                                        '-',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                                DataCell(
+                                                  Checkbox(
+                                                    value: isProfitMarked,
+                                                    onChanged: (value) =>
+                                                        toggleProfitMarked(
+                                                          p,
+                                                          value ?? false,
+                                                        ),
+                                                  ),
+                                                ),
+                                                DataCell(Text(
+                                                    p['barcode']
+                                                        ?.toString() ??
+                                                        '-',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                                DataCell(Text(
+                                                    p['name']
+                                                        ?.toString() ??
+                                                        '-',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                                DataCell(Text(
+                                                    (p['purchase_price'] !=
+                                                        null)
+                                                        ? p['purchase_price']
+                                                        .toString()
+                                                        : '0',
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                                DataCell(Text(
+                                                    (p['selling_price']
+                                                    as num? ??
+                                                        0)
+                                                        .toString(),
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                                DataCell(
+                                                  Text(
+                                                    "$cartons",
+                                                    style: TextStyle(
+                                                      color: lowStock
+                                                          ? Colors.red
+                                                          : AppColorsDark
+                                                          .mainTextDark,
+                                                    ),
+                                                  ),
+                                                ),
+                                                DataCell(
+                                                  Text(
+                                                    "$totalUnits",
+                                                    style: TextStyle(
+                                                      color: lowStock
+                                                          ? Colors.red
+                                                          : AppColorsDark
+                                                          .mainTextDark,
+                                                    ),
+                                                  ),
+                                                ),
+                                                DataCell(
+                                                  Container(
+                                                    alignment:
+                                                    Alignment.center,
+                                                    width: 50,
+                                                    child: Text(
+                                                          () {
+                                                        if (p['expiry_date'] ==
+                                                            null ||
+                                                            p['expiry_date']
+                                                                .toString()
+                                                                .isEmpty)
+                                                          return '-';
+                                                        final expiry = DateTime
+                                                            .tryParse(p[
+                                                        'expiry_date']);
+                                                        if (expiry ==
+                                                            null)
+                                                          return '-';
+                                                        final daysLeft = expiry
+                                                            .difference(
+                                                            DateTime
+                                                                .now())
+                                                            .inDays;
+                                                        return '$daysLeft';
+                                                      }(),
+                                                      style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark,
+                                                      ),
+                                                      textAlign: TextAlign
+                                                          .center,
+                                                    ),
+                                                  ),
+                                                ),
+                                                DataCell(Text(
+                                                    profit
+                                                        .toStringAsFixed(
+                                                        2),
+                                                    style: TextStyle(
+                                                        color: AppColorsDark
+                                                            .mainTextDark))),
+                                                DataCell(Row(
+                                                  children: [
+                                                    IconButton(
+                                                      tooltip: 'تعديل',
+                                                      icon: Icon(
+                                                          Icons.edit,
+                                                          color: AppColorsDark
+                                                              .mainTextDark),
+                                                      onPressed: () =>
+                                                          openAddEditDialog(
+                                                              existing:
+                                                              p),
+                                                    ),
+                                                    const Spacer(),
+                                                    IconButton(
+                                                      tooltip: 'حذف',
+                                                      icon: const Icon(
+                                                          Icons.delete,
+                                                          color:
+                                                          Colors.red),
+                                                      onPressed:
+                                                          () async {
+                                                        final ok =
+                                                        await showDialog<
+                                                            bool>(
+                                                          context:
+                                                          context,
+                                                          builder: (ctx) =>
+                                                              AlertDialog(
+                                                                title: Text(
+                                                                  'حذف المنتج',
+                                                                  style: TextStyle(
+                                                                      color: _dialogTextColor(
+                                                                          ctx)),
+                                                                ),
+                                                                content: Text(
+                                                                  'هل تريد حذف "${p['name']}"؟',
+                                                                  style: TextStyle(
+                                                                      color: _dialogTextColor(
+                                                                          ctx)),
+                                                                ),
+                                                                actions: [
+                                                                  TextButton(
+                                                                    onPressed: () =>
+                                                                        Navigator.pop(
+                                                                            ctx,
+                                                                            false),
+                                                                    child:
+                                                                    Text(
+                                                                      'إلغاء',
+                                                                      style: TextStyle(
+                                                                          color:
+                                                                          _dialogTextColor(ctx)),
+                                                                    ),
+                                                                  ),
+                                                                  TextButton(
+                                                                    onPressed: () =>
+                                                                        Navigator.pop(
+                                                                            ctx,
+                                                                            true),
+                                                                    child:
+                                                                    Text(
+                                                                      'حذف',
+                                                                      style: TextStyle(
+                                                                          color:
+                                                                          _dialogTextColor(ctx)),
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                        );
+                                                        if (ok == true) {
+                                                          try {
+                                                            final deleted =
+                                                            await ProductApi
+                                                                .deleteProduct(
+                                                                p['id']);
+                                                            if (!context
+                                                                .mounted) {
+                                                              return;
+                                                            }
+                                                            if (deleted) {
+                                                              ScaffoldMessenger.of(
+                                                                  context)
+                                                                  .showSnackBar(
+                                                                  const SnackBar(
+                                                                    content:
+                                                                    Directionality(
+                                                                      textDirection:
+                                                                      TextDirection.rtl,
+                                                                      child: Text(
+                                                                          'تم الحذف بنجاح'),
+                                                                    ),
+                                                                  ));
+                                                              await refreshProducts();
+                                                            } else {
+                                                              ScaffoldMessenger.of(
+                                                                  context)
+                                                                  .showSnackBar(
+                                                                  const SnackBar(
+                                                                    content:
+                                                                    Directionality(
+                                                                      textDirection:
+                                                                      TextDirection.rtl,
+                                                                      child: Text(
+                                                                          'فشل الحذف'),
+                                                                    ),
+                                                                  ));
+                                                            }
+                                                          } catch (e) {
+                                                            if (!context
+                                                                .mounted) {
+                                                              return;
+                                                            }
+                                                            await showDialog<
+                                                                void>(
+                                                              context:
+                                                              context,
+                                                              builder:
+                                                                  (dialogContext) =>
+                                                                  AlertDialog(
+                                                                    title:
+                                                                    Text(
+                                                                      'تعذر الحذف',
+                                                                      style: TextStyle(
+                                                                          color:
+                                                                          _dialogTextColor(dialogContext)),
+                                                                    ),
+                                                                    content:
+                                                                    Text(
+                                                                      'لا يمكن حذف هذا المنتج لأن له سجل مبيعات أو مشتريات.\nيمكنك تعديل الكمية بدلاً من الحذف.',
+                                                                      style: TextStyle(
+                                                                          color:
+                                                                          _dialogTextColor(dialogContext)),
+                                                                    ),
+                                                                    actions: [
+                                                                      TextButton(
+                                                                        onPressed: () =>
+                                                                            Navigator.pop(dialogContext),
+                                                                        child:
+                                                                        Text(
+                                                                          'حسناً',
+                                                                          style:
+                                                                          TextStyle(color: _dialogTextColor(dialogContext)),
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                            );
+                                                          }
+                                                        }
+                                                      },
+                                                    ),
+                                                  ],
+                                                )),
+                                              ],
+                                            );
+                                          }).toList(),
                                         ),
                                       ),
-                                    ),
-                                  );
-                                },
+                                      const SizedBox(height: 8),
+                                      if (loadingMore)
+                                        const Padding(
+                                          padding: EdgeInsets.symmetric(
+                                              vertical: 8.0),
+                                          child: Center(
+                                              child:
+                                              CircularProgressIndicator()),
+                                        ),
+                                      if (allLoaded)
+                                        Padding(
+                                          padding:
+                                          const EdgeInsets.symmetric(
+                                              vertical: 8.0),
+                                          child: Center(
+                                              child: Text(
+                                                  'لا يوجد منتجات اخرا',
+                                                  style: TextStyle(
+                                                      color: AppColorsDark
+                                                          .mainTextLight))),
+                                        ),
+                                    ],
+                                  ),
+                                ),
                               ),
+                            );
+                          },
+                        ),
                       ),
                     ],
                   ),
@@ -1002,6 +1014,7 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
 
   @override
   void dispose() {
+    _autoLoadTimer?.cancel();
     barcodeController.dispose();
     barcodeFocusNode.dispose();
     verticalScrollController.dispose();
@@ -1028,7 +1041,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
   final unitsInCartonController = TextEditingController();
   final qtyController = TextEditingController(); // عدد الكراتين
   final unitsRemainderController =
-      TextEditingController(); // محجوز داخلياً (لن يدخل المستخدمه يدوياً)
+  TextEditingController(); // محجوز داخلياً (لن يدخل المستخدمه يدوياً)
   final productionDateController = TextEditingController();
   final expiryDateController = TextEditingController();
   final externalUnitsController = TextEditingController();
@@ -1060,7 +1073,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
             ? widget.existing!['barcode']?.toString() ?? ''
             : (widget.prefillBarcode ?? ''));
     nameController.text =
-        widget.existing != null ? widget.existing!['name'] ?? '' : '';
+    widget.existing != null ? widget.existing!['name'] ?? '' : '';
     purchaseController.text = widget.existing != null
         ? (widget.existing!['purchase_price']?.toString() ?? '')
         : '';
@@ -1178,7 +1191,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                     FocusScope.of(context).requestFocus(nameProductFocusNode);
                   },
                   validator: (v) =>
-                      (v?.trim().isEmpty ?? true) ? 'ادخل الباركود' : null,
+                  (v?.trim().isEmpty ?? true) ? 'ادخل الباركود' : null,
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
@@ -1189,7 +1202,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                     FocusScope.of(context).requestFocus(paidPriceFocusNode);
                   },
                   validator: (v) =>
-                      (v?.trim().isEmpty ?? true) ? 'ادخل اسم المنتج' : null,
+                  (v?.trim().isEmpty ?? true) ? 'ادخل اسم المنتج' : null,
                 ),
                 const SizedBox(height: 10),
                 CustomFormField(
@@ -1197,9 +1210,9 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                   focusNode: paidPriceFocusNode,
                   hint: 'سعر شراء الجمله',
                   validator: (v) =>
-                      (v?.trim().isEmpty ?? true) ? 'ادخل الاسم' : null,
+                  (v?.trim().isEmpty ?? true) ? 'ادخل الاسم' : null,
                   keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                  const TextInputType.numberWithOptions(decimal: true),
                   onFieldSubmitted: (_) {
                     FocusScope.of(context).requestFocus(salePriceFocusNode);
                   },
@@ -1210,7 +1223,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                   focusNode: salePriceFocusNode,
                   hint: 'سعر بيع القطعه',
                   keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                  const TextInputType.numberWithOptions(decimal: true),
                   onFieldSubmitted: (_) {
                     FocusScope.of(context).requestFocus(unisInCartonFocusNode);
                   },
@@ -1302,7 +1315,7 @@ class _AddEditProductDialogState extends State<AddEditProductDialog> {
                             'إلغاء',
                             style: TextStyle(
                                 color: Theme.of(context).brightness ==
-                                        Brightness.light
+                                    Brightness.light
                                     ? Colors.black
                                     : Colors.white),
                             textAlign: TextAlign.center,
