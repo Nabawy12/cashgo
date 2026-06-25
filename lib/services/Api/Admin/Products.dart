@@ -37,22 +37,28 @@ class ProductApi {
     return rows.map((p) => _normalise(Map<String, dynamic>.from(p))).toList();
   }
 
-  static Future<Map<String, dynamic>> getProductsPage({int count = 1}) async {
-    const perPage = 10;
-    final page = count < 1 ? 1 : count;
+  static Future<Map<String, dynamic>> getProductsPage({int page = 1}) async {
+    const perPage = 50;
+
     final all = await getAllProducts();
     final total = all.length;
-    final totalPages = max(1, (total / perPage).ceil());
-    final offset = (page - 1) * perPage;
-    final rows = offset >= total
+
+    final totalPages = (total / perPage).ceil();
+
+    final start = (page - 1) * perPage;
+    final end = min(start + perPage, total);
+
+    final rows = start >= total
         ? <Map<String, dynamic>>[]
-        : all.skip(offset).take(perPage).toList();
+        : all.sublist(start, end);
+
     return {
       'meta': {
         'total': total,
         'total_pages': totalPages,
         'current_page': page,
         'per_page': perPage,
+        'has_more': page < totalPages,
       },
       'rows': rows,
     };
