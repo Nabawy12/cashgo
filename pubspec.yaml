@@ -28,13 +28,13 @@ dependencies:
   uuid: ^4.5.1
   connectivity_plus: ^7.0.0
   crypto: ^3.0.6
-  sqlite3_flutter_libs: ^0.6.0+eol
+  sqlite3_flutter_libs: ^0.5.24
   url_launcher: ^6.3.2
   path_provider: ^2.1.1
   msix: ^3.16.7
 
 dependency_overrides:
-  sqlite3: ^2.9.0
+  sqlite3: ^2.4.0
   ffi: ^2.1.0
 
 dev_dependencies:
@@ -58,14 +58,14 @@ flutter:
     - assets/images/
 
 msix_config:
-  display_name: CashGO_VAPE
+  display_name: CashGO_SuperMarket
   publisher_display_name: ZeyadNabawy
   identity_name: Cashgosystem.CashGoSupermarket
   publisher: CN=65B4ED42-702C-4FB6-9A7D-4DDD713C0CA5
-  msix_version: 1.0.4.0
+  msix_version: 1.0.0.0
   store: true
   install_certificate: false
   vc_redist: true
-  logo_path: assets/icons/icon.png
-  tile_icon_path: assets/icons/icon.png
-  vs_generated_images_folder_path: assets/icons
+  logo_path: assets/images/logo.png
+  tile_icon_path: assets/images/logo.png
+  vs_generated_images_folder_path: assets/images
