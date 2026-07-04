@@ -58,13 +58,14 @@ flutter:
     - assets/images/
 
 msix_config:
-  display_name: CashGo SuperMarket
-  publisher_display_name: NabawySolution
-  identity_name: NabawySolution.CashGoSuperMarket
-  msix_version: 1.0.0.0
-  logo_path: assets/images/logo.png
-  start_menu_icon_path: assets/images/logo.png
-  tile_icon_path: assets/images/logo.png
-  icons_background_color: transparent
-  architecture: x64
-  capabilities: internetClient
+  display_name: CashGO_VAPE
+  publisher_display_name: ZeyadNabawy
+  identity_name: Cashgosystem.CashGoSupermarket
+  publisher: CN=65B4ED42-702C-4FB6-9A7D-4DDD713C0CA5
+  msix_version: 1.0.4.0
+  store: true
+  install_certificate: false
+  vc_redist: true
+  logo_path: assets/icons/icon.png
+  tile_icon_path: assets/icons/icon.png
+  vs_generated_images_folder_path: assets/icons
