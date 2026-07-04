@@ -1313,6 +1313,9 @@ class _CashierScreenState extends State<CashierScreen> {
               );
             }
 
+
+
+
             return Shortcuts(
               shortcuts: <LogicalKeySet, Intent>{
                 LogicalKeySet(LogicalKeyboardKey.arrowDown):
@@ -2309,6 +2312,30 @@ class _CashierScreenState extends State<CashierScreen> {
     }
   }
 
+
+  Widget _appBarAction(IconData icon, String label, VoidCallback? onPressed,
+      {Color? color}) {
+    final c = color ?? Theme.of(context).iconTheme.color!;
+    return InkWell(
+      onTap: onPressed,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: onPressed == null ? c.withOpacity(0.3) : c, size: 20),
+            const SizedBox(height: 4),
+            Text(label,
+                style: TextStyle(
+                    color: onPressed == null ? c.withOpacity(0.3) : c,
+                    fontSize: 13)),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final receiptWidth = 380.0;
@@ -2317,41 +2344,37 @@ class _CashierScreenState extends State<CashierScreen> {
       child: Scaffold(
         backgroundColor: AppColorsDark.bgColor,
         appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0.0,
-          scrolledUnderElevation: 0.0,
+          backgroundColor: AppColorsDark.bgCardColor,
+          elevation: 0,
+          scrolledUnderElevation: 0,
           centerTitle: true,
-          iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
-          leadingWidth: 190,
-          toolbarHeight: 65,
+          toolbarHeight: 60,
+          leadingWidth: 160,
           leading: Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
               const SizedBox(width: 8),
               IconButton(
                 icon: Icon(Icons.arrow_back_ios_new,
-                    color: Theme.of(context).iconTheme.color),
-                onPressed: () => _confirmExit(),
+                    color: Theme.of(context).iconTheme.color, size: 18),
+                onPressed: _confirmExit,
               ),
-              const SizedBox(width: 12),
               Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
-                    Icons.point_of_sale,
-                    color: Theme.of(context).iconTheme.color,
-                    size: 24,
-                  ),
-                  const SizedBox(height: 4),
+                  Icon(Icons.account_balance_wallet_rounded,
+                      color: _drawerBalanceLoaded
+                          ? Colors.greenAccent
+                          : AppColorsDark.mainTextLight,
+                      size: 18),
+                  const SizedBox(height: 2),
                   Text(
                     _drawerBalanceLoaded
                         ? _formatSimpleMoney(_drawerBalance ?? 0.0)
                         : '...',
                     style: TextStyle(
-                      color: AppColorsDark.mainTextLight,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
+                        color: Colors.greenAccent,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold),
                   ),
                 ],
               ),
@@ -2360,81 +2383,50 @@ class _CashierScreenState extends State<CashierScreen> {
           title: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                'الكاشير',
-                style:
-                    TextStyle(color: AppColorsDark.mainTextDark, fontSize: 27),
-              ),
+              Text('الكاشير',
+                  style: TextStyle(
+                      color: AppColorsDark.mainTextDark,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold)),
               Text(
                 _currentUsername ?? widget.cashierUsername,
                 style: TextStyle(
-                  color: AppColorsDark.mainTextLight,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
+                    color: AppColorsDark.mainColor,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600),
               ),
             ],
           ),
           actions: [
             Padding(
-              padding: const EdgeInsetsDirectional.only(end: 12),
+              padding: const EdgeInsetsDirectional.only(end: 8),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Visibility(
-                    visible: Session.invoice_log,
-                    child: IconButton(
-                      tooltip: 'الفواتير السابقة',
-                      icon: const Icon(Icons.history),
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => PreviousSalesScreen(
-                              cashierUsername:
-                                  _currentUsername ?? widget.cashierUsername,
-                              canViewCreditInvoices: Session.canViewCredit,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  Visibility(
-                    visible: Session.canViewCredit,
-                    child: IconButton(
-                      tooltip: 'الفواتير الآجلة',
-                      icon: const Icon(Icons.receipt_long),
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => const CreditsScreen(),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  Visibility(
-                    visible: Session.receive_from_suppliers,
-                    child: IconButton(
-                      tooltip: 'استلام بضاعه',
-                      icon: const Icon(Icons.category),
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (context) =>
-                                  const ReceiveFromSupplierScreen()),
-                        );
-                      },
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'تقفيل الشفت',
-                    icon: const Icon(Icons.lock_clock),
-                    onPressed: () =>
-                        _closingShift ? null : _confirm_CloseShift(),
+                  if (Session.invoice_log)
+                    _appBarAction(Icons.history_rounded, 'الفواتير', () {
+                      Navigator.push(context, MaterialPageRoute(
+                        builder: (_) => PreviousSalesScreen(
+                          cashierUsername: _currentUsername ?? widget.cashierUsername,
+                          canViewCreditInvoices: Session.canViewCredit,
+                        ),
+                      ));
+                    }),
+                  if (Session.canViewCredit)
+                    _appBarAction(Icons.receipt_long_rounded, 'آجل', () {
+                      Navigator.push(context,
+                          MaterialPageRoute(builder: (_) => const CreditsScreen()));
+                    }),
+                  if (Session.receive_from_suppliers)
+                    _appBarAction(Icons.inventory_2_rounded, 'بضاعة', () {
+                      Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => const ReceiveFromSupplierScreen()));
+                    }),
+                  _appBarAction(
+                    Icons.lock_clock_rounded,
+                    'تقفيل',
+                    _closingShift ? null : _confirm_CloseShift,
+                    color: Colors.orangeAccent,
                   ),
                 ],
               ),
@@ -2725,6 +2717,7 @@ class _CashierScreenState extends State<CashierScreen> {
                         ),
                       ),
                     ),
+
                     Expanded(
                       child: Directionality(
                         textDirection: TextDirection.rtl,

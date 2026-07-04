@@ -1,5 +1,5 @@
 // lib/main.dart
-import 'dart:io';
+import 'dart:async';
 
 import 'package:cashgo/services/Api/Admin/Products.dart';
 import 'package:cashgo/services/app_settings_controller.dart';
@@ -9,7 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
-import 'screens/shared/device_locked_screen.dart';
+import 'Locked/ActivationService.dart';
+import 'Locked/Locked_screen.dart';
 import 'screens/shared/login_screen.dart';
 import 'screens/admin/dashboard_screen.dart';
 import 'screens/cashier/cashier_screen.dart';
@@ -19,55 +20,104 @@ import 'screens/admin/stock_screen.dart';
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  bool isAllowed = false;
-  try {
-    final hostname = Platform.localHostname.trim().toLowerCase();
-    const allowedHostnames = [
-      'macbook-air-with-zeyad.local',
-      'desktop-463r073',
-      'desktop-6p83kj5',
-    ];
-    isAllowed = allowedHostnames.contains(hostname);
-  } catch (_) {
-    isAllowed = false;
+    String? fatalError;
+    bool appIsLocked = false;
+
+    try {
+      await Hive.initFlutter();
+      await Hive.openBox('products');
+      await Hive.openBox('sales');
+      await Hive.openBox('users');
+      await Hive.openBox('financial_accounts');
+      await Hive.openBox('close_shifts');
+      await Hive.openBox('meta');
+      await Hive.openBox('ops');
+
+      await ProductApi.initBoxes();
+
+      try {
+        await SyncManager.init();
+      } catch (e) {
+        print('SyncManager init error: $e');
+      }
+
+      try {
+        final api = ApiServiceClose_shieft();
+        await api.migrateOldCloseShiftOps();
+      } catch (e) {
+        print('migrateOldCloseShiftOps error: $e');
+      }
+
+      try {
+        SyncManager.start();
+      } catch (e) {
+        print('SyncManager start error: $e');
+      }
+
+      await initializeDateFormatting('ar');
+      await AppSettingsController.loadThemeMode();
+
+      // ── فحص التفعيل / الفترة التجريبية ──────────────────────────
+      await ActivationService.ensureFirstRunDate();
+      appIsLocked = await ActivationService.isLocked();
+    } catch (e, stack) {
+      fatalError = e.toString();
+      debugPrint('FATAL INIT ERROR: $e\n$stack');
+    }
+
+    if (fatalError != null) {
+      runApp(ErrorBootApp(error: fatalError));
+    } else if (appIsLocked) {
+      runApp(MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: LockedScreen(
+          onActivated: () {
+            runApp(const MyApp());
+          },
+        ),
+      ));
+    } else {
+      runApp(const MyApp());
+    }
+  }, (error, stack) {
+    debugPrint('UNCAUGHT ZONE ERROR: $error\n$stack');
+  });
+}
+
+class ErrorBootApp extends StatelessWidget {
+  final String error;
+  const ErrorBootApp({super.key, required this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                const SizedBox(height: 16),
+                const Text('حدث خطأ عند بدء التشغيل'),
+                const SizedBox(height: 8),
+                Text(error, style: const TextStyle(fontSize: 12)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
-
-  await Hive.initFlutter();
-  // open boxes used by the code
-  await Hive.openBox('products');
-  await Hive.openBox('sales');
-  await Hive.openBox('users');
-  await Hive.openBox('financial_accounts');
-  await Hive.openBox('close_shifts');
-  await Hive.openBox('meta');
-
-  await Hive.openBox('ops');
-  // init product api boxes
-  await ProductApi.initBoxes();
-  await ProductApi.initBoxes();
-  final box = await Hive.openBox('products');
-  for (final k in box.keys) {
-    print('product key=$k value=${box.get(k)}');
-  }
-
-  // start sync manager
-  await SyncManager.init();
-  await Hive.openBox('ops');
-  final api = ApiServiceClose_shieft();
-  await api.migrateOldCloseShiftOps(); // لو ضفتها في نفس الملف
-  await SyncManager.init();
-  SyncManager.start();
-  await initializeDateFormatting('ar');
-  await AppSettingsController.loadThemeMode();
-  runApp(MyApp(isAllowed: isAllowed));
 }
 
 class MyApp extends StatefulWidget {
-  final bool isAllowed;
-
-  const MyApp({super.key, required this.isAllowed});
+  const MyApp({super.key});
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -83,29 +133,27 @@ class _MyAppState extends State<MyApp> {
         debugShowCheckedModeBanner: false,
         navigatorKey: appNavigatorKey,
         themeMode: themeMode,
-        home: widget.isAllowed ? LoginScreen() : const DeviceLockedScreen(),
-        routes: widget.isAllowed
-            ? {
-                '/admin': (context) {
-                  final username =
-                      ModalRoute.of(context)?.settings.arguments?.toString() ??
-                          'admin';
-                  return AdminDashboardScreen(username: username);
-                },
-                CashierScreen.routName: (context) {
-                  final args = ModalRoute.of(context)?.settings.arguments;
-                  String username = 'cashier';
-                  if (args is Map && args['username'] != null) {
-                    username = args['username'].toString();
-                  } else if (args is String && args.isNotEmpty) {
-                    username = args;
-                  }
-                  return CashierScreen(cashierUsername: username);
-                },
-                receiptsScreen.routeName: (context) => const receiptsScreen(),
-                CreditsScreen.routeName: (context) => const CreditsScreen(),
-              }
-            : const {},
+        home: LoginScreen(),
+        routes: {
+          '/admin': (context) {
+            final username =
+                ModalRoute.of(context)?.settings.arguments?.toString() ??
+                    'admin';
+            return AdminDashboardScreen(username: username);
+          },
+          CashierScreen.routName: (context) {
+            final args = ModalRoute.of(context)?.settings.arguments;
+            String username = 'cashier';
+            if (args is Map && args['username'] != null) {
+              username = args['username'].toString();
+            } else if (args is String && args.isNotEmpty) {
+              username = args;
+            }
+            return CashierScreen(cashierUsername: username);
+          },
+          receiptsScreen.routeName: (context) => const receiptsScreen(),
+          CreditsScreen.routeName: (context) => const CreditsScreen(),
+        },
         theme: _buildTheme(Brightness.light),
         darkTheme: _buildTheme(Brightness.dark),
       ),
@@ -115,9 +163,9 @@ class _MyAppState extends State<MyApp> {
   ThemeData _buildTheme(Brightness brightness) {
     final isLight = brightness == Brightness.light;
     final background =
-        isLight ? AppColorsLight.bgColor : const Color(0xff1A1C28);
+    isLight ? AppColorsLight.bgColor : const Color(0xff1A1C28);
     final surface =
-        isLight ? AppColorsLight.bgCardColor : const Color(0xff262935);
+    isLight ? AppColorsLight.bgCardColor : const Color(0xff262935);
     final onSurface = isLight ? Colors.black : Colors.white;
     final iconColor = isLight ? Colors.black : const Color(0xff808B97);
     final mutedText = isLight ? Colors.grey.shade800 : const Color(0xff808B97);
@@ -222,7 +270,7 @@ class _MyAppState extends State<MyApp> {
         todayForegroundColor: WidgetStateProperty.all(onSurface),
         todayBackgroundColor: WidgetStateProperty.all(AppColorsLight.mainColor),
         rangePickerBackgroundColor:
-            AppColorsLight.mainColor.withValues(alpha: 0.5),
+        AppColorsLight.mainColor.withValues(alpha: 0.5),
         weekdayStyle: TextStyle(color: mutedText),
         yearStyle: TextStyle(color: mutedText),
         headerHeadlineStyle: TextStyle(color: mutedText),

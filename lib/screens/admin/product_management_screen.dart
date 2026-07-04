@@ -31,7 +31,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
   bool allLoaded = false;
 
   // Auto-load timer: loads next page every second, no scroll needed
-  Timer? _autoLoadTimer;
 
   final ScrollController verticalScrollController = ScrollController();
 
@@ -50,23 +49,20 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
       if (!verticalScrollController.hasClients) return;
       final pos = verticalScrollController.position;
       if (pos.maxScrollExtent <= 0) return;
-      // when close to bottom (threshold 40), try to load next page
       if (pos.pixels >= pos.maxScrollExtent - 40) {
         if (!loadingMore && !allLoaded && currentPage < totalPages) {
-          loadMoreProducts();
-        } else if (!loadingMore && !allLoaded && currentPage >= totalPages) {
-          // If totalPages not trustworthy (==1) we still try to load next page once
           loadMoreProducts();
         }
       }
     });
 
-    // تحميل تلقائي كل ثانية بدون الحاجة لعمل scroll
-    _autoLoadTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!loading && !loadingMore && !allLoaded) {
-        loadMoreProducts();
-      }
-    });
+  }
+
+  Future<void> _preloadRemainingPages() async {
+    while (!allLoaded && mounted) {
+      await loadMoreProducts();
+      await Future.delayed(const Duration(milliseconds: 30));
+    }
   }
 
   Future<void> refreshProducts() async {
@@ -113,6 +109,13 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
         allLoaded =
             rows.isEmpty || (currentPage >= totalPages && totalPages > 0);
       });
+
+      if (verticalScrollController.hasClients) {
+        verticalScrollController.jumpTo(0);
+      }
+
+      _preloadRemainingPages();
+
 
       // scroll to top
       if (verticalScrollController.hasClients) {
@@ -1014,7 +1017,6 @@ class _ProductManagementScreenState extends State<ProductManagementScreen> {
 
   @override
   void dispose() {
-    _autoLoadTimer?.cancel();
     barcodeController.dispose();
     barcodeFocusNode.dispose();
     verticalScrollController.dispose();

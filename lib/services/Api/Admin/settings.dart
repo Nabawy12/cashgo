@@ -102,12 +102,25 @@ class ApiService {
   static Future<Map<String, dynamic>> login(String username, String password,
       {bool allowOffline = true}) async {
     try {
+      // الخطوة 1: نتأكد الأول إن اسم المستخدم ده موجود أصلاً (من غير تحقق من الباسورد)
+      final userByUsername =
+      await DBHelper.instance.getUserByUsername(username);
+
+      if (userByUsername == null) {
+        return {
+          'status': 'error',
+          'message': 'اسم المستخدم غير صحيح',
+          'code': 401,
+        };
+      }
+
+      // الخطوة 2: اليوزر نيم موجود، فأي فشل هنا معناه الباسورد غلط
       final user = await DBHelper.instance.login(username, password);
       if (user == null) {
         return {
           'status': 'error',
-          'message': 'Invalid local credentials',
-          'code': 401
+          'message': 'كلمة المرور غير صحيحة',
+          'code': 401,
         };
       }
 

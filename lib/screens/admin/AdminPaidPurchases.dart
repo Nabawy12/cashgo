@@ -7,6 +7,22 @@ import '../../utils/colors.dart';
 import '../../widgets/Loading/Admin/invoice_cash.dart';
 import '../../widgets/empty_state_card.dart';
 
+/// لوحة الألوان المستخدمة في تصميم شاشة المشتريات المدفوعة الجديدة
+class _Palette {
+  static const Color background = Color(0xFF0A0E1A);
+  static const Color card = Color(0xFF141826);
+  static const Color cardBorder = Color(0xFF232838);
+  static const Color rowDivider = Color(0xFF1C2130);
+
+  static const Color blue = Color(0xFF3B82F6);
+  static const Color green = Color(0xFF22C55E);
+  static const Color purple = Color(0xFF8B5CF6);
+  static const Color orange = Color(0xFFF59E0B);
+
+  static const Color textPrimary = Colors.white;
+  static const Color textSecondary = Color(0xFF8B93A7);
+}
+
 class AdminPaidPurchasesScreen extends StatefulWidget {
   const AdminPaidPurchasesScreen({Key? key}) : super(key: key);
 
@@ -19,7 +35,10 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   List<Map<String, dynamic>> _rows = [];
   bool _loading = false;
   String? _error;
-  final ScrollController _scrollController = ScrollController();
+  final ScrollController _verticalController = ScrollController();
+  final ScrollController _horizontalController = ScrollController();
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
 
   // totals by payment type
   double _cashTotal = 0.0;
@@ -35,12 +54,17 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(() {
+      setState(() => _searchQuery = _searchController.text);
+    });
     _load(date: selectedDate);
   }
 
   @override
   void dispose() {
-    _scrollController.dispose();
+    _verticalController.dispose();
+    _horizontalController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -55,7 +79,6 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
 
       // نعرض السندات التي اكتمل دفعها، حتى لو اتدفعت على أكثر من مرحلة.
       List<Map<String, dynamic>> filtered = rows.where((r) {
-        // exclude any record that still has due/credit > 0
         final due = _getDueAmount(r) ?? 0.0;
         if (due > 0.0) return false;
         if (_getPaidAmount(r) <= 0.0) return false;
@@ -84,7 +107,6 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     return DBHelper.instance.getPaidPurchaseReceipts();
   }
 
-  /// مساعد لتحليل التاريخ بصيغ متعددة إلى DateTime (يُستخدم للفلترة)
   DateTime? _parseDateOnly(String raw) {
     if (raw.isEmpty) return null;
     try {
@@ -99,7 +121,7 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
         if (y > 0 && mo > 0 && d > 0) return DateTime(y, mo, d);
       }
       final parts =
-          raw.split(RegExp(r'[\s/\\\-]')).where((p) => p.isNotEmpty).toList();
+      raw.split(RegExp(r'[\s/\\\-]')).where((p) => p.isNotEmpty).toList();
       if (parts.length >= 3) {
         if (parts[0].length == 4) {
           final y = int.tryParse(parts[0]) ?? 0;
@@ -122,13 +144,13 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
 
   bool _matchesReceiptOrPaymentDate(Map<String, dynamic> r, DateTime date) {
     final rawReceiptDate =
-        (r['created_at'] ?? r['receipt_date'] ?? r['date'] ?? '').toString();
+    (r['created_at'] ?? r['receipt_date'] ?? r['date'] ?? '').toString();
     final receiptDate = _parseDateOnly(rawReceiptDate);
     if (receiptDate != null && _sameDay(receiptDate, date)) return true;
 
     for (final payment in _paymentHistory(r)) {
       final paymentDate =
-          _parseDateOnly((payment['created_at'] ?? '').toString());
+      _parseDateOnly((payment['created_at'] ?? '').toString());
       if (paymentDate != null && _sameDay(paymentDate, date)) return true;
     }
     return false;
@@ -238,7 +260,6 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     return 'نقدي';
   }
 
-  /// يرجع اسم الكاشير من row بفحص عدة مفاتيح محتملة ثم إرجاع fallback '—' إذا كان فارغًا
   String _getCashierName(Map<String, dynamic> r) {
     final candidates = [
       'cashier_name',
@@ -271,12 +292,22 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     }
   }
 
+  String _fmtDateShort(String s) {
+    if (s.isEmpty) return '—';
+    try {
+      final d = DateTime.parse(s);
+      return DateFormat('dd/MM/yyyy').format(d);
+    } catch (_) {
+      return s;
+    }
+  }
+
   String _normalizePaymentType(Map<String, dynamic> r) {
     final raw = (r['payment_type'] ??
-            r['payment_method'] ??
-            r['method'] ??
-            r['paymentType'] ??
-            '')
+        r['payment_method'] ??
+        r['method'] ??
+        r['paymentType'] ??
+        '')
         .toString()
         .trim()
         .toLowerCase();
@@ -288,9 +319,7 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     return 'cash';
   }
 
-  /// استخراج آخر وسيلة دفع ممكنة من الـ row (يحاول عدة مفاتيح محتملة)
   String? _extractLastPaymentMethod(Map<String, dynamic> r) {
-    // مفاتيح محتملة نصية مباشرة
     final keys = [
       'last_payment_method',
       'lastPaymentMethod',
@@ -307,7 +336,6 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
       if (s.isNotEmpty) return s;
     }
 
-    // لو فيه حقل payments أو payment_history كمصفوفة، حاول نأخذ آخر عنصر
     final paymentsCandidates = [
       'payments',
       'payment_history',
@@ -340,75 +368,28 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     return null;
   }
 
-  /// إرجاع paymentType "النهائي" الذي نعرضه/نحسب به:
-  /// - لو لم يعد هناك credit (due == 0) نحاول استخدام آخر وسيلة دفع فعليّة إذا وجدت
-  /// - وإلا نعيد _normalizePaymentType(r)
   String _effectivePaymentType(Map<String, dynamic> r) {
     final due = _getDueAmount(r) ?? 0.0;
     if (due <= 0.0001) {
-      // حاول استخراج آخر وسيلة دفع
       final last = _extractLastPaymentMethod(r);
       if (last != null && last.isNotEmpty) {
         final l = last.toLowerCase();
         if (l.contains('wallet') || l.contains('محفظ')) return 'wallet';
         if (l.contains('card')) return 'card';
         if (l.contains('cash') || l.contains('نقد')) return 'cash';
-        // قد يكون قيمة مسماة أخرى (مثلاً 'cashout'...) — حاول تطبيعها باستخدام normalize
         final fakeMap = {'payment_type': last};
         final norm = _normalizePaymentType(fakeMap);
         if (norm.isNotEmpty) return norm;
       }
 
-      // لو لم نجد آخر وسيلة دفع خدي fallback:
       final normExisting = _normalizePaymentType(r);
       if (normExisting == 'credit') {
-        // إذا السجل بلا دين لكن ما زال type 'credit'، فمن الأجدر اعتباره نقدي كـ fallback
         return 'cash';
       }
       return normExisting;
     } else {
       return _normalizePaymentType(r);
     }
-  }
-
-  Color? _paymentColor(String paymentType) {
-    switch (paymentType) {
-      case 'cash':
-        return Theme.of(context).cardColor;
-      case 'wallet':
-        return Theme.of(context).cardColor;
-      case 'card':
-        return Colors.orangeAccent[200];
-      default:
-        return Colors.grey[400];
-    }
-  }
-
-  Widget _buildPaymentChip(String paymentType) {
-    final label = paymentType == 'cash'
-        ? 'نقدي'
-        : paymentType == 'wallet'
-            ? 'دفع بالمحفظة'
-            : paymentType == 'card'
-                ? 'بطاقة'
-                : paymentType == 'mixed'
-                    ? 'مدفوع على مراحل'
-                    : paymentType;
-    return Chip(
-      label: Text(label,
-          style: TextStyle(
-              color: AppColorsDark.mainTextDark,
-              fontSize: 15,
-              fontWeight: FontWeight.bold)),
-      backgroundColor: _paymentColor(paymentType),
-      visualDensity: VisualDensity.compact,
-      shape: RoundedRectangleBorder(
-          side: BorderSide(
-              color: label == 'دفع بالمحفظة' ? Colors.blueAccent : Colors.green,
-              width: 1.5),
-          borderRadius: BorderRadius.circular(15)),
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-    );
   }
 
   String _displayPaymentType(Map<String, dynamic> r) {
@@ -422,299 +403,30 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     return _effectivePaymentType(r);
   }
 
-  Widget _buildSummaryBoards() {
-    Widget board(String title, int count, double total, Color bg) {
-      return SizedBox(
-        width: 220,
-        child: Card(
-          color: bg.withOpacity(0.1),
-          shape: RoundedRectangleBorder(
-              side: BorderSide(color: bg),
-              borderRadius: BorderRadius.circular(12)),
-          child: Padding(
-            padding:
-                const EdgeInsets.symmetric(vertical: 16.0, horizontal: 12.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(title,
-                    style: TextStyle(
-                        color: AppColorsDark.mainTextLight, fontSize: 14)),
-                const SizedBox(height: 8),
-                Text('$count سند',
-                    style: TextStyle(
-                        color: AppColorsDark.mainTextDark,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16)),
-                const SizedBox(height: 8),
-                Text(total.toStringAsFixed(2),
-                    style: TextStyle(
-                        color: AppColorsDark.mainTextDark,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800)),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    return Directionality(
-      textDirection: TextDirection.rtl,
-      child: Wrap(
-        alignment: WrapAlignment.center,
-        spacing: 10,
-        runSpacing: 10,
-        children: [
-          board('نقدي', _cashCount, _cashTotal, Colors.green),
-          board('دفع بالمحفظة', _walletCount, _walletTotal, Colors.blueAccent),
-        ],
-      ),
-    );
+  /// هل السند اتدفع على أكتر من دفعة (جزئي) ولا مرة واحدة (كامل)
+  bool _isPartialPayment(Map<String, dynamic> r) {
+    return _paymentHistory(r).length > 1;
   }
 
-  Widget _buildPaymentHistory(Map<String, dynamic> r) {
-    final history = _paymentHistory(r);
-    if (history.isEmpty) {
-      final paidByMethod = _paidByMethod(r);
-      final parts = <String>[];
-      if ((paidByMethod['cash'] ?? 0.0) > 0) {
-        parts.add('نقدي: ${paidByMethod['cash']!.toStringAsFixed(2)}');
+  /// رقم السند المعروض في الجدول
+  String _getReceiptNumber(Map<String, dynamic> r, int fallbackIndex) {
+    final candidates = ['receipt_number', 'invoice_number', 'code', 'id'];
+    for (final k in candidates) {
+      final v = r[k];
+      if (v == null) continue;
+      final s = v.toString().trim();
+      if (s.isNotEmpty) {
+        final numeric = int.tryParse(s);
+        if (numeric != null) {
+          return 'PUR-${numeric.toString().padLeft(4, '0')}';
+        }
+        return s;
       }
-      if ((paidByMethod['wallet'] ?? 0.0) > 0) {
-        parts.add('محفظة: ${paidByMethod['wallet']!.toStringAsFixed(2)}');
-      }
-      if ((paidByMethod['card'] ?? 0.0) > 0) {
-        parts.add('بطاقة: ${paidByMethod['card']!.toStringAsFixed(2)}');
-      }
-      return _buildInfoRow(
-        'تفاصيل الدفع:',
-        parts.isEmpty ? 'غير محدد' : parts.join(' | '),
-        valueColor: Colors.blueAccent,
-      );
     }
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 8.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('تفاصيل الدفع:',
-              style: TextStyle(color: Colors.grey[400], fontSize: 14)),
-          const SizedBox(height: 6),
-          ...history.asMap().entries.map((entry) {
-            final index = entry.key + 1;
-            final payment = entry.value;
-            final method = _paymentMethodLabel(
-                (payment['payment_method'] ?? '').toString());
-            final amount = _getPaidAmount(payment);
-            final created = (payment['created_at'] ?? '').toString();
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Text(
-                'الدفعة $index: $method - ${amount.toStringAsFixed(2)}${created.isEmpty ? '' : ' (${_fmtDate(created)})'}',
-                style:
-                    TextStyle(color: AppColorsDark.mainTextDark, fontSize: 14),
-              ),
-            );
-          }),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _pickDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: selectedDate,
-      firstDate: DateTime(2000),
-      lastDate: DateTime(2100),
-    );
-    if (picked != null) {
-      setState(() {
-        selectedDate = picked;
-      });
-      await _load(date: selectedDate);
-    }
-  }
-
-  String _formatSelectedDate(DateTime dt) => '${dt.day}/${dt.month}/${dt.year}';
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        centerTitle: true,
-        backgroundColor: Colors.transparent,
-        elevation: 0.0,
-        scrolledUnderElevation: 0.0,
-        iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
-        title: Text(
-          'المشتريات المدفوعة',
-          style: TextStyle(color: AppColorsDark.mainTextDark),
-        ),
-        actions: [
-          IconButton(
-            tooltip: "إعادة تحميل (فلتر التاريخ الحالي)",
-            onPressed: () => _load(date: selectedDate),
-            icon: Icon(Icons.refresh, color: Theme.of(context).iconTheme.color),
-          )
-        ],
-      ),
-      body: _loading
-          ? ListView.separated(
-              padding: const EdgeInsets.all(12),
-              itemCount: 6, // عدد عناصر shimmer المراد عرضها أثناء التحميل
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (context, index) {
-                return LoadingShimmer(
-                  height: 80,
-                  borderRadius: BorderRadius.circular(10),
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                );
-              },
-            )
-          : Directionality(
-              textDirection: TextDirection.rtl,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // التاريخ
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 12.0, horizontal: 16.0),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        GestureDetector(
-                          onTap: _pickDate,
-                          child: Column(
-                            children: [
-                              Text('التاريخ',
-                                  style: TextStyle(
-                                      color: AppColorsDark.mainTextLight,
-                                      fontSize: 13)),
-                              const SizedBox(height: 4),
-                              Text(_formatSelectedDate(selectedDate),
-                                  style: TextStyle(
-                                      color: AppColorsDark.mainTextDark,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold)),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  // error
-                  if (_error != null)
-                    Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: Text('حدث خطأ: $_error',
-                          style: TextStyle(color: Colors.redAccent)),
-                    ),
-                  Expanded(
-                    child: Scrollbar(
-                      controller: _scrollController,
-                      thumbVisibility: true,
-                      child: _rows.isEmpty
-                          ? const EmptyStateCard(
-                              icon: Icons.assignment_turned_in,
-                              title: 'لا توجد سندات',
-                              message: 'لا توجد سندات مدفوعة في هذا التاريخ.',
-                            )
-                          : ListView.builder(
-                              controller: _scrollController,
-                              itemCount: _rows.length,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 30, vertical: 20),
-                              itemBuilder: (_, i) {
-                                final r = _rows[i];
-                                final title =
-                                    r['product_name'] ?? r['barcode'] ?? '—';
-                                final paid = _getPaidAmount(r);
-                                final created =
-                                    (r['created_at'] ?? r['receipt_date'] ?? '')
-                                        .toString();
-                                final paymentType = _displayPaymentType(r);
-
-                                return Card(
-                                  color: Theme.of(context).cardColor,
-                                  margin:
-                                      const EdgeInsets.symmetric(vertical: 12),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12)),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(16.0),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Wrap(
-                                          spacing: 8,
-                                          runSpacing: 8,
-                                          crossAxisAlignment:
-                                              WrapCrossAlignment.center,
-                                          children: [
-                                            ConstrainedBox(
-                                              constraints: const BoxConstraints(
-                                                  minWidth: 160, maxWidth: 520),
-                                              child: Text('$title',
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: TextStyle(
-                                                      color: AppColorsDark
-                                                          .mainTextDark,
-                                                      fontSize: 18,
-                                                      fontWeight:
-                                                          FontWeight.bold)),
-                                            ),
-                                            _buildPaymentChip(paymentType),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 8),
-                                        _buildInfoRow(
-                                            "استلم:", _getCashierName(r)),
-                                        _buildInfoRow("الكمية:",
-                                            "${r['cartons'] ?? 0} كرتونه + ${r['units'] ?? 0} وحدات"),
-                                        _buildInfoRow(
-                                            "المدفوع:", paid.toStringAsFixed(1),
-                                            valueColor: Colors.green),
-                                        _buildPaymentHistory(r),
-                                        _buildInfoRow(
-                                            "التاريخ:", _fmtDate(created)),
-                                        if ((_getDueAmount(r) ?? 0.0) > 0)
-                                          _buildInfoRow(
-                                              "المتبقي (Due):",
-                                              (_getDueAmount(r) ?? 0.0)
-                                                  .toStringAsFixed(2),
-                                              valueColor:
-                                                  Colors.orangeAccent[200]),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 20.0, vertical: 12.0),
-                    child: _buildSummaryBoards(),
-                  ),
-                ],
-              ),
-            ),
-    );
+    return 'PUR-${(fallbackIndex + 1).toString().padLeft(4, '0')}';
   }
 
   double? _getDueAmount(Map<String, dynamic> r) {
-    // support many possible keys, including credit_amount which we want to check
     final candidates = [
       'credit_amount',
       'creditAmount',
@@ -734,20 +446,759 @@ class _AdminPaidPurchasesScreenState extends State<AdminPaidPurchasesScreen> {
     return null;
   }
 
-  Widget _buildInfoRow(String label, String value, {Color? valueColor}) {
+  List<Map<String, dynamic>> get _displayedRows {
+    if (_searchQuery.trim().isEmpty) return _rows;
+    final q = _searchQuery.trim().toLowerCase();
+    final result = <Map<String, dynamic>>[];
+    for (var i = 0; i < _rows.length; i++) {
+      final r = _rows[i];
+      final name = _getProductName(r).toLowerCase();
+      final number = _getReceiptNumber(r, i).toLowerCase();
+      if (name.contains(q) || number.contains(q)) result.add(r);
+    }
+    return result;
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: selectedDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) {
+      setState(() {
+        selectedDate = picked;
+      });
+      await _load(date: selectedDate);
+    }
+  }
+
+  String _formatSelectedDate(DateTime dt) =>
+      '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+
+  // ============================= UI =============================
+
+  @override
+  Widget build(BuildContext context) {
+    final totalPaidAll = _cashTotal + _walletTotal + _cardTotal;
+
+    return Scaffold(
+      backgroundColor: AppColorsDark.bgColor,
+      appBar: AppBar(
+        centerTitle: true,
+        backgroundColor: Colors.transparent,
+        elevation: 0.0,
+        scrolledUnderElevation: 0.0,
+        iconTheme: const IconThemeData(color: _Palette.textPrimary),
+        title: const Text(
+          'المشتريات المدفوعة',
+          style: TextStyle(color: _Palette.textPrimary),
+        ),
+        actions: [
+          IconButton(
+            tooltip: "إعادة تحميل (فلتر التاريخ الحالي)",
+            onPressed: () => _load(date: selectedDate),
+            icon: const Icon(Icons.refresh, color: _Palette.textPrimary),
+          )
+        ],
+      ),
+      body: _loading
+          ? ListView.separated(
+        padding: const EdgeInsets.all(12),
+        itemCount: 6,
+        separatorBuilder: (_, __) => const SizedBox(height: 12),
+        itemBuilder: (context, index) {
+          return LoadingShimmer(
+            height: 80,
+            borderRadius: BorderRadius.circular(10),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+          );
+        },
+      )
+          : Directionality(
+        textDirection: TextDirection.rtl,
+        child: Column(
+          children: [
+            // ===== التاريخ =====
+            Padding(
+              padding: const EdgeInsets.only(top: 12, bottom: 4),
+              child: GestureDetector(
+                onTap: _pickDate,
+                child: Column(
+                  children: [
+                    const Text('التاريخ',
+                        style: TextStyle(
+                            color: _Palette.textSecondary,
+                            fontSize: 13)),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_formatSelectedDate(selectedDate),
+                            style: const TextStyle(
+                                color: _Palette.textPrimary,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 6),
+                        const Icon(Icons.calendar_today_outlined,
+                            size: 16, color: _Palette.textSecondary),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Text('حدث خطأ: $_error',
+                    style: const TextStyle(color: Colors.redAccent)),
+              ),
+
+            // ===== كروت الإحصائيات العلوية =====
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: LayoutBuilder(builder: (context, constraints) {
+                final cards = [
+                  _statCard(
+                    icon: Icons.shopping_bag_outlined,
+                    iconColor: _Palette.blue,
+                    title: 'إجمالي المدفوع اليوم',
+                    value: 'EGP ${totalPaidAll.toStringAsFixed(2)}',
+                  ),
+                  _statCard(
+                    icon: Icons.payments_outlined,
+                    iconColor: _Palette.green,
+                    title: 'إجمالي مدفوع نقدي',
+                    value: 'EGP ${_cashTotal.toStringAsFixed(2)}',
+                  ),
+                  _statCard(
+                    icon: Icons.account_balance_wallet_outlined,
+                    iconColor: _Palette.purple,
+                    title: 'إجمالي مدفوع بمحفظة',
+                    value: 'EGP ${_walletTotal.toStringAsFixed(2)}',
+                  ),
+                  _statCard(
+                    icon: Icons.description_outlined,
+                    iconColor: _Palette.orange,
+                    title: 'عدد السندات',
+                    value: '${_rows.length}',
+                  ),
+                ];
+                final isWide = constraints.maxWidth > 800;
+                if (isWide) {
+                  return Row(
+                    children: cards
+                        .map((c) => Expanded(
+                        child: Padding(
+                            padding:
+                            const EdgeInsets.symmetric(horizontal: 6),
+                            child: c)))
+                        .toList(),
+                  );
+                }
+                return Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children:
+                  cards.map((c) => SizedBox(width: 260, child: c)).toList(),
+                );
+              }),
+            ),
+
+            // ===== شريط البحث =====
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: _Palette.card,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: _Palette.cardBorder),
+                ),
+                child: TextField(
+                  controller: _searchController,
+                  style: const TextStyle(color: _Palette.textPrimary),
+                  decoration: const InputDecoration(
+                    hintText: 'ابحث برقم السند أو اسم المنتج',
+                    hintStyle: TextStyle(color: _Palette.textSecondary),
+                    prefixIcon:
+                    Icon(Icons.search, color: _Palette.textSecondary),
+                    border: InputBorder.none,
+                    contentPadding:
+                    EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+                  ),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            // ===== الجدول =====
+            Expanded(
+              child: _rows.isEmpty
+                  ? const EmptyStateCard(
+                icon: Icons.assignment_turned_in,
+                title: 'لا توجد سندات',
+                message: 'لا توجد سندات مدفوعة في هذا التاريخ.',
+              )
+                  : _buildTable(),
+            ),
+
+            // ===== كروت الملخص السفلية =====
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: LayoutBuilder(builder: (context, constraints) {
+                final wallet = _bottomStatCard(
+                  icon: Icons.account_balance_wallet_outlined,
+                  color: _Palette.purple,
+                  title: 'مدفوع بمحفظة',
+                  count: _walletCount,
+                  total: _walletTotal,
+                );
+                final cash = _bottomStatCard(
+                  icon: Icons.payments_outlined,
+                  color: _Palette.green,
+                  title: 'مدفوع نقدي',
+                  count: _cashCount,
+                  total: _cashTotal,
+                );
+                final isWide = constraints.maxWidth > 500;
+                final children = <Widget>[
+                  Expanded(child: wallet),
+                  const SizedBox(width: 12, height: 12),
+                  Expanded(child: cash),
+                ];
+                return Column(
+                  children: [
+                    isWide
+                        ? Row(children: children)
+                        : Column(
+                      children: [
+                        wallet,
+                        const SizedBox(height: 12),
+                        cash,
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(Icons.info_outline,
+                            size: 14, color: _Palette.textSecondary),
+                        SizedBox(width: 6),
+                        Text(
+                          'يتم تحديث البيانات تلقائياً عند تسجيل أي دفعة جديدة',
+                          style: TextStyle(
+                              color: _Palette.textSecondary, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              }),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------- كرت إحصائية علوي ----------
+  Widget _statCard({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String value,
+  }) {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _Palette.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _Palette.cardBorder),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: iconColor.withOpacity(0.15),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, color: iconColor, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        color: _Palette.textSecondary, fontSize: 12),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 4),
+                Text(value,
+                    style: TextStyle(
+                        color: iconColor,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------- كرت ملخص سفلي ----------
+  Widget _bottomStatCard({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required int count,
+    required double total,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 16),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.15),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, color: color, size: 24),
+          ),
+          const SizedBox(height: 10),
+          Text(title,
+              style: const TextStyle(color: _Palette.textSecondary, fontSize: 13)),
+          const SizedBox(height: 6),
+          Text('$count سند',
+              style: const TextStyle(
+                  color: _Palette.textPrimary,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 14)),
+          const SizedBox(height: 6),
+          Text('EGP ${total.toStringAsFixed(2)}',
+              style: TextStyle(
+                  color: color, fontSize: 20, fontWeight: FontWeight.w800)),
+        ],
+      ),
+    );
+  }
+
+  // ---------- الجدول ----------
+  // الأوزان النسبية للأعمدة (بتتحول لـ flex لما الجدول ياخد المساحة كلها)
+  static const int _fReceipt = 11;
+  static const int _fProduct = 23;
+  static const int _fDate = 13;
+  static const int _fMethod = 14;
+  static const int _fType = 10;
+  static const int _fAmount = 14;
+  static const int _fActions = 15;
+
+  // أقل عرض تقريبي بالبكسل لكل عمود (بيتستخدم فقط لما الجدول محتاج سكرول أفقي
+  // على الشاشات الضيقة جدًا)
+  static const double _wReceipt = 110;
+  static const double _wProduct = 230;
+  static const double _wDate = 130;
+  static const double _wMethod = 140;
+  static const double _wType = 100;
+  static const double _wAmount = 140;
+  static const double _wActions = 150;
+
+  double get _tableMinWidth =>
+      _wReceipt + _wProduct + _wDate + _wMethod + _wType + _wAmount + _wActions;
+
+  Widget _buildTable() {
+    final rows = _displayedRows;
+    return LayoutBuilder(builder: (context, constraints) {
+      // لو المساحة المتاحة كافية، الجدول بياخد عرض الشاشة كلها بدون سكرول أفقي
+      final fillAvailableWidth = constraints.maxWidth >= _tableMinWidth;
+
+      final table = SizedBox(
+        width: fillAvailableWidth ? constraints.maxWidth : _tableMinWidth,
+        child: Column(
+          children: [
+            _tableHeader(useFlex: fillAvailableWidth),
+            Expanded(
+              child: rows.isEmpty
+                  ? const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('لا توجد نتائج مطابقة للبحث',
+                    style: TextStyle(color: _Palette.textSecondary)),
+              )
+                  : Scrollbar(
+                controller: _verticalController,
+                thumbVisibility: true,
+                child: ListView.builder(
+                  controller: _verticalController,
+                  itemCount: rows.length,
+                  itemBuilder: (_, i) =>
+                      _tableRow(rows[i], i, useFlex: fillAvailableWidth),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
+      if (fillAvailableWidth) return table;
+
+      return Scrollbar(
+        controller: _horizontalController,
+        child: SingleChildScrollView(
+          controller: _horizontalController,
+          scrollDirection: Axis.horizontal,
+          child: table,
+        ),
+      );
+    });
+  }
+
+  /// خلية جدول: بتاخد عرض ثابت (سكرول أفقي) أو Expanded بنسبة (ملء الشاشة)
+  Widget _cell({
+    required Widget child,
+    required double width,
+    required int flex,
+    required bool useFlex,
+  }) {
+    if (useFlex) return Expanded(flex: flex, child: child);
+    return SizedBox(width: width, child: child);
+  }
+
+  Widget _tableHeader({required bool useFlex}) {
+    Widget h(String text, double width, int flex) => _cell(
+      width: width,
+      flex: flex,
+      useFlex: useFlex,
+      child: Text(text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+              color: _Palette.textSecondary,
+              fontSize: 13,
+              fontWeight: FontWeight.w600)),
+    );
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: _Palette.cardBorder, width: 1)),
+      ),
+      child: Row(
+        children: [
+          h('رقم السند', _wReceipt, _fReceipt),
+          h('اسم المنتج', _wProduct, _fProduct),
+          h('تاريخ الدفع', _wDate, _fDate),
+          h('طريقة الدفع', _wMethod, _fMethod),
+          h('نوع الدفع', _wType, _fType),
+          h('المبلغ المدفوع', _wAmount, _fAmount),
+          h('الإجراءات', _wActions, _fActions),
+        ],
+      ),
+    );
+  }
+
+  /// اسم المنتج بيتقرا من أول مفتاح موجود وقيمته مش فاضية
+  String _getProductName(Map<String, dynamic> r) {
+    final candidates = [
+      'product_name',
+      'productName',
+      'name',
+      'item_name',
+      'itemName',
+      'title',
+      'barcode',
+    ];
+    for (final k in candidates) {
+      final v = r[k];
+      if (v == null) continue;
+      final s = v.toString().trim();
+      if (s.isNotEmpty) return s;
+    }
+    return '—';
+  }
+
+  Widget _tableRow(Map<String, dynamic> r, int index, {required bool useFlex}) {
+    final title = _getProductName(r);
+    final paid = _getPaidAmount(r);
+    final created = (r['created_at'] ?? r['receipt_date'] ?? '').toString();
+    final lastPaymentDate = _paymentHistory(r).isNotEmpty
+        ? (_paymentHistory(r).last['created_at'] ?? created).toString()
+        : created;
+    final paymentType = _displayPaymentType(r);
+    final isPartial = _isPartialPayment(r);
+    final receiptNumber = _getReceiptNumber(r, index);
+
+    return Container(
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: _Palette.rowDivider, width: 1)),
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+      child: Row(
+        children: [
+          _cell(
+            width: _wReceipt,
+            flex: _fReceipt,
+            useFlex: useFlex,
+            child: Text(receiptNumber,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    color: _Palette.textPrimary, fontSize: 13, fontWeight: FontWeight.w600)),
+          ),
+          _cell(
+            width: _wProduct,
+            flex: _fProduct,
+            useFlex: useFlex,
+            child: Row(
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: _Palette.blue.withOpacity(0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.inventory_2_outlined,
+                      size: 16, color: _Palette.blue),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(title,
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                      style: const TextStyle(
+                          color: _Palette.textPrimary, fontSize: 13)),
+                ),
+              ],
+            ),
+          ),
+          _cell(
+            width: _wDate,
+            flex: _fDate,
+            useFlex: useFlex,
+            child: Text(_fmtDateShort(lastPaymentDate),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: _Palette.textSecondary, fontSize: 13)),
+          ),
+          _cell(
+            width: _wMethod,
+            flex: _fMethod,
+            useFlex: useFlex,
+            child: Center(child: _paymentMethodChip(paymentType)),
+          ),
+          _cell(
+            width: _wType,
+            flex: _fType,
+            useFlex: useFlex,
+            child: Center(child: _paymentTypeBadge(isPartial)),
+          ),
+          _cell(
+            width: _wAmount,
+            flex: _fAmount,
+            useFlex: useFlex,
+            child: Text('EGP ${paid.toStringAsFixed(2)}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    color: _Palette.green, fontSize: 13, fontWeight: FontWeight.w700)),
+          ),
+          _cell(
+            width: _wActions,
+            flex: _fActions,
+            useFlex: useFlex,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => _showDetailsDialog(r, receiptNumber),
+                  icon: const Icon(Icons.visibility_outlined, size: 16),
+                  label: const Text('عرض', style: TextStyle(fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _Palette.textPrimary,
+                    side: const BorderSide(color: _Palette.cardBorder),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                PopupMenuButton<String>(
+                  color: _Palette.card,
+                  icon: const Icon(Icons.more_horiz, color: _Palette.textSecondary),
+                  onSelected: (v) {
+                    if (v == 'details') _showDetailsDialog(r, receiptNumber);
+                    if (v == 'print') {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('ميزة الطباعة قريباً')),
+                      );
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                        value: 'details',
+                        child: Text('تفاصيل السند',
+                            style: TextStyle(color: _Palette.textPrimary))),
+                    PopupMenuItem(
+                        value: 'print',
+                        child: Text('طباعة',
+                            style: TextStyle(color: _Palette.textPrimary))),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _paymentMethodChip(String paymentType) {
+    IconData icon;
+    Color color;
+    String label;
+    switch (paymentType) {
+      case 'wallet':
+        icon = Icons.account_balance_wallet_outlined;
+        color = _Palette.purple;
+        label = 'محفظة';
+        break;
+      case 'card':
+        icon = Icons.credit_card_outlined;
+        color = _Palette.orange;
+        label = 'بطاقة';
+        break;
+      case 'mixed':
+        icon = Icons.sync_alt;
+        color = _Palette.blue;
+        label = 'متعدد';
+        break;
+      default:
+        icon = Icons.payments_outlined;
+        color = _Palette.green;
+        label = 'نقدي';
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.5)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(color: color, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+
+  Widget _paymentTypeBadge(bool isPartial) {
+    final color = isPartial ? _Palette.orange : _Palette.green;
+    final label = isPartial ? 'جزئي' : 'كامل';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(label,
+          style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+    );
+  }
+
+  void _showDetailsDialog(Map<String, dynamic> r, String receiptNumber) {
+    final history = _paymentHistory(r);
+    final due = _getDueAmount(r) ?? 0.0;
+    showDialog(
+      context: context,
+      builder: (context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: _Palette.card,
+          title: Text('تفاصيل السند $receiptNumber',
+              style: const TextStyle(color: _Palette.textPrimary)),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _dialogInfoRow('المنتج:', _getProductName(r)),
+                _dialogInfoRow('استلم:', _getCashierName(r)),
+                _dialogInfoRow('الكمية:',
+                    '${r['cartons'] ?? 0} كرتونه + ${r['units'] ?? 0} وحدات'),
+                _dialogInfoRow('المدفوع:',
+                    'EGP ${_getPaidAmount(r).toStringAsFixed(2)}',
+                    color: _Palette.green),
+                _dialogInfoRow('التاريخ:',
+                    _fmtDate((r['created_at'] ?? r['receipt_date'] ?? '').toString())),
+                if (due > 0)
+                  _dialogInfoRow('المتبقي:', due.toStringAsFixed(2),
+                      color: _Palette.orange),
+                if (history.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  const Text('تفاصيل الدفعات:',
+                      style: TextStyle(
+                          color: _Palette.textSecondary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  ...history.asMap().entries.map((entry) {
+                    final i = entry.key + 1;
+                    final p = entry.value;
+                    final method = _paymentMethodLabel(
+                        (p['payment_method'] ?? '').toString());
+                    final amount = _getPaidAmount(p);
+                    final created = (p['created_at'] ?? '').toString();
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        'الدفعة $i: $method - ${amount.toStringAsFixed(2)}'
+                            '${created.isEmpty ? '' : ' (${_fmtDate(created)})'}',
+                        style: const TextStyle(
+                            color: _Palette.textPrimary, fontSize: 13),
+                      ),
+                    );
+                  }),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _dialogInfoRow(String label, String value, {Color? color}) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 4.0),
+      padding: const EdgeInsets.only(bottom: 6.0),
       child: Text.rich(
         TextSpan(
           children: [
             TextSpan(
                 text: "$label ",
-                style: TextStyle(color: Colors.grey[400], fontSize: 14)),
+                style: const TextStyle(color: _Palette.textSecondary, fontSize: 14)),
             TextSpan(
                 text: value,
                 style: TextStyle(
-                    color: valueColor ?? AppColorsDark.mainTextDark,
-                    fontSize: 14)),
+                    color: color ?? _Palette.textPrimary, fontSize: 14)),
           ],
         ),
       ),

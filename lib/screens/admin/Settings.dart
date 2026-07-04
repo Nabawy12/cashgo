@@ -783,39 +783,86 @@ class _SettingsPageState extends State<SettingsPage>
 
   Widget _buildAdminTab() {
     if (_loadingAdmin) return const Center(child: CircularProgressIndicator());
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
+    return Directionality(
+      textDirection: TextDirection.rtl,
       child: SingleChildScrollView(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        padding: const EdgeInsets.all(16),
+        child: Column(children: [
+          // كارت معلومات المشرف الحالية
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColorsDark.bgCardColor,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColorsDark.mainColor.withOpacity(0.3)),
+            ),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 28,
+                  backgroundColor: AppColorsDark.mainColor.withOpacity(0.15),
+                  child: Icon(Icons.admin_panel_settings_rounded,
+                      color: AppColorsDark.mainColor, size: 28),
+                ),
+                const SizedBox(width: 14),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('المشرف الحالي',
+                        style: TextStyle(
+                            color: AppColorsDark.mainTextLight, fontSize: 12)),
+                    const SizedBox(height: 4),
+                    Text(_adminUsername,
+                        style: TextStyle(
+                            color: AppColorsDark.mainTextDark,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: 20),
-          Center(
-              child: Text('تعديل بيانات المشرف',
-                  style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: AppColorsDark.mainTextDark))),
-          const SizedBox(height: 20),
-          Form(
-            key: _adminFormKey,
-            child: Column(children: [
-              CustomFormField(
-                  controller: _adminNewUserController,
-                  hint: 'اسم المستخدم',
-                  validator: (v) => (v == null || v.trim().isEmpty)
-                      ? 'يرجى ادخال اسم المستخدم'
-                      : null),
-              const SizedBox(height: 10),
-              CustomFormField(
-                  controller: _adminNewPassController,
-                  isPassword: true,
-                  hint: 'كلمة المرور الجديدة',
-                  validator: (v) => (v == null || v.trim().length < 3)
-                      ? 'يجب أن تكون كلمة المرور 3 أحرف على الأقل'
-                      : null),
-              const SizedBox(height: 20),
-              CustomButton(text: 'حفظ التغييرات', onPressed: _changeAdminInfo),
-              const SizedBox(height: 8),
-            ]),
+
+          // فورم التعديل
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColorsDark.bgCardColor,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Form(
+              key: _adminFormKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('تعديل البيانات',
+                      style: TextStyle(
+                          color: AppColorsDark.mainTextDark,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15)),
+                  const SizedBox(height: 14),
+                  CustomFormField(
+                    controller: _adminNewUserController,
+                    hint: 'اسم المستخدم',
+                    validator: (v) => (v == null || v.trim().isEmpty)
+                        ? 'يرجى ادخال اسم المستخدم'
+                        : null,
+                  ),
+                  const SizedBox(height: 10),
+                  CustomFormField(
+                    controller: _adminNewPassController,
+                    isPassword: true,
+                    hint: 'كلمة المرور الجديدة',
+                    validator: (v) => (v == null || v.trim().length < 3)
+                        ? 'يجب أن تكون كلمة المرور 3 أحرف على الأقل'
+                        : null,
+                  ),
+                  const SizedBox(height: 16),
+                  CustomButton(text: 'حفظ التغييرات', onPressed: _changeAdminInfo),
+                ],
+              ),
+            ),
           ),
         ]),
       ),
@@ -825,106 +872,263 @@ class _SettingsPageState extends State<SettingsPage>
   Widget _buildCashierTab() {
     if (_loadingCashiers)
       return const Center(child: CircularProgressIndicator());
-    return RefreshIndicator(
-      onRefresh: _loadCashiers,
+
+    return Directionality(
+      textDirection: TextDirection.rtl,
       child: Column(children: [
         Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: CustomButton(
-                text: 'إضافة كاشير جديد',
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '${_cashiers.length} كاشير',
+                style: TextStyle(
+                    color: AppColorsDark.mainTextLight, fontSize: 13),
+              ),
+              ElevatedButton.icon(
                 onPressed: _showAddCashierDialog,
-                color: AppColorsDark.mainColor.withOpacity(0.5))),
+                icon: const Icon(Icons.person_add_rounded,
+                    size: 16, color: Colors.white),
+                label: const Text('إضافة كاشير',
+                    style: TextStyle(color: Colors.white)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColorsDark.mainColor,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                ),
+              ),
+            ],
+          ),
+        ),
         Expanded(
-            child: ListView.builder(
-                padding: const EdgeInsets.all(12),
-                itemCount: _cashiers.length,
-                itemBuilder: (context, idx) {
-                  final c = _cashiers[idx];
-                  return Directionality(
-                    textDirection: TextDirection.rtl,
-                    child: Card(
-                      color: AppColorsDark.bgCardColor,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 15),
-                        child: ListTile(
-                          title: Text(" الاسم:  ${c['username'] ?? ''}",
+          child: _cashiers.isEmpty
+              ? Center(
+              child: Text('لا يوجد كاشير مضاف',
+                  style: TextStyle(color: AppColorsDark.mainTextLight)))
+              : RefreshIndicator(
+            onRefresh: _loadCashiers,
+            child: ListView.separated(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+              itemCount: _cashiers.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (_, idx) {
+                final c = _cashiers[idx];
+                final perms = (c['permissions_parsed']
+                as Map<String, bool>?) ??
+                    {};
+                final activePerms = <String>[];
+                if (perms['invoice_log'] == true)
+                  activePerms.add('سجل الفواتير');
+                if (perms['receive_from_suppliers'] == true)
+                  activePerms.add('استلام موردين');
+                if (perms['pay_credit'] == true)
+                  activePerms.add('دفع الآجل');
+                if (perms['discount'] == true) activePerms.add('خصم');
+                if (perms['can_view_credit'] == true)
+                  activePerms.add('عرض الآجل');
+
+                return Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColorsDark.bgCardColor,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                        color:
+                        AppColorsDark.mainColor.withOpacity(0.2)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 20,
+                            backgroundColor:
+                            AppColorsDark.mainColor.withOpacity(0.15),
+                            child: Text(
+                              (c['username'] ?? '?')
+                                  .toString()
+                                  .substring(0, 1)
+                                  .toUpperCase(),
+                              style: TextStyle(
+                                  color: AppColorsDark.mainColor,
+                                  fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              c['username'] ?? '',
                               style: TextStyle(
                                   color: AppColorsDark.mainTextDark,
-                                  fontSize: 19)),
-                          trailing:
-                              Row(mainAxisSize: MainAxisSize.min, children: [
-                            IconButton(
-                              icon: const Icon(Icons.edit),
-                              onPressed: () => _showEditCashierDialog(c),
-                              color: AppColorsDark.mainTextLight,
-                              iconSize: 25,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16),
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.delete),
-                              onPressed: () => _confirmDeleteCashier(c),
-                              color: Colors.red.withOpacity(0.8),
-                              iconSize: 25,
-                            ),
-                          ]),
-                        ),
+                          ),
+                          IconButton(
+                            icon: Icon(Icons.edit_rounded,
+                                color: AppColorsDark.mainColor, size: 20),
+                            onPressed: () => _showEditCashierDialog(c),
+                            tooltip: 'تعديل',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_rounded,
+                                color: Colors.redAccent, size: 20),
+                            onPressed: () => _confirmDeleteCashier(c),
+                            tooltip: 'حذف',
+                          ),
+                        ],
                       ),
-                    ),
-                  );
-                })),
+                      if (activePerms.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: activePerms.map((p) {
+                            return Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: AppColorsDark.mainColor
+                                    .withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                    color: AppColorsDark.mainColor
+                                        .withOpacity(0.3)),
+                              ),
+                              child: Text(p,
+                                  style: TextStyle(
+                                      color: AppColorsDark.mainColor,
+                                      fontSize: 11)),
+                            );
+                          }).toList(),
+                        ),
+                      ] else ...[
+                        const SizedBox(height: 8),
+                        Text('لا توجد صلاحيات مخصصة',
+                            style: TextStyle(
+                                color: AppColorsDark.mainTextLight,
+                                fontSize: 11)),
+                      ],
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
       ]),
     );
   }
 
   Widget _buildShopSettingsTab() {
-    if (_settingsLoading) {
+    if (_settingsLoading)
       return const Center(child: CircularProgressIndicator());
-    }
+
     return Directionality(
       textDirection: TextDirection.rtl,
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            const SizedBox(height: 20),
-            Text('إعدادات المتجر',
-                style: TextStyle(
-                    color: AppColorsDark.mainTextDark,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold)),
-            const SizedBox(height: 20),
-            CustomFormField(
-              controller: _shopNameController,
-              hint: 'اسم المتجر',
+        child: Column(children: [
+          // بيانات المتجر
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColorsDark.bgCardColor,
+              borderRadius: BorderRadius.circular(16),
             ),
-            const SizedBox(height: 12),
-            CustomFormField(
-              controller: _shopAddressController,
-              hint: 'العنوان',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.storefront_rounded,
+                        color: AppColorsDark.mainColor, size: 18),
+                    const SizedBox(width: 8),
+                    Text('بيانات المتجر',
+                        style: TextStyle(
+                            color: AppColorsDark.mainTextDark,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15)),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                CustomFormField(
+                  controller: _shopNameController,
+                  hint: 'اسم المتجر',
+                ),
+                const SizedBox(height: 10),
+                CustomFormField(
+                  controller: _shopAddressController,
+                  hint: 'العنوان',
+                ),
+                const SizedBox(height: 10),
+                CustomFormField(
+                  controller: _shopPhoneController,
+                  hint: 'رقم الهاتف',
+                  keyboardType: TextInputType.phone,
+                ),
+                const SizedBox(height: 16),
+                CustomButton(
+                  text: 'حفظ إعدادات المتجر',
+                  onPressed: _saveShopSettings,
+                  color: AppColorsDark.mainColor.withOpacity(0.8),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            CustomFormField(
-              controller: _shopPhoneController,
-              hint: 'رقم الهاتف',
-              keyboardType: TextInputType.phone,
+          ),
+          const SizedBox(height: 14),
+
+          // المظهر
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColorsDark.bgCardColor,
+              borderRadius: BorderRadius.circular(16),
             ),
-            const SizedBox(height: 20),
-            SwitchListTile(
-              value: _lightMode,
-              onChanged: _setLightMode,
-              activeColor: AppColorsDark.mainColor,
-              title: Text('الوضع الفاتح',
-                  style: TextStyle(color: AppColorsDark.mainTextDark)),
-              subtitle: Text('إيقافه يعيد الوضع الداكن',
-                  style: TextStyle(color: AppColorsDark.mainTextLight)),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.amberAccent.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    _lightMode
+                        ? Icons.light_mode_rounded
+                        : Icons.dark_mode_rounded,
+                    color: _lightMode ? Colors.amberAccent : Colors.blueAccent,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('المظهر',
+                          style: TextStyle(
+                              color: AppColorsDark.mainTextDark,
+                              fontWeight: FontWeight.bold)),
+                      Text(_lightMode ? 'الوضع الفاتح' : 'الوضع الداكن',
+                          style: TextStyle(
+                              color: AppColorsDark.mainTextLight, fontSize: 12)),
+                    ],
+                  ),
+                ),
+                Switch(
+                  value: _lightMode,
+                  onChanged: _setLightMode,
+                  activeColor: AppColorsDark.mainColor,
+                ),
+              ],
             ),
-            const SizedBox(height: 20),
-            CustomButton(
-              text: 'حفظ إعدادات المتجر',
-              onPressed: _saveShopSettings,
-              color: AppColorsDark.mainColor.withValues(alpha: 0.6),
-            ),
-          ],
-        ),
+          ),
+        ]),
       ),
     );
   }

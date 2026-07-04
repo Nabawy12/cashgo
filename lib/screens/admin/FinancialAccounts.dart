@@ -557,27 +557,34 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
 
   // ------------------ بقية الكود كما كان مع بعض التحسينات البسيطة ------------------
 
-  Widget _buildSummaryRow(String label, double value, {TextStyle? style}) {
+  Widget _buildSummaryRow(String label, double value,
+      {TextStyle? style, IconData? icon, Color? color}) {
     final formatted = _formatMoney(value.abs());
     final sign = value < 0 ? '-' : '';
-    final effectiveStyle = style ??
-        Theme.of(context)
-            .textTheme
-            .bodyMedium!
-            .copyWith(color: AppColorsDark.mainTextDark);
-    final valueStyle = effectiveStyle.copyWith(
-        fontWeight: FontWeight.bold,
-        fontSize: 15,
-        color: AppColorsDark.mainTextDark);
-    return Directionality(
-      textDirection: TextDirection.rtl,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6.0),
+    final accent = color ?? AppColorsDark.mainTextDark;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Directionality(
+        textDirection: TextDirection.rtl,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(label, style: effectiveStyle),
-            Text('$sign$formatted', style: valueStyle),
+            Row(
+              children: [
+                if (icon != null) ...[
+                  Icon(icon, size: 16, color: accent),
+                  const SizedBox(width: 6),
+                ],
+                Text(label, style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 13)),
+              ],
+            ),
+            Text('$sign$formatted',
+                style: TextStyle(color: accent, fontWeight: FontWeight.bold, fontSize: 15)),
           ],
         ),
       ),
@@ -993,129 +1000,134 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     final raw = s.raw ?? {};
     final cashierName = s.cashierName.isNotEmpty
         ? s.cashierName
-        : (_pickStringFromMap(
-                raw, ['cashier_name', 'cashier', 'name', 'username', 'user']) ??
-            'غير معروف');
-    final openingBalance =
-        _pickDoubleFromMap(raw, ['opening_balance']) ?? s.openingBalance;
-    final cashSales = _pickDoubleFromMap(
-            raw, ['cash_sales_total', 'cash_sales', 'sales_cash']) ??
-        0.0;
-    final grossSales =
-        (_pickDoubleFromMap(raw, ['gross_sales']) ?? s.totalSales)
-            .clamp(0.0, double.infinity);
-    final totalSales = (_pickDoubleFromMap(raw, ['total_sales']) ?? grossSales)
-        .clamp(0.0, double.infinity);
-    final unpaidCreditTotal =
-        _pickDoubleFromMap(raw, ['unpaid_credit_total']) ?? 0.0;
-    final walletSales = _pickDoubleFromMap(
-            raw, ['wallet_sales_total', 'wallet_sales', 'sales_wallet']) ??
+        : (_pickStringFromMap(raw, ['cashier_name', 'cashier', 'name', 'username', 'user']) ?? 'غير معروف');
+    final openingBalance = _pickDoubleFromMap(raw, ['opening_balance']) ?? s.openingBalance;
+    final cashSales = _pickDoubleFromMap(raw, ['cash_sales_total', 'cash_sales', 'sales_cash']) ?? 0.0;
+    final grossSales = (_pickDoubleFromMap(raw, ['gross_sales']) ?? s.totalSales).clamp(0.0, double.infinity);
+    final totalSales = (_pickDoubleFromMap(raw, ['total_sales']) ?? grossSales).clamp(0.0, double.infinity);
+    final unpaidCreditTotal = _pickDoubleFromMap(raw, ['unpaid_credit_total']) ?? 0.0;
+    final walletSales = _pickDoubleFromMap(raw, ['wallet_sales_total', 'wallet_sales', 'sales_wallet']) ??
         (grossSales - cashSales).clamp(0.0, double.infinity);
-    final cashExpenses =
-        _pickDoubleFromMap(raw, ['cash_purchases', 'cash_expenses']) ?? 0.0;
-    final totalExpenses =
-        _pickDoubleFromMap(raw, ['total_expenses']) ?? s.totalExpenses;
-    final returnsValue =
-        (_pickDoubleFromMap(raw, ['returns_delta', 'returns_value']) ?? 0.0)
-            .abs();
-    final walletExpenses =
-        _pickDoubleFromMap(raw, ['wallet_purchases', 'wallet_expenses']) ??
-            (totalExpenses - cashExpenses).clamp(0.0, double.infinity);
-    final totalReturns = returnsValue;
+    final cashExpenses = _pickDoubleFromMap(raw, ['cash_purchases', 'cash_expenses']) ?? 0.0;
+    final totalExpenses = _pickDoubleFromMap(raw, ['total_expenses']) ?? s.totalExpenses;
+    final returnsValue = (_pickDoubleFromMap(raw, ['returns_delta', 'returns_value']) ?? 0.0).abs();
+    final walletExpenses = _pickDoubleFromMap(raw, ['wallet_purchases', 'wallet_expenses']) ??
+        (totalExpenses - cashExpenses).clamp(0.0, double.infinity);
     final netProfit = totalSales - totalExpenses;
     final drawerBalance = totalSales - cashExpenses;
 
     String money(double value) => value.toStringAsFixed(2);
+    Color signColor(double value) => value >= 0 ? Colors.greenAccent : Colors.redAccent;
 
-    String signedMoney(double value) {
-      if (value > 0) return '+${money(value)}';
-      if (value < 0) return '-${money(value.abs())}';
-      return money(0);
-    }
-
-    Color signColor(double value) =>
-        value >= 0 ? Colors.green : Colors.redAccent;
-
-    Widget buildRow(String label, String value, {Color? valueColor}) {
-      final labelStyle = Theme.of(context)
-          .textTheme
-          .bodyMedium
-          ?.copyWith(color: AppColorsDark.mainTextLight, fontSize: 14);
-      final valueStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: valueColor ?? AppColorsDark.mainTextDark,
-            fontWeight: FontWeight.w500,
-            fontSize: 14,
-          );
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3.0),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Flexible(
-                child: Text(
-              label,
-              style: labelStyle,
-              softWrap: true,
-              overflow: TextOverflow.visible,
-            )),
-            const SizedBox(width: 8),
-            Flexible(
-                child: Text(value,
-                    style: valueStyle,
-                    textAlign: TextAlign.right,
-                    softWrap: true,
-                    overflow: TextOverflow.visible)),
-          ],
+    Widget chip(String label, String value, Color color) {
+      return Expanded(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 3),
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            children: [
+              Text(label, style: TextStyle(color: color, fontSize: 10)),
+              const SizedBox(height: 4),
+              Text(value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 12, fontWeight: FontWeight.w700)),
+            ],
+          ),
         ),
       );
     }
 
-    return Card(
-      color: AppColorsDark.bgCardColor,
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColorsDark.bgCardColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: signColor(netProfit).withOpacity(0.25)),
+      ),
       child: Padding(
-        padding: const EdgeInsets.all(12.0),
+        padding: const EdgeInsets.all(14.0),
         child: Directionality(
           textDirection: TextDirection.rtl,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                cashierName,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: AppColorsDark.mainTextDark,
-                    fontWeight: FontWeight.bold),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 16,
+                        backgroundColor: AppColorsDark.mainColor.withOpacity(0.15),
+                        child: Icon(Icons.person, size: 16, color: AppColorsDark.mainColor),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(cashierName,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  Text('${s.formattedStartTime} - ${s.formattedEndTime}',
+                      style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 12)),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  chip('مبدئي', money(openingBalance), AppColorsDark.mainTextLight),
+                  chip('نقدي', money(cashSales), Colors.blueAccent),
+                  chip('محفظة', money(walletSales), Colors.purpleAccent),
+                  chip('إجمالي', money(grossSales), Colors.blueAccent),
+                ],
               ),
               const SizedBox(height: 8),
-              buildRow('اسم الكاشير', cashierName),
-              buildRow('بداية الشيفت', s.formattedStartTime),
-              buildRow('نهاية الشيفت', s.formattedEndTime),
-              buildRow('المبلغ المبدئي', money(openingBalance)),
-              buildRow('صافي المبيعات النقدي', money(cashSales),
-                  valueColor: Colors.blueAccent),
-              buildRow('صافي المبيعات بالمحفظة', money(walletSales),
-                  valueColor: Colors.blueAccent),
-              buildRow('إجمالي المبيعات', money(grossSales),
-                  valueColor: Colors.blueAccent),
-              buildRow('فواتير آجلة غير مدفوعة', money(unpaidCreditTotal),
-                  valueColor: Colors.orangeAccent),
-              const Divider(height: 12),
-              buildRow('المشتريات (النقدي)', money(cashExpenses)),
-              buildRow('المشتريات (المحفظة)', money(walletExpenses)),
-              buildRow('إجمالي المرتجعات', money(totalReturns)),
-              buildRow('إجمالي المصروفات', money(totalExpenses)),
-              const Divider(height: 12),
-              buildRow('الربح', signedMoney(netProfit),
-                  valueColor: signColor(netProfit)),
-              buildRow('رصيد الدرج الآن', signedMoney(drawerBalance),
-                  valueColor: signColor(drawerBalance)),
-              const SizedBox(height: 8),
+              Row(
+                children: [
+                  chip('مشتريات نقدي', money(cashExpenses), Colors.orangeAccent),
+                  chip('مشتريات محفظة', money(walletExpenses), Colors.orangeAccent),
+                  chip('مرتجعات', money(returnsValue), Colors.redAccent),
+                  chip('آجلة غير مدفوعة', money(unpaidCreditTotal), Colors.amberAccent),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                decoration: BoxDecoration(
+                  color: signColor(netProfit).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('الربح', style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 11)),
+                        Text(money(netProfit),
+                            style: TextStyle(color: signColor(netProfit), fontWeight: FontWeight.bold, fontSize: 16)),
+                      ],
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text('رصيد الدرج الآن', style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 11)),
+                        Text(money(drawerBalance),
+                            style: TextStyle(color: signColor(drawerBalance), fontWeight: FontWeight.bold, fontSize: 16)),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
       ),
     );
   }
-
   Widget _desktopLayout(BoxConstraints constraints) {
     final maxWidth = constraints.maxWidth < 900 ? constraints.maxWidth : 1400.0;
 
@@ -1167,8 +1179,18 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                                       .copyWith(
                                           color: AppColorsDark.mainTextDark))),
                           const SizedBox(height: 10),
-                          _buildSummaryRow(
-                              'المبلغ في الدرج الآن', _totalInDrawer),
+                          _buildSummaryRow('المبلغ في الدرج الآن', _totalInDrawer,
+                              icon: Icons.account_balance_wallet_rounded, color: Colors.greenAccent),
+                          _buildSummaryRow('صافي مبيعات نقدي', _salesNet,
+                              icon: Icons.payments_rounded, color: Colors.blueAccent),
+                          _buildSummaryRow('إجمالي المحفظة / البطاقة', _salesWallet,
+                              icon: Icons.credit_card_rounded, color: Colors.purpleAccent),
+                          _buildSummaryRow('مدفوعات مشتريات (نقدي)', _purchasePaidCash,
+                              icon: Icons.shopping_cart_rounded, color: Colors.orangeAccent),
+                          _buildSummaryRow('مدفوعات مشتريات (محفظة/بطاقة)', _purchasePaidWallet,
+                              icon: Icons.shopping_cart_checkout_rounded, color: Colors.orangeAccent),
+                          _buildSummaryRow('المدفوع (مشتريات آجلة)', _purchasePaidOnCredit,
+                              icon: Icons.schedule_rounded, color: Colors.amberAccent),
                           const SizedBox(height: 10),
                           _buildSummaryRow('صافي مبيعات نقدي', _salesNet),
                           const SizedBox(height: 10),
@@ -1193,62 +1215,16 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                 child: Column(
                   children: [
                     Padding(
-                      padding: const EdgeInsets.only(
-                          left: 12.0, top: 8.0, bottom: 8.0),
+                      padding: const EdgeInsets.only(left: 12.0, top: 8.0, bottom: 8.0),
                       child: Row(children: [
                         Expanded(
                           child: SizedBox(
                             height: 200,
-                            child: Card(
-                              elevation: 3,
-                              color: AppColorsDark.bgCardColor,
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: 24.0, horizontal: 20.0),
-                                child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Center(
-                                          child: Text(
-                                              'المبلغ في الدرج الآن = مبدئي + نقدي',
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .titleLarge!
-                                                  .copyWith(
-                                                      color: AppColorsDark
-                                                          .mainTextDark))),
-                                      const SizedBox(height: 12),
-                                      Expanded(
-                                          child: Row(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.center,
-                                              children: [
-                                            Text("جنيه",
-                                                style: Theme.of(context)
-                                                    .textTheme
-                                                    .displaySmall
-                                                    ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: AppColorsDark
-                                                            .mainTextDark)),
-                                            const SizedBox(width: 10),
-                                            Text(
-                                                _formatWithSign(_totalInDrawer),
-                                                style: Theme.of(context)
-                                                    .textTheme
-                                                    .displaySmall
-                                                    ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: AppColorsDark
-                                                            .mainTextDark)),
-                                          ])),
-                                    ]),
-                              ),
+                            child: _smallInfoCard(
+                              'المبلغ في الدرج الآن = مبدئي + نقدي',
+                              _formatWithSign(_totalInDrawer),
+                              accent: Colors.greenAccent,
+                              icon: Icons.account_balance_wallet_rounded,
                             ),
                           ),
                         ),
@@ -1256,55 +1232,11 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                         Expanded(
                           child: SizedBox(
                             height: 200,
-                            child: Card(
-                              elevation: 3,
-                              color: AppColorsDark.bgCardColor,
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: 24.0, horizontal: 20.0),
-                                child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Center(
-                                          child: Text(
-                                              'الحد الادني لبدايه كل شيفت',
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .titleLarge!
-                                                  .copyWith(
-                                                      color: AppColorsDark
-                                                          .mainTextDark))),
-                                      const SizedBox(height: 12),
-                                      Expanded(
-                                          child: Row(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.center,
-                                              children: [
-                                            Text("جنيه",
-                                                style: Theme.of(context)
-                                                    .textTheme
-                                                    .displaySmall
-                                                    ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: AppColorsDark
-                                                            .mainTextDark)),
-                                            const SizedBox(width: 10),
-                                            Text(_formatWithSign(_maxLimit),
-                                                style: Theme.of(context)
-                                                    .textTheme
-                                                    .displaySmall
-                                                    ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: AppColorsDark
-                                                            .mainTextDark)),
-                                          ])),
-                                    ]),
-                              ),
+                            child: _smallInfoCard(
+                              'إجمالي المحفظة / البطاقة',
+                              _formatWithSign(_maxLimit),
+                              accent: Colors.blueAccent,
+                              icon: Icons.wallet_outlined,
                             ),
                           ),
                         ),
@@ -1380,57 +1312,11 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                         Expanded(
                           child: SizedBox(
                             height: 200,
-                            child: Card(
-                              elevation: 3,
-                              color: AppColorsDark.mainColor.withOpacity(0.08),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: 24.0, horizontal: 20.0),
-                                child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Center(
-                                          child: Text(
-                                              'الفواتير الاجله التي لم يتم دفعها',
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .titleLarge!
-                                                  .copyWith(
-                                                      color: AppColorsDark
-                                                          .mainTextDark))),
-                                      const SizedBox(height: 12),
-                                      Expanded(
-                                          child: Row(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.end,
-                                              children: [
-                                            Text("جنيه",
-                                                style: Theme.of(context)
-                                                    .textTheme
-                                                    .displaySmall
-                                                    ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: AppColorsDark
-                                                            .mainTextDark)),
-                                            const SizedBox(width: 10),
-                                            Text(
-                                                _formatMoney(
-                                                    _creditOutstanding),
-                                                style: Theme.of(context)
-                                                    .textTheme
-                                                    .displaySmall
-                                                    ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: AppColorsDark
-                                                            .mainTextDark)),
-                                          ])),
-                                    ]),
-                              ),
+                            child: _smallInfoCard(
+                              'الفواتير الاجله التي لم يتم دفعها',
+                              _formatMoney(_creditOutstanding),
+                              accent: Colors.orangeAccent,
+                              icon: Icons.receipt_long_rounded,
                             ),
                           ),
                         ),
@@ -1562,8 +1448,41 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
                           _formatWithSign(_totalInDrawer))),
                   const SizedBox(width: 8),
                   Expanded(
-                      child: _smallInfoCard('الحد الادني لبدايه كل شيفت',
-                          _formatWithSign(_maxLimit))),
+                    child: SizedBox(
+                      height: 200,
+                      child: Card(
+                        elevation: 3,
+                        color: AppColorsDark.bgCardColor,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 20.0),
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Center(
+                                    child: Text('إجمالي المحفظة / البطاقة',
+                                        style: Theme.of(context).textTheme.titleLarge!.copyWith(
+                                            color: AppColorsDark.mainTextDark))),
+                                const SizedBox(height: 12),
+                                Expanded(
+                                    child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        crossAxisAlignment: CrossAxisAlignment.center,
+                                        children: [
+                                          Text("جنيه",
+                                              style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                                                  fontWeight: FontWeight.bold,
+                                                  color: AppColorsDark.mainTextDark)),
+                                          const SizedBox(width: 10),
+                                          Text(_formatWithSign(_salesWallet),
+                                              style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                                                  fontWeight: FontWeight.bold,
+                                                  color: AppColorsDark.mainTextDark)),
+                                        ])),
+                              ]),
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -1632,96 +1551,125 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     );
   }
 
-  Widget _smallInfoCard(String title, String value) {
-    return SizedBox(
-      height: 130,
-      child: Card(
-        color: AppColorsDark.bgCardColor,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 14.0, horizontal: 12.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
+  Widget _smallInfoCard(String title, String value,
+      {Color accent = Colors.greenAccent,
+        IconData icon = Icons.account_balance_wallet_rounded}) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [AppColorsDark.bgCardColor, AppColorsDark.bgCardColor.withOpacity(0.6)],
+          ),
+        ),
+        child: IntrinsicHeight(
+          child: Row(
             children: [
-              Text(
-                title,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: AppColorsDark.mainTextDark,
-                    ),
-                textAlign: TextAlign.end,
-              ),
-              const SizedBox(height: 8),
+              Container(width: 4, color: accent),
               Expanded(
-                  child: Center(
-                      child: Text(value,
-                          style: Theme.of(context)
-                              .textTheme
-                              .displaySmall
-                              ?.copyWith(
-                                  color: AppColorsDark.mainTextDark,
-                                  fontWeight: FontWeight.bold)))),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(icon, size: 16, color: accent),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(title,
+                                style: Theme.of(context).textTheme.titleSmall
+                                    ?.copyWith(color: AppColorsDark.mainTextDark),
+                                textAlign: TextAlign.center,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(value,
+                          style: TextStyle(color: accent, fontWeight: FontWeight.bold, fontSize: 26)),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         ),
       ),
     );
   }
-
   Widget _allShiftsTotalsCard() {
-    Widget amountLine(String label, double value) {
+    Widget amountLine(String label, double value, Color color, IconData icon) {
       return Expanded(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              label,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: AppColorsDark.mainTextLight,
-                    fontWeight: FontWeight.w700,
-                  ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              _formatWithSign(value),
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    color: AppColorsDark.mainTextDark,
-                    fontWeight: FontWeight.bold,
-                  ),
-              textAlign: TextAlign.center,
-            ),
-          ],
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 16, color: color),
+              const SizedBox(height: 6),
+              Text(label,
+                  style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 12, fontWeight: FontWeight.w600),
+                  textAlign: TextAlign.center),
+              const SizedBox(height: 6),
+              Text(_formatWithSign(value),
+                  style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18),
+                  textAlign: TextAlign.center),
+            ],
+          ),
         ),
       );
     }
 
-    return SizedBox(
-      height: 170,
-      child: Card(
-        color: AppColorsDark.bgCardColor,
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        height: 170,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [AppColorsDark.bgCardColor, AppColorsDark.bgCardColor.withOpacity(0.6)],
+          ),
+        ),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
           child: Column(
             children: [
-              Text(
-                'الاجمالي في الدرج لكل الشيفتات',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: AppColorsDark.mainTextDark,
-                      fontWeight: FontWeight.bold,
-                    ),
-                textAlign: TextAlign.center,
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.summarize_rounded, size: 18, color: AppColorsDark.mainColor),
+                  const SizedBox(width: 6),
+                  Text('الاجمالي في الدرج لكل الشيفتات',
+                      style: Theme.of(context).textTheme.titleMedium
+                          ?.copyWith(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.bold)),
+                ],
               ),
-              const SizedBox(height: 6),
-              amountLine('إجمالي المبيعات', _totalSalesAllShifts),
-              const Divider(height: 14),
-              amountLine('صافي بعد المصروفات (رصيد نهاية الشيفت)',
-                  _totalClosingBalanceAllShifts),
+              const SizedBox(height: 12),
+              Expanded(
+                child: Row(
+                  children: [
+                    amountLine('إجمالي المبيعات', _totalSalesAllShifts, Colors.blueAccent, Icons.point_of_sale_rounded),
+                    amountLine('صافي بعد المصروفات', _totalClosingBalanceAllShifts, Colors.greenAccent, Icons.account_balance_wallet_rounded),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
       ),
     );
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(

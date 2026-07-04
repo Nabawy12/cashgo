@@ -1,5 +1,6 @@
 // lib/screens/shared/login_screen.dart
 import 'dart:io'; // <- موجود لاستخدام Platform و Process و Directory
+import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -20,7 +21,8 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _LoginScreenState extends State<LoginScreen>
+    with SingleTickerProviderStateMixin {
   final usernameController = TextEditingController();
   final passwordController = TextEditingController();
 
@@ -40,15 +42,38 @@ class _LoginScreenState extends State<LoginScreen> {
   // لو دايالوغ الصيانة ظاهر
   bool _maintenanceDialogShown = false;
 
+  // --- عناصر جديدة لتحسين الـ UX/UI ---
+  late final AnimationController _entranceController;
+  late final Animation<double> _fadeAnimation;
+  late final Animation<Offset> _slideAnimation;
+
   @override
   void initState() {
     super.initState();
+
+    _entranceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 650),
+    );
+    _fadeAnimation = CurvedAnimation(
+      parent: _entranceController,
+      curve: Curves.easeOut,
+    );
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, 0.06),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _entranceController,
+      curve: Curves.easeOutCubic,
+    ));
+
     _printMachineIdentityOnStart();
   }
 
   @override
   void dispose() {
     _stopPolling();
+    _entranceController.dispose();
     usernameController.dispose();
     passwordController.dispose();
     usernameFocus.dispose();
@@ -85,6 +110,7 @@ class _LoginScreenState extends State<LoginScreen> {
       setState(() {
         _initialChecking = false;
       });
+      _entranceController.forward();
     } catch (e, st) {
       if (kDebugMode) print('Failed to get machine identity: $e\n$st');
       // لو فشلنا في الحصول على hostname سنبقي hostName 'unknown' ونفتح الشاشة (مانعش المستخدمين)
@@ -92,6 +118,7 @@ class _LoginScreenState extends State<LoginScreen> {
         hostName = 'unknown';
         _initialChecking = false;
       });
+      _entranceController.forward();
     }
   }
 
@@ -134,7 +161,7 @@ class _LoginScreenState extends State<LoginScreen> {
         if (macSet.isEmpty) {
           try {
             final r =
-                await Process.run('networksetup', ['-listallhardwareports']);
+            await Process.run('networksetup', ['-listallhardwareports']);
             final out = r.stdout.toString();
             final rx = RegExp(r'Ethernet Address:\s*([0-9a-fA-F:]{17})');
             for (final m in rx.allMatches(out)) {
@@ -197,9 +224,10 @@ class _LoginScreenState extends State<LoginScreen> {
     while (_pollingActive && mounted) {
       try {
         final enabled = await _fetchEnabledFromServer(hostName);
-        if (kDebugMode)
+        if (kDebugMode) {
           print(
               '[LoginScreen] poll result enabled=$enabled for host=$hostName');
+        }
 
         if (enabled == 1) {
           // عرض دايالوغ الصيانة إذا لم يكن ظاهرًا
@@ -225,8 +253,9 @@ class _LoginScreenState extends State<LoginScreen> {
           return;
         } else {
           // enabled == -1 => خطأ في الطلب. نواصل المحاولة ولكن لا نغلق الصفحة.
-          if (kDebugMode)
+          if (kDebugMode) {
             print('[LoginScreen] maintenance fetch error, will retry.');
+          }
         }
       } catch (e) {
         if (kDebugMode) print('[LoginScreen] polling error: $e');
@@ -249,21 +278,72 @@ class _LoginScreenState extends State<LoginScreen> {
       context: context,
       barrierDismissible: false,
       builder: (context) {
-        return WillPopScope(
-          onWillPop: () async => false,
-          child: SizedBox(
-            width: 300,
-            height: 200,
-            child: AlertDialog(
-              backgroundColor: AppColorsDark.bgCardColor,
-              title: Directionality(
+        return PopScope(
+          canPop: false,
+          child: Dialog(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            child: Container(
+              width: 320,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 24, vertical: 28),
+              decoration: BoxDecoration(
+                color: AppColorsDark.bgCardColor,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.35),
+                    blurRadius: 24,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
+              ),
+              child: Directionality(
                 textDirection: TextDirection.rtl,
-                child: Text(
-                  'التطبيق متوقف بسبب عدم الاشتراك او عدم التجديد',
-                  style: TextStyle(color: AppColorsDark.mainTextDark),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.build_rounded,
+                        color: Colors.orange,
+                        size: 32,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Text(
+                      'التطبيق متوقف مؤقتًا',
+                      style: TextStyle(
+                        color: AppColorsDark.mainTextDark,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'بسبب عدم الاشتراك أو عدم التجديد، برجاء التواصل مع الدعم الفني',
+                      style: TextStyle(
+                        color: AppColorsDark.mainTextDark.withOpacity(0.7),
+                        fontSize: 14,
+                        height: 1.5,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2.4),
+                    ),
+                  ],
                 ),
               ),
-              actions: const [],
             ),
           ),
         );
@@ -282,7 +362,7 @@ class _LoginScreenState extends State<LoginScreen> {
       // case A: raw has 'data' and it's a Map
       if (raw is Map && raw['data'] is Map) {
         final Map<String, dynamic> topData =
-            Map<String, dynamic>.from(raw['data']);
+        Map<String, dynamic>.from(raw['data']);
 
         // server sometimes returns { data: { data: { user... } } }
         if (topData['data'] is Map) {
@@ -336,7 +416,7 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       // Offline-only login against local SQLite.
       final raw =
-          await ApiService.login(usernameInput, password, allowOffline: true);
+      await ApiService.login(usernameInput, password, allowOffline: true);
 
       if (kDebugMode) {
         print('Login response (raw): $raw');
@@ -416,12 +496,26 @@ class _LoginScreenState extends State<LoginScreen> {
         if (!mounted) return;
 
         if (status == 'success_offline') {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: AppColorsDark.bgCardColor,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
             content: Directionality(
               textDirection: TextDirection.rtl,
-              child: Text('تم تسجيل الدخول'),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.check_circle, color: Colors.green),
+                  const SizedBox(width: 10),
+                  Text(
+                    'تم تسجيل الدخول',
+                    style: TextStyle(color: AppColorsDark.mainTextDark),
+                  ),
+                ],
+              ),
             ),
-            duration: Duration(seconds: 2),
+            duration: const Duration(seconds: 2),
           ));
         }
 
@@ -466,86 +560,283 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // غير ذلك نعرض شاشة تسجيل الدخول العادية
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       backgroundColor: AppColorsDark.bgColor,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0.0,
-        title: Text(
-          'تسجيل الدخول',
-          style: TextStyle(fontSize: 27, color: AppColorsDark.mainTextDark),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              AppColorsDark.mainColor.withOpacity(0.10),
+              AppColorsDark.bgColor,
+              AppColorsDark.bgColor,
+            ],
+            stops: const [0.0, 0.35, 1.0],
+          ),
         ),
-      ),
-      body: loading
-          ? LoginLoadingShimmer()
-          : LayoutBuilder(
-              builder: (context, constraints) {
-                final logoSize =
-                    (constraints.maxHeight * 0.42).clamp(180.0, 360.0);
-                return SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  keyboardDismissBehavior:
+        child: Stack(
+          children: [
+            // زخرفة خلفية دائرية خفيفة لإضافة عمق للتصميم
+            Positioned(
+              top: -80,
+              right: -60,
+              child: _decorativeCircle(220, AppColorsDark.mainColor
+                  .withOpacity(0.12)),
+            ),
+            Positioned(
+              bottom: -100,
+              left: -80,
+              child: _decorativeCircle(260, AppColorsDark.mainColor
+                  .withOpacity(0.08)),
+            ),
+
+            SafeArea(
+              child: _initialChecking
+                  ? const LoginLoadingShimmer()
+                  : LayoutBuilder(
+                builder: (context, constraints) {
+                  final isWide = constraints.maxWidth > 520;
+                  final logoSize =
+                  (constraints.maxHeight * 0.20).clamp(90.0, 150.0);
+
+                  return Center(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 32),
+                      keyboardDismissBehavior:
                       ScrollViewKeyboardDismissBehavior.onDrag,
-                  child: ConstrainedBox(
-                    constraints:
-                        BoxConstraints(minHeight: constraints.maxHeight - 40),
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const SizedBox(height: 4),
-                          Image.asset(
-                            "assets/images/logo.png",
-                            width: logoSize,
-                            height: logoSize,
-                            color:
-                                AppColorsDark.mainColor.withValues(alpha: 0.3),
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: isWide ? 420 : double.infinity,
+                        ),
+                        child: FadeTransition(
+                          opacity: _fadeAnimation,
+                          child: SlideTransition(
+                            position: _slideAnimation,
+                            child: Directionality(
+                              textDirection: TextDirection.rtl,
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  // --- الشعار ---
+                                  Container(
+                                    padding: const EdgeInsets.all(14),
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: AppColorsDark.bgCardColor,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: AppColorsDark.mainColor
+                                              .withOpacity(0.25),
+                                          blurRadius: 30,
+                                          spreadRadius: 2,
+                                        ),
+                                      ],
+                                    ),
+                                    child: ClipOval(
+                                      child: Image.asset(
+                                        "assets/images/logo.png",
+                                        width: logoSize,
+                                        height: logoSize,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 20),
+
+                                  // --- عنوان ترحيبي ---
+                                  Text(
+                                    'مرحبًا بعودتك',
+                                    style: TextStyle(
+                                      fontSize: 24,
+                                      fontWeight: FontWeight.bold,
+                                      color: AppColorsDark.mainTextDark,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    'سجّل دخولك للمتابعة إلى حسابك',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: AppColorsDark.mainTextDark
+                                          .withOpacity(0.6),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 28),
+
+                                  // --- بطاقة الفورم ---
+                                  Container(
+                                    padding: const EdgeInsets.all(20),
+                                    decoration: BoxDecoration(
+                                      color:
+                                      AppColorsDark.bgCardColor,
+                                      borderRadius:
+                                      BorderRadius.circular(20),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black
+                                              .withOpacity(0.18),
+                                          blurRadius: 20,
+                                          offset: const Offset(0, 10),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        CustomFormField(
+                                          controller:
+                                          usernameController,
+                                          focusNode: usernameFocus,
+                                          hint: "اسم المستخدم",
+                                          keyboardType:
+                                          TextInputType.name,
+                                          textInputAction:
+                                          TextInputAction.next,
+                                          onFieldSubmitted: (_) {
+                                            FocusScope.of(context)
+                                                .requestFocus(
+                                                passwordFocus);
+                                          },
+                                        ),
+                                        const SizedBox(height: 14),
+                                        CustomFormField(
+                                          controller:
+                                          passwordController,
+                                          focusNode: passwordFocus,
+                                          hint: "رمز الدخول",
+                                          isPassword: true,
+                                          textInputAction:
+                                          TextInputAction.done,
+                                          onFieldSubmitted: (_) =>
+                                              _login(),
+                                        ),
+
+                                        // --- رسالة الخطأ (متحركة) ---
+                                        AnimatedSize(
+                                          duration: const Duration(
+                                              milliseconds: 250),
+                                          curve: Curves.easeOut,
+                                          child: errorMessage.isEmpty
+                                              ? const SizedBox(
+                                              height: 0)
+                                              : Padding(
+                                            padding:
+                                            const EdgeInsets
+                                                .only(
+                                                top: 14),
+                                            child: Container(
+                                              width:
+                                              double.infinity,
+                                              padding:
+                                              const EdgeInsets
+                                                  .symmetric(
+                                                  horizontal:
+                                                  12,
+                                                  vertical:
+                                                  10),
+                                              decoration:
+                                              BoxDecoration(
+                                                color: Colors.red
+                                                    .withOpacity(
+                                                    0.10),
+                                                borderRadius:
+                                                BorderRadius
+                                                    .circular(
+                                                    12),
+                                                border: Border.all(
+                                                    color: Colors
+                                                        .red
+                                                        .withOpacity(
+                                                        0.35)),
+                                              ),
+                                              child: Row(
+                                                children: [
+                                                  const Icon(
+                                                    Icons
+                                                        .error_outline_rounded,
+                                                    color: Colors
+                                                        .redAccent,
+                                                    size: 20,
+                                                  ),
+                                                  const SizedBox(
+                                                      width: 8),
+                                                  Expanded(
+                                                    child: Text(
+                                                      errorMessage,
+                                                      style:
+                                                      const TextStyle(
+                                                        color: Colors
+                                                            .redAccent,
+                                                        fontSize:
+                                                        13.5,
+                                                        fontWeight:
+                                                        FontWeight
+                                                            .w500,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+
+                                        const SizedBox(height: 22),
+
+                                        SizedBox(
+                                          width: double.infinity,
+                                          child: CustomButton(
+                                            text: "تسجيل دخول",
+                                            onPressed: _login,
+                                            isLoading: loading,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+
+                                  const SizedBox(height: 24),
+
+                                  // --- تذييل بسيط لاسم الجهاز (اختياري، للدعم الفني) ---
+                                  if (hostName.isNotEmpty)
+                                    Text(
+                                      hostName,
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: AppColorsDark
+                                            .mainTextDark
+                                            .withOpacity(0.35),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
                           ),
-                          const SizedBox(height: 18),
-                          CustomFormField(
-                            controller: usernameController,
-                            focusNode: usernameFocus,
-                            hint: "اسم المستخدم",
-                            keyboardType: TextInputType.name,
-                            textInputAction: TextInputAction.next,
-                            onFieldSubmitted: (_) {
-                              FocusScope.of(context)
-                                  .requestFocus(passwordFocus);
-                            },
-                          ),
-                          const SizedBox(height: 12),
-                          CustomFormField(
-                            controller: passwordController,
-                            focusNode: passwordFocus,
-                            hint: "رمز الدخول",
-                            isPassword: true,
-                            textInputAction: TextInputAction.done,
-                            onFieldSubmitted: (_) => _login(),
-                          ),
-                          const SizedBox(height: 10),
-                          if (errorMessage.isNotEmpty)
-                            Text(
-                              errorMessage,
-                              style: const TextStyle(
-                                  color: Colors.red, fontSize: 23),
-                            )
-                          else
-                            const SizedBox(height: 18),
-                          const SizedBox(height: 8),
-                          CustomButton(
-                            text: "تسجيل دخول",
-                            onPressed: _login,
-                            isLoading: loading,
-                          ),
-                          const SizedBox(height: 8),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _decorativeCircle(double size, Color color) {
+    return ClipOval(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 1, sigmaY: 1),
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+        ),
+      ),
     );
   }
 }

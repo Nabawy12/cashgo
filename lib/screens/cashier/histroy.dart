@@ -22,6 +22,10 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
   bool loading = true;
   List<Map<String, dynamic>> sales = [];
   Map<int, List<Map<String, dynamic>>> saleItems = {};
+  // NEW: كل صفوف sale_return_items الخاصة بكل فاتورة (مرتجع + بدائل)
+  Map<int, List<Map<String, dynamic>>> saleReturnItems = {};
+  // NEW: حالة محسوبة لكل فاتورة: isFullyReturned / isPartiallyReturned / hasExchange
+  Map<int, Map<String, bool>> saleReturnStatus = {};
   Map<String, List<Map<String, dynamic>>> groupedSales = {};
   DateTime selectedDate = DateTime.now();
 
@@ -45,18 +49,29 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
     try {
       final all = await DBHelper.instance.getAllSales();
       saleItems.clear();
+      saleReturnItems.clear();
+      saleReturnStatus.clear();
       final filtered = <Map<String, dynamic>>[];
       for (final raw in all) {
         final saleId = (raw['id'] as num).toInt();
         final items = await DBHelper.instance.getSaleItemsBySaleId(saleId);
         saleItems[saleId] = items
             .map((it) => {
-                  ...it,
-                  'qty': it['quantity'],
-                  'product_name': it['product_name'] ?? it['name'] ?? '',
-                  'barcode': it['product_barcode'] ?? '',
-                })
+          ...it,
+          'qty': it['quantity'],
+          'product_name': it['product_name'] ?? it['name'] ?? '',
+          'barcode': it['product_barcode'] ?? '',
+        })
             .toList();
+
+        // NEW: نجيب سجل المرتجع/الاستبدال لهذه الفاتورة ونحسب حالتها
+        final returnItems =
+        await DBHelper.instance.getSaleReturnItemsForSale(saleId);
+        saleReturnItems[saleId] = returnItems;
+        saleReturnStatus[saleId] =
+            _computeReturnStatus(saleItems[saleId]!, returnItems);
+
+        final status = saleReturnStatus[saleId]!;
         final sale = {
           'id': saleId,
           'invoice_id': saleId.toString(),
@@ -71,9 +86,14 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
           'updated_at': raw['date'] ?? '',
           'is_canceled': 0,
           'status': '',
-          'type': raw['is_return'] == 1 && raw['return_of_sale_id'] != null
+          // NEW: النوع بقى محسوب من حالة الأصناف الفعلية مش من is_return القديم
+          'type': status['hasExchange'] == true
+              ? 'exchange'
+              : (status['isFullyReturned'] == true
               ? 'return'
-              : 'sale',
+              : (status['isPartiallyReturned'] == true
+              ? 'partial_return'
+              : 'sale')),
           'parent_invoice_id': raw['return_of_sale_id'],
           'meta': {},
         };
@@ -86,10 +106,10 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
       final Map<String, List<Map<String, dynamic>>> map = {};
       for (final s in filtered) {
         final cashierName = (s['cashier_username'] ??
-                s['username'] ??
-                s['cashier'] ??
-                s['user'] ??
-                'Unknown')
+            s['username'] ??
+            s['cashier'] ??
+            s['user'] ??
+            'Unknown')
             .toString();
         map.putIfAbsent(cashierName, () => []);
         map[cashierName]!.add(s);
@@ -120,6 +140,48 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
     }
   }
 
+  // NEW: يحسب حالة الفاتورة من الأصناف الفعلية (بدون أي عمود جديد في الداتابيز)
+  Map<String, bool> _computeReturnStatus(
+      List<Map<String, dynamic>> items,
+      List<Map<String, dynamic>> returnItems,
+      ) {
+    if (items.isEmpty) {
+      return {
+        'isFullyReturned': false,
+        'isPartiallyReturned': false,
+        'hasExchange': false,
+      };
+    }
+    bool allFullyReturned = true;
+    bool anyReturned = false;
+    for (final it in items) {
+      final qty = (it['quantity'] as num?)?.toInt() ??
+          (it['qty'] as num?)?.toInt() ??
+          0;
+      final returnedQty = (it['returned_quantity'] as num?)?.toInt() ?? 0;
+      if (returnedQty > 0) anyReturned = true;
+      if (returnedQty < qty) allFullyReturned = false;
+    }
+    final hasExchange = returnItems
+        .any((r) => ((r['is_replacement'] as num?)?.toInt() ?? 0) == 1);
+    return {
+      'isFullyReturned': allFullyReturned && anyReturned,
+      'isPartiallyReturned': anyReturned && !allFullyReturned,
+      'hasExchange': hasExchange,
+    };
+  }
+
+  // NEW: يجمع صفوف sale_return_items حسب return_id عشان نعرض كل عملية استرجاع/استبدال لوحدها
+  Map<int, List<Map<String, dynamic>>> _groupByReturnId(
+      List<Map<String, dynamic>> rows) {
+    final map = <int, List<Map<String, dynamic>>>{};
+    for (final r in rows) {
+      final rid = (r['return_id'] as num?)?.toInt() ?? 0;
+      map.putIfAbsent(rid, () => []).add(r);
+    }
+    return map;
+  }
+
   bool _matchesDate(dynamic rawDate, DateTime date) {
     if (rawDate == null) return false;
     final s = rawDate.toString();
@@ -135,7 +197,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
         dt = DateTime(y, mo, d);
       } else {
         final parts =
-            s.split(RegExp(r'[\s/\\\-]')).where((p) => p.isNotEmpty).toList();
+        s.split(RegExp(r'[\s/\\\-]')).where((p) => p.isNotEmpty).toList();
         if (parts.length >= 3) {
           if (parts[0].length == 4) {
             final y = int.tryParse(parts[0]) ?? 0;
@@ -174,15 +236,118 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
     }
   }
 
+  // NEW: يتأكد إن سجل المرتجع/الاستبدال والحالة محسوبين لهذه الفاتورة
+  Future<void> _ensureReturnData(int saleId) async {
+    if (saleReturnItems.containsKey(saleId) &&
+        saleReturnStatus.containsKey(saleId)) return;
+    try {
+      final rows = await DBHelper.instance.getSaleReturnItemsForSale(saleId);
+      saleReturnItems[saleId] = rows;
+      saleReturnStatus[saleId] =
+          _computeReturnStatus(saleItems[saleId] ?? [], rows);
+    } catch (e) {
+      debugPrint('Error loading return items for $saleId: $e');
+      saleReturnItems[saleId] = [];
+      saleReturnStatus[saleId] = {
+        'isFullyReturned': false,
+        'isPartiallyReturned': false,
+        'hasExchange': false,
+      };
+    }
+  }
+
+  // NEW: شارة صغيرة توضح حالة الفاتورة
+  Widget _statusBadge(Map<String, bool> status) {
+    // NEW: الاسترجاع الكامل بقى له الأولوية حتى لو فيه تاريخ استبدال قبل كده
+    if (status['isFullyReturned'] == true) {
+      return _buildBadge('تم الاسترجاع بالكامل', Colors.redAccent, Icons.cancel);
+    }
+    if (status['hasExchange'] == true) {
+      return _buildBadge('تم الاستبدال', Colors.blueAccent, Icons.swap_horiz);
+    }
+    if (status['isPartiallyReturned'] == true) {
+      return _buildBadge('مرتجع جزئي', Colors.orangeAccent, Icons.undo);
+    }
+    return const SizedBox.shrink();
+  }
+
+  Widget _buildBadge(String label, Color color, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.5)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(label,
+              style: TextStyle(
+                  color: color, fontSize: 11, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+
+  // NEW: بلوك منفصل لكل صنف في سجل المرتجع/الاستبدال — كل معلومة في سطرها
+  Widget _returnItemBlock(Map<String, dynamic> row) {
+    final isReplacement =
+        ((row['is_replacement'] as num?)?.toInt() ?? 0) == 1;
+    final name = (row['product_name'] ?? '').toString();
+    final qty = (row['qty'] as num?)?.toInt() ?? 0;
+    final color = isReplacement ? Colors.greenAccent : Colors.redAccent;
+    final label = isReplacement ? 'بديل' : 'مرتجع';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(
+              isReplacement ? Icons.add_circle_outline : Icons.remove_circle_outline,
+              size: 14,
+              color: color,
+            ),
+            const SizedBox(width: 4),
+            Text(label,
+                style: TextStyle(
+                    color: color, fontSize: 12, fontWeight: FontWeight.w700)),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(name,
+            style: TextStyle(
+                color: _cardTextColor,
+                fontSize: 14,
+                fontWeight: FontWeight.w600)),
+        const SizedBox(height: 2),
+        Text('الكمية: $qty',
+            style: TextStyle(color: _cardLabelColor, fontSize: 12)),
+      ],
+    );
+  }
+
   void _openSaleDetails(Map<String, dynamic> sale) async {
     final saleId = (sale['id'] as num).toInt();
     await _ensureItems(saleId);
+    await _ensureReturnData(saleId); // NEW
 
-    // الجديد: استخدم دائماً اسم الكاشير الحالي (actor) من الـ widget
     final actorCashier = widget.cashierUsername.toString();
-
-    // إذا رغبت تعرض صاحب الفاتورة في العنوان يمكنك حفظه أيضاً:
     final originalCashier = (sale['cashier_username'] ?? '').toString();
+
+    final status = saleReturnStatus[saleId] ??
+        {
+          'isFullyReturned': false,
+          'isPartiallyReturned': false,
+          'hasExchange': false,
+        };
+    final isFullyReturned = status['isFullyReturned'] == true;
+    final returnRows = saleReturnItems[saleId] ?? [];
+    final groupedReturns = _groupByReturnId(returnRows);
 
     await showDialog(
       context: context,
@@ -199,57 +364,136 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
         ),
         content: SizedBox(
           width: double.maxFinite,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('الإجمالي: ${(sale['total'] as num?)?.toDouble() ?? 0.0}',
-                  style: TextStyle(color: _cardTextColor)),
-              const SizedBox(height: 8),
-              Text(
-                  'المدفوع: ${(sale['paid_amount'] as num?)?.toDouble() ?? 0.0}',
-                  style: TextStyle(color: _cardLabelColor)),
-              const SizedBox(height: 12),
-              Text(':العناصر', style: TextStyle(color: _cardTextColor)),
-              const SizedBox(height: 8),
-              Builder(builder: (_) {
-                final items = saleItems[saleId] ?? [];
-                if (items.isEmpty)
-                  return const EmptyStateCard(
-                    icon: Icons.inventory_2_outlined,
-                    title: 'لا توجد عناصر',
-                    message: 'لا توجد عناصر معروضة لهذه الفاتورة.',
-                    margin: EdgeInsets.zero,
-                  );
-                return SizedBox(
-                  height: 260,
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    physics: const ClampingScrollPhysics(),
-                    itemCount: items.length,
-                    itemBuilder: (_, i) {
-                      final it = items[i];
-                      final name = (it['product_name'] ??
-                              it['name'] ??
-                              it['product'] ??
-                              'Product')
-                          .toString();
-                      final qty = (it['qty'] as num?)?.toInt() ??
-                          (it['quantity'] as num?)?.toInt() ??
-                          (it['count'] as num?)?.toInt() ??
-                          0;
-                      final price = (it['price'] as num?)?.toDouble() ?? 0.0;
-                      return ListTile(
-                        title:
-                            Text(name, style: TextStyle(color: _cardTextColor)),
-                        subtitle: Text(
-                            'الكمية: $qty × ${price.toStringAsFixed(2)}',
-                            style: TextStyle(color: _cardLabelColor)),
-                      );
-                    },
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // NEW: شارة حالة الفاتورة أعلى التفاصيل
+                if (status['isFullyReturned'] == true ||
+                    status['isPartiallyReturned'] == true ||
+                    status['hasExchange'] == true) ...[
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: _statusBadge(status),
                   ),
-                );
-              }),
-            ],
+                  const SizedBox(height: 10),
+                ],
+                Text('الإجمالي: ${(sale['total'] as num?)?.toDouble() ?? 0.0}',
+                    style: TextStyle(color: _cardTextColor)),
+                const SizedBox(height: 8),
+                Text(
+                    'المدفوع: ${(sale['paid_amount'] as num?)?.toDouble() ?? 0.0}',
+                    style: TextStyle(color: _cardLabelColor)),
+                const SizedBox(height: 12),
+                Text(':العناصر', style: TextStyle(color: _cardTextColor)),
+                const SizedBox(height: 8),
+                Builder(builder: (_) {
+                  final items = saleItems[saleId] ?? [];
+                  if (items.isEmpty)
+                    return const EmptyStateCard(
+                      icon: Icons.inventory_2_outlined,
+                      title: 'لا توجد عناصر',
+                      message: 'لا توجد عناصر معروضة لهذه الفاتورة.',
+                      margin: EdgeInsets.zero,
+                    );
+                  return SizedBox(
+                    height: 220,
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      physics: const ClampingScrollPhysics(),
+                      itemCount: items.length,
+                      itemBuilder: (_, i) {
+                        final it = items[i];
+                        final name = (it['product_name'] ??
+                            it['name'] ??
+                            it['product'] ??
+                            'Product')
+                            .toString();
+                        final qty = (it['qty'] as num?)?.toInt() ??
+                            (it['quantity'] as num?)?.toInt() ??
+                            (it['count'] as num?)?.toInt() ??
+                            0;
+                        final returnedQty =
+                            (it['returned_quantity'] as num?)?.toInt() ?? 0;
+                        final price = (it['price'] as num?)?.toDouble() ?? 0.0;
+                        final itemFullyReturned =
+                            qty > 0 && returnedQty >= qty;
+                        final itemPartiallyReturned =
+                            returnedQty > 0 && returnedQty < qty;
+
+                        return ListTile(
+                          title: Text(
+                            name,
+                            style: TextStyle(
+                              color: itemFullyReturned
+                                  ? _cardLabelColor
+                                  : _cardTextColor,
+                              decoration: itemFullyReturned
+                                  ? TextDecoration.lineThrough
+                                  : null,
+                            ),
+                          ),
+                          subtitle: Text(
+                            itemPartiallyReturned
+                                ? 'الكمية: $qty × ${price.toStringAsFixed(2)} — متبقي بعد المرتجع: ${qty - returnedQty}'
+                                : 'الكمية: $qty × ${price.toStringAsFixed(2)}',
+                            style: TextStyle(color: _cardLabelColor),
+                          ),
+                          trailing: itemFullyReturned
+                              ? const Icon(Icons.cancel,
+                              color: Colors.redAccent, size: 18)
+                              : (itemPartiallyReturned
+                              ? const Icon(Icons.undo,
+                              color: Colors.orangeAccent, size: 18)
+                              : null),
+                        );
+                      },
+                    ),
+                  );
+                }),
+                // NEW: سجل المرتجع/الاستبدال — كل عملية على حدة
+// NEW: سجل المرتجع/الاستبدال — كل عملية على حدة
+                if (groupedReturns.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(':سجل المرتجع / الاستبدال',
+                      style: TextStyle(color: _cardTextColor)),
+                  const SizedBox(height: 8),
+                  ...groupedReturns.entries.map((entry) {
+                    final rows = entry.value;
+                    final date = (rows.first['return_date'] ?? '').toString();
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.03),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (date.isNotEmpty) ...[
+                            Text(_formatDayMonth(date),
+                                style: TextStyle(fontSize: 11, color: _cardLabelColor)),
+                            const SizedBox(height: 6),
+                          ],
+                          for (int i = 0; i < rows.length; i++) ...[
+                            _returnItemBlock(rows[i]),
+                            if (i != rows.length - 1) ...[
+                              const SizedBox(height: 8),
+                              Divider(color: Colors.white12, height: 1),
+                              const SizedBox(height: 8),
+                            ],
+                          ],
+                        ],
+                      ),
+                    );
+                  }),
+                ],              ],
+
+            ),
           ),
         ),
         actions: [
@@ -260,18 +504,19 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
                       color: Theme.of(context).brightness == Brightness.light
                           ? Colors.black
                           : Colors.white))),
-          TextButton(
-            onPressed: () async {
-              if (Navigator.canPop(context)) Navigator.pop(context);
-              // open return dialog as full-screen ProcessReturnDialog (uses ProductApi inside dialog)
-              await _showProcessReturnDialog(saleId, actorCashier);
-            },
-            child: Text('معالجة مرتجع / بدل',
-                style: TextStyle(
-                    color: Theme.of(context).brightness == Brightness.light
-                        ? Colors.black
-                        : Colors.white)),
-          ),
+          // NEW: لو الفاتورة اتسترجعت بالكامل، ما نعرضش زرار المعالجة خالص
+          if (!isFullyReturned)
+            TextButton(
+              onPressed: () async {
+                if (Navigator.canPop(context)) Navigator.pop(context);
+                await _showProcessReturnDialog(saleId, actorCashier);
+              },
+              child: Text('معالجة مرتجع / بدل',
+                  style: TextStyle(
+                      color: Theme.of(context).brightness == Brightness.light
+                          ? Colors.black
+                          : Colors.white)),
+            ),
         ],
       ),
     );
@@ -279,7 +524,6 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
 
   Future<void> _showProcessReturnDialog(
       int originalSaleId, String cashierName) async {
-    // ensure items loaded
     await _ensureItems(originalSaleId);
     final items = (saleItems[originalSaleId] ?? []).where((item) {
       final qty = (item['quantity'] as num?)?.toInt() ??
@@ -313,7 +557,6 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
       return;
     }
 
-    // open full-screen dialog/screen using ProcessReturnDialog (which now uses ProductApi and API calls)
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => Scaffold(
@@ -331,9 +574,9 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
               items: items,
               cashierUsername: cashierName,
               onDone: () async {
-                // simply refresh local sales/items when dialog signals done
                 await _loadSales(date: selectedDate);
                 await _ensureItems(originalSaleId);
+                await _ensureReturnData(originalSaleId); // NEW
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -420,7 +663,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
           textDirection: TextDirection.rtl,
           child: Padding(
             padding:
-                const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+            const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
             child: Card(
               color: AppColorsDark.bgCardColor,
               child: Padding(
@@ -441,20 +684,26 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
                       final total = (s['total'] as num?)?.toDouble() ?? 0.0;
                       final paid =
                           (s['paid_amount'] as num?)?.toDouble() ?? 0.0;
-                      final type = (s['type'] ?? 'sale').toString();
                       final dayMonth = _formatDayMonth(s['date']);
+                      // NEW: حالة الفاتورة المحسوبة فعليًا من الأصناف
+                      final status = saleReturnStatus[saleId] ??
+                          {
+                            'isFullyReturned': false,
+                            'isPartiallyReturned': false,
+                            'hasExchange': false,
+                          };
 
                       return Padding(
                         padding: const EdgeInsets.all(8.0),
                         child: Theme(
                           data: Theme.of(context).copyWith(
                               hoverColor:
-                                  AppColorsDark.mainColor.withOpacity(0.1)),
+                              AppColorsDark.mainColor.withOpacity(0.1)),
                           child: ListTile(
                             selectedColor:
-                                AppColorsDark.mainColor.withOpacity(0.1),
+                            AppColorsDark.mainColor.withOpacity(0.1),
                             splashColor:
-                                AppColorsDark.mainColor.withOpacity(0.1),
+                            AppColorsDark.mainColor.withOpacity(0.1),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
@@ -467,13 +716,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
                                     style: TextStyle(color: _cardTextColor),
                                   ),
                                 ),
-                                if (type == 'return')
-                                  const Icon(Icons.cancel, color: Colors.red),
-                                if (type == 'exchange')
-                                  const Icon(Icons.swap_horiz,
-                                      color: Colors.green),
-                                if (type == 'both')
-                                  const Icon(Icons.sync, color: Colors.orange),
+                                _statusBadge(status), // NEW
                               ],
                             ),
                             subtitle: Text(
@@ -491,7 +734,7 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
                     }).toList(),
                   ),
                   padding:
-                      const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                  const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
                 ),
               ),
             ),
@@ -520,36 +763,36 @@ class _PreviousSalesScreenState extends State<PreviousSalesScreen> {
       body: loading
           ? _buildLoadingState()
           : Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12.0),
-                  child: GestureDetector(
-                    onTap: _pickDate,
-                    child: Column(
-                      children: [
-                        Text('التاريخ',
-                            style:
-                                TextStyle(color: AppColorsDark.mainTextLight)),
-                        const SizedBox(height: 4),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(_formatSelectedDate(selectedDate),
-                                style: TextStyle(
-                                    color: AppColorsDark.mainTextDark)),
-                            const SizedBox(width: 8),
-                            Icon(Icons.calendar_today,
-                                size: 18,
-                                color: Theme.of(context).iconTheme.color),
-                          ],
-                        ),
-                      ],
-                    ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12.0),
+            child: GestureDetector(
+              onTap: _pickDate,
+              child: Column(
+                children: [
+                  Text('التاريخ',
+                      style:
+                      TextStyle(color: AppColorsDark.mainTextLight)),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(_formatSelectedDate(selectedDate),
+                          style: TextStyle(
+                              color: AppColorsDark.mainTextDark)),
+                      const SizedBox(width: 8),
+                      Icon(Icons.calendar_today,
+                          size: 18,
+                          color: Theme.of(context).iconTheme.color),
+                    ],
                   ),
-                ),
-                Expanded(child: _buildSalesList()),
-              ],
+                ],
+              ),
             ),
+          ),
+          Expanded(child: _buildSalesList()),
+        ],
+      ),
     );
   }
 }

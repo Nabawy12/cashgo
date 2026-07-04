@@ -223,33 +223,150 @@ class _ShopProfitScreenState extends State<ShopProfitScreen> {
     await _load();
   }
 
-  Widget _summaryCard(String title, double value, Color color) {
+  Widget _summaryCard(String title, double value, Color color, IconData icon) {
     return Expanded(
-      child: Card(
-        color: AppColorsDark.bgCardColor,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              Text(title,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: AppColorsDark.mainTextLight)),
-              const SizedBox(height: 8),
-              Text(
-                _money.format(value),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              AppColorsDark.bgCardColor,
+              AppColorsDark.bgCardColor.withOpacity(0.6),
             ],
           ),
+          border: Border(right: BorderSide(color: color, width: 3)),
+          boxShadow: [
+            BoxShadow(color: color.withOpacity(0.15), blurRadius: 10, offset: const Offset(0, 4)),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: color, size: 18),
+                const SizedBox(width: 6),
+                Text(title, style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 13)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _money.format(value),
+              style: TextStyle(color: color, fontSize: 21, fontWeight: FontWeight.bold),
+            ),
+          ],
         ),
       ),
     );
   }
+
+
+
+  Widget _trendChart() {
+    if (_dailyRows.isEmpty) return const SizedBox.shrink();
+    final maxVal = _dailyRows
+        .map((r) => ((r['net_profit'] as num?)?.toDouble() ?? 0).abs())
+        .fold<double>(1, (a, b) => b > a ? b : a);
+
+    return Container(
+      height: 90,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: AppColorsDark.bgCardColor,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: _dailyRows.map((row) {
+          final net = (row['net_profit'] as num?)?.toDouble() ?? 0.0;
+          final heightFactor = (net.abs() / maxVal).clamp(0.05, 1.0);
+          return Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 1.5, vertical: 8),
+              child: FractionallySizedBox(
+                heightFactor: heightFactor,
+                alignment: Alignment.bottomCenter,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: (net >= 0 ? Colors.greenAccent : Colors.redAccent).withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+
+
+  Widget _dayTile(Map<String, dynamic> row) {
+    final date = (row['date'] ?? '').toString();
+    final profit = (row['profit'] as num?)?.toDouble() ?? 0.0;
+    final expenses = (row['external_expenses'] as num?)?.toDouble() ?? 0.0;
+    final paidPurchases = (row['paid_purchases'] as num?)?.toDouble() ?? 0.0;
+    final net = (row['net_profit'] as num?)?.toDouble() ?? 0.0;
+    final netColor = net >= 0 ? Colors.greenAccent : Colors.redAccent;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColorsDark.bgCardColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: netColor.withOpacity(0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(date, style: TextStyle(color: AppColorsDark.mainTextDark, fontWeight: FontWeight.w600)),
+              Text(_money.format(net),
+                  style: TextStyle(color: netColor, fontWeight: FontWeight.bold, fontSize: 16)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              _chip('ربح', profit, Colors.greenAccent),
+              const SizedBox(width: 8),
+              _chip('مصروفات', expenses, Colors.redAccent),
+              const SizedBox(width: 8),
+              _chip('مشتريات', paidPurchases, Colors.orangeAccent),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chip(String label, double value, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          children: [
+            Text(label, style: TextStyle(color: color, fontSize: 11)),
+            Text(_money.format(value),
+                style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 12, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+
 
   Widget _dailyProfitList() {
     final activeRows = _dailyRows.where((row) {
@@ -270,42 +387,16 @@ class _ShopProfitScreenState extends State<ShopProfitScreen> {
     return ListView.separated(
       itemCount: activeRows.length,
       separatorBuilder: (_, __) => const SizedBox(height: 8),
-      itemBuilder: (_, index) {
-        final row = activeRows[index];
-        final date = (row['date'] ?? '').toString();
-        final profit = (row['profit'] as num?)?.toDouble() ?? 0.0;
-        final expenses = (row['external_expenses'] as num?)?.toDouble() ?? 0.0;
-        final paidPurchases =
-            (row['paid_purchases'] as num?)?.toDouble() ?? 0.0;
-        final net = (row['net_profit'] as num?)?.toDouble() ?? 0.0;
-        return Card(
-          color: AppColorsDark.bgCardColor,
-          child: ListTile(
-            title:
-                Text(date, style: TextStyle(color: AppColorsDark.mainTextDark)),
-            subtitle: Text(
-              'ربح اليوم: ${_money.format(profit)} | مصروفات خارجية: ${_money.format(expenses)} | مشتريات مدفوعة: ${_money.format(paidPurchases)}',
-              style: TextStyle(color: AppColorsDark.mainTextLight),
-            ),
-            trailing: Text(
-              _money.format(net),
-              style: TextStyle(
-                color: net >= 0 ? Colors.greenAccent : Colors.redAccent,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        );
-      },
+        itemBuilder: (_, index) => _dayTile(activeRows[index])
     );
   }
 
   Widget _expensesList() {
     if (_expenses.isEmpty) {
-      return Text(
-        'لا توجد مصروفات خارجية لهذا الشهر',
-        textAlign: TextAlign.center,
-        style: TextStyle(color: AppColorsDark.mainTextLight),
+      return const EmptyStateCard(
+        icon: Icons.receipt_long_outlined,
+        title: 'لا توجد مصروفات خارجية',
+        message: 'هذا الشهر لسه من غير مصروفات إضافية.',
       );
     }
 
@@ -452,62 +543,63 @@ class _ShopProfitScreenState extends State<ShopProfitScreen> {
               const SizedBox(height: 12),
               Row(
                 children: [
-                  _summaryCard(
-                      'مجمل الأرباح', _totalProfit, Colors.greenAccent),
-                  const SizedBox(width: 8),
-                  _summaryCard(
-                      'مجمل المصاريف', _totalExpenses, Colors.redAccent),
-                  const SizedBox(width: 8),
+                  _summaryCard('مجمل الأرباح', _totalProfit, Colors.greenAccent,
+                      Icons.trending_up_rounded),
+                  const SizedBox(width: 10),
+                  _summaryCard('مجمل المصاريف', _totalExpenses, Colors.redAccent,
+                      Icons.trending_down_rounded),
+                  const SizedBox(width: 10),
                   _summaryCard(
                     'الصافي',
                     _netProfit,
                     _netProfit >= 0 ? Colors.greenAccent : Colors.redAccent,
+                    Icons.account_balance_wallet_rounded,
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 50),
               Expanded(
                 child: _loading
                     ? const Center(child: CircularProgressIndicator())
                     : Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(flex: 3, child: _dailyProfitList()),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            flex: 2,
-                            child: SingleChildScrollView(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Text(
-                                    'المصروفات الخارجية',
-                                    style: TextStyle(
-                                      color: AppColorsDark.mainTextDark,
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  _expensesList(),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    'المشتريات المدفوعة',
-                                    style: TextStyle(
-                                      color: AppColorsDark.mainTextDark,
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  _paidPurchasesList(),
-                                  const SizedBox(height: 80),
-                                ],
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 3, child: _dailyProfitList()),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: SingleChildScrollView(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              'المصروفات الخارجية',
+                              style: TextStyle(
+                                color: AppColorsDark.mainTextDark,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
-                          ),
-                        ],
+                            const SizedBox(height: 8),
+                            _expensesList(),
+                            const SizedBox(height: 16),
+                            Text(
+                              'المشتريات المدفوعة',
+                              style: TextStyle(
+                                color: AppColorsDark.mainTextDark,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            _paidPurchasesList(),
+                            const SizedBox(height: 80),
+                          ],
+                        ),
                       ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),

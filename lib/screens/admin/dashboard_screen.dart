@@ -59,7 +59,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         elevation: 0.0,
         title: Text(
           'اداره التطبيق',
-          style: TextStyle(color: AppColorsDark.mainTextDark),
+          style: TextStyle(color: AppColorsDark.mainTextDark,fontSize: 25),
         ),
         centerTitle: true,
         actions: [
@@ -114,137 +114,74 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
-          child: Column(
+          child: GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 25,
+            crossAxisSpacing: 25,
+            childAspectRatio: 2.5,
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: DashboardWidget(
-                      title: 'اداره المنتجات',
-                      image: 'assets/icons/products.svg',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const ProductManagementScreen()),
-                      ),
-                    ),
-                  ),
-                ],
+              DashboardWidget(
+                title: 'اداره المنتجات',
+                image: 'assets/icons/products.svg',
+                color: Colors.blueAccent,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const ProductManagementScreen())),
               ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: DashboardWidget(
-                      title: 'الفواتير المدفوعه',
-                      image: 'assets/icons/paid_receipt.svg',
-                      onTap: () => Navigator.pushNamed(
-                        context,
-                        receiptsScreen.routeName,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: DashboardWidget(
-                      title: 'الفواتير الآجله',
-                      image: 'assets/icons/rejected_receipt.svg',
-                      onTap: () => Navigator.pushNamed(
-                        context,
-                        CreditsScreen.routeName,
-                      ),
-                    ),
-                  ),
-                ],
+              DashboardWidget(
+                title: 'الفواتير المدفوعه',
+                image: 'assets/icons/paid_receipt.svg',
+                color: Colors.greenAccent,
+                onTap: () => Navigator.pushNamed(context, receiptsScreen.routeName),
               ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: DashboardWidget(
-                      title: 'المشتريات المدفوعه',
-                      image: 'assets/icons/paid_purchases.svg',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const AdminPaidPurchasesScreen()),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: DashboardWidget(
-                      title: 'المشتريات الاجله',
-                      image: 'assets/icons/rejected_purchases.svg',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const AdminLaterPurchasesScreen()),
-                      ),
-                    ),
-                  ),
-                ],
+              DashboardWidget(
+                title: 'الفواتير الآجله',
+                image: 'assets/icons/rejected_receipt.svg',
+                color: Colors.orangeAccent,
+                onTap: () => Navigator.pushNamed(context, CreditsScreen.routeName),
               ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: DashboardWidget(
-                      title: 'الحسبات الماليه',
-                      image: 'assets/icons/financial.svg',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => AdminCashDrawerPage()),
-                      ),
-                    ),
-                  ),
-                ],
+              DashboardWidget(
+                title: 'المشتريات المدفوعه',
+                image: 'assets/icons/paid_purchases.svg',
+                color: Colors.purpleAccent,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const AdminPaidPurchasesScreen())),
               ),
-
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: DashboardWidget(
-                      title: 'تقرير الأرباح',
-                      image: 'assets/icons/financial.svg',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const ProfitReportScreen()),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: DashboardWidget(
-                      title: 'تقرير المخزون',
-                      image: 'assets/icons/products.svg',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const StockReportScreen()),
-                      ),
-                    ),
-                  ),
-                ],
+              DashboardWidget(
+                title: 'المشتريات الاجله',
+                image: 'assets/icons/rejected_purchases.svg',
+                color: Colors.amberAccent,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const AdminLaterPurchasesScreen())),
               ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: DashboardWidget(
-                      title: 'أرباح المحل',
-                      image: 'assets/icons/financial.svg',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const ShopProfitScreen()),
-                      ),
-                    ),
-                  ),
-                ],
+              DashboardWidget(
+                title: 'الحسبات الماليه',
+                image: 'assets/icons/financial.svg',
+                color: Colors.tealAccent,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => AdminCashDrawerPage())),
+              ),
+              DashboardWidget(
+                title: 'تقرير الأرباح',
+                image: 'assets/icons/financial.svg',
+                color: Colors.cyanAccent,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const ProfitReportScreen())),
+              ),
+              DashboardWidget(
+                title: 'تقرير المخزون',
+                image: 'assets/icons/products.svg',
+                color: Colors.indigoAccent,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const CreditsScreen())),
+              ),
+              DashboardWidget(
+                title: 'أرباح المحل',
+                image: 'assets/icons/financial.svg',
+                color: Colors.pinkAccent,
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const ShopProfitScreen())),
               ),
             ],
           ),

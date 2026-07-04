@@ -737,6 +737,28 @@ class DBHelper {
     });
   }
 
+
+  Future<Map<String, dynamic>?> getUserByUsername(String username) async {
+
+    final db = await database;
+
+    final result = await db.query(
+
+      'users', // <- غيّر ده لو اسم الجدول مختلف عندك
+
+      where: 'username = ?',
+
+      whereArgs: [username.trim()],
+
+      limit: 1,
+
+    );
+
+    if (result.isEmpty) return null;
+
+    return result.first;
+
+  }
   // ----------------- auth / CRUD / helpers (mostly same as previous) -----------------
   Future<Map<String, dynamic>?> login(String username, String password) async {
     final db = await instance.database;
@@ -1494,7 +1516,7 @@ class DBHelper {
         final itemRows = await txn.query(
           'sale_items',
           where:
-              'sale_id = ? AND product_id = ? AND COALESCE(returned_quantity,0) < COALESCE(quantity,0)',
+          'sale_id = ? AND product_id = ? AND COALESCE(returned_quantity,0) < COALESCE(quantity,0)',
           whereArgs: [saleId, pid],
           limit: 1,
         );
@@ -1551,7 +1573,7 @@ class DBHelper {
             {
               'quantity': unitsInCarton > 0 ? (newTotal ~/ unitsInCarton) : 0,
               'units_remainder':
-                  unitsInCarton > 0 ? (newTotal % unitsInCarton) : newTotal,
+              unitsInCarton > 0 ? (newTotal % unitsInCarton) : newTotal,
             },
             where: 'id = ?',
             whereArgs: [pid]);
@@ -1583,13 +1605,32 @@ class DBHelper {
           'price': price,
         });
 
+        // ===== الإضافة الجديدة: نسجل المنتج البديل كـ sale_item حقيقي =====
+        // عشان يبقى تابع للفاتورة زي أي صنف تاني، ويظهر في المرات الجاية
+        // لو حابب ترجعه أو تستبدله هو نفسه تاني.
+        final uic = unitsInCarton > 0 ? unitsInCarton : 1;
+        final purchasePricePerCartonNew =
+            (prod['purchase_price'] as num?)?.toDouble() ?? 0.0;
+        final purchasePricePerUnitNew = purchasePricePerCartonNew / uic;
+
+        await txn.insert('sale_items', {
+          'sale_id': saleId,
+          'product_id': pid,
+          'quantity': qtyAdd,
+          'price': price,
+          'purchase_price_per_unit': purchasePricePerUnitNew,
+          'returned': 0,
+          'returned_quantity': 0,
+        });
+        // ==================================================================
+
         final newTotal = currentTotal - qtyAdd;
         await txn.update(
             'products',
             {
               'quantity': unitsInCarton > 0 ? (newTotal ~/ unitsInCarton) : 0,
               'units_remainder':
-                  unitsInCarton > 0 ? (newTotal % unitsInCarton) : newTotal,
+              unitsInCarton > 0 ? (newTotal % unitsInCarton) : newTotal,
             },
             where: 'id = ?',
             whereArgs: [pid]);
@@ -2206,26 +2247,25 @@ class DBHelper {
   }
 
   Future<int> markSaleAsPaid(
-    int saleId, {
-    String paymentMethod = 'cash',
-    double? paidAmount,
-    String? paidBy,
-    DateTime? paidAt,
-  }) async {
+      int saleId, {
+        String paymentMethod = 'cash',
+        double? paidAmount,
+        String? paidBy,
+        DateTime? paidAt,
+      }) async {
     final db = await instance.database;
     await _ensureSaleColumns(db);
-    final rows =
-        await db.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
+    final rows = await db.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1);
     if (rows.isEmpty) throw 'Sale not found';
     final total = (rows.first['total'] as num?)?.toDouble() ?? 0.0;
     final paid = paidAmount ?? total;
     final change = (paid >= total) ? (paid - total) : 0.0;
     final effectivePaidAt = paidAt ?? DateTime.now();
     final effectivePaidBy = (paidBy ?? '').trim();
-    final updated = await db.update(
+    return await db.update(
       'sales',
       {
-        'is_credit': 0,
+        'is_credit': (paid >= total) ? 0 : 1, // ← التغيير هنا
         'paid_amount': paid,
         'change_amount': change,
         'payment_method': paymentMethod,
@@ -2235,7 +2275,6 @@ class DBHelper {
       where: 'id = ?',
       whereArgs: [saleId],
     );
-    return updated;
   }
 
   Future<void> _ensureIsCurrentUserColumn(Database db) async {

@@ -15,6 +15,7 @@ import '../../services/db/db_helper.dart';
 import '../../widgets/Loading/Admin/invoice_cash.dart';
 import '../../widgets/empty_state_card.dart';
 
+
 class CreditsScreen extends StatefulWidget {
   static const routeName = "/credits";
   const CreditsScreen({super.key});
@@ -23,237 +24,32 @@ class CreditsScreen extends StatefulWidget {
   State<CreditsScreen> createState() => _CreditsScreenState();
 }
 
-class StockReportScreen extends StatefulWidget {
-  const StockReportScreen({super.key});
+/// ----------------------------------------------------------------------
+/// حالة الفاتورة (مشتقة من paid_amount مقارنة بـ total الفعّال بعد الخصم)
+/// ----------------------------------------------------------------------
+enum _InvoiceStatus { unpaid, partial, paid }
 
-  @override
-  State<StockReportScreen> createState() => _StockReportScreenState();
-}
-
-class _StockReportScreenState extends State<StockReportScreen> {
-  final _money = NumberFormat.currency(locale: 'ar', symbol: 'EGP ');
-  bool _loading = true;
-  bool _markedOnly = false;
-  List<Map<String, dynamic>> _rows = [];
-
-  double get _inventoryValue => _rows.fold<double>(
-      0,
-      (sum, row) =>
-          sum + ((row['inventory_value'] as num?)?.toDouble() ?? 0.0));
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    try {
-      final rows =
-          await DBHelper.instance.getStockReport(markedOnly: _markedOnly);
-      if (mounted) setState(() => _rows = rows);
-    } finally {
-      if (mounted) setState(() => _loading = false);
+extension on _InvoiceStatus {
+  String get label {
+    switch (this) {
+      case _InvoiceStatus.unpaid:
+        return 'لم يتم الدفع';
+      case _InvoiceStatus.partial:
+        return 'جزئي';
+      case _InvoiceStatus.paid:
+        return 'مدفوع';
     }
   }
 
-  bool _isLowStock(Map<String, dynamic> row) {
-    return ((row['total_units'] as num?)?.toInt() ?? 0) <= 5;
-  }
-
-  bool _isNearExpiry(Map<String, dynamic> row) {
-    final raw = (row['expiry_date'] ?? '').toString();
-    final expiry = DateTime.tryParse(raw);
-    if (expiry == null) return false;
-    final days = expiry.difference(DateTime.now()).inDays;
-    return days >= 0 && days <= 30;
-  }
-
-  Future<void> _exportPdf() async {
-    final fontData = await rootBundle.load('assets/fonts/Cairo-Regular.ttf');
-    final font = pw.Font.ttf(fontData);
-    final doc = pw.Document();
-
-    doc.addPage(
-      pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        theme: pw.ThemeData.withFont(base: font, bold: font),
-        textDirection: pw.TextDirection.rtl,
-        build: (_) => [
-          pw.Text(
-              _markedOnly
-                  ? 'تقرير مخزون المنتجات التي تم تعليمها'
-                  : 'تقرير المخزون',
-              style:
-                  pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
-          pw.SizedBox(height: 8),
-          pw.Text(
-              'قيمة المخزون التقديرية: ${_inventoryValue.toStringAsFixed(2)}'),
-          pw.SizedBox(height: 12),
-          pw.Table.fromTextArray(
-            headers: const [
-              'المنتج',
-              'الباركود',
-              'المخزون',
-              'سعر الشراء/وحدة',
-              'قيمة المخزون',
-              'الصلاحية',
-            ],
-            data: _rows.map((r) {
-              return [
-                (r['name'] ?? '').toString(),
-                (r['barcode'] ?? '').toString(),
-                '${(r['total_units'] as num?)?.toInt() ?? 0}',
-                ((r['unit_purchase_price'] as num?)?.toDouble() ?? 0)
-                    .toStringAsFixed(2),
-                ((r['inventory_value'] as num?)?.toDouble() ?? 0)
-                    .toStringAsFixed(2),
-                (r['expiry_date'] ?? '').toString(),
-              ];
-            }).toList(),
-          ),
-        ],
-      ),
-    );
-
-    final downloads = Directory('${Platform.environment['HOME']}/Downloads');
-    if (!downloads.existsSync()) downloads.createSync(recursive: true);
-    final file = File(
-        '${downloads.path}/cashgo_stock_report_${DateTime.now().millisecondsSinceEpoch}.pdf');
-    await file.writeAsBytes(await doc.save());
-    _showSnack('تم حفظ التقرير في Downloads');
-  }
-
-  void _showSnack(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Directionality(
-        textDirection: TextDirection.rtl,
-        child: Text(message),
-      ),
-    ));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColorsDark.bgColor,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
-        title: Text('تقرير المخزون',
-            style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 24)),
-        actions: [
-          IconButton(
-            tooltip: 'تصدير PDF',
-            onPressed: _rows.isEmpty ? null : _exportPdf,
-            icon: Icon(Icons.picture_as_pdf,
-                color: Theme.of(context).iconTheme.color),
-          ),
-          IconButton(
-            tooltip: 'تحديث',
-            onPressed: _load,
-            icon: Icon(Icons.refresh, color: Theme.of(context).iconTheme.color),
-          ),
-        ],
-      ),
-      body: Directionality(
-        textDirection: TextDirection.rtl,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              Align(
-                alignment: Alignment.centerRight,
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    setState(() => _markedOnly = !_markedOnly);
-                    await _load();
-                  },
-                  icon: Icon(
-                    _markedOnly
-                        ? Icons.check_box
-                        : Icons.check_box_outline_blank,
-                    color: Theme.of(context).iconTheme.color,
-                  ),
-                  label: Text(
-                    'المنتجات التي تم تعليمها',
-                    style: TextStyle(color: AppColorsDark.mainTextDark),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(
-                      color: _markedOnly
-                          ? AppColorsDark.mainColor
-                          : AppColorsDark.strokColor,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Card(
-                color: AppColorsDark.bgCardColor,
-                child: ListTile(
-                  title: Text('قيمة المخزون التقديرية',
-                      style: TextStyle(color: AppColorsDark.mainTextLight)),
-                  trailing: Text(_money.format(_inventoryValue),
-                      style: TextStyle(
-                          color: Colors.greenAccent,
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold)),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: _loading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _rows.isEmpty
-                        ? const EmptyStateCard(
-                            icon: Icons.inventory_2_outlined,
-                            title: 'لا توجد منتجات',
-                            message: 'أضف منتجات أولاً حتى يظهر تقرير المخزون.',
-                          )
-                        : ListView.separated(
-                            itemCount: _rows.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(height: 8),
-                            itemBuilder: (_, i) {
-                              final row = _rows[i];
-                              final low = _isLowStock(row);
-                              final exp = _isNearExpiry(row);
-                              final color = low
-                                  ? Colors.red.withValues(alpha: 0.22)
-                                  : exp
-                                      ? Colors.orange.withValues(alpha: 0.22)
-                                      : AppColorsDark.bgCardColor;
-                              return Card(
-                                color: color,
-                                child: ListTile(
-                                  title: Text((row['name'] ?? '').toString(),
-                                      style: TextStyle(
-                                          color: AppColorsDark.mainTextDark)),
-                                  subtitle: Text(
-                                    'المخزون: ${(row['total_units'] as num?)?.toInt() ?? 0} | الصلاحية: ${(row['expiry_date'] ?? '').toString().isEmpty ? '-' : row['expiry_date']}',
-                                    style: TextStyle(
-                                        color: AppColorsDark.mainTextLight),
-                                  ),
-                                  trailing: Text(
-                                    _money.format(
-                                        (row['inventory_value'] as num?)
-                                                ?.toDouble() ??
-                                            0),
-                                    style: TextStyle(
-                                        color: AppColorsDark.mainTextDark),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+  Color get color {
+    switch (this) {
+      case _InvoiceStatus.unpaid:
+        return const Color(0xFFEF5350);
+      case _InvoiceStatus.partial:
+        return const Color(0xFFFFA726);
+      case _InvoiceStatus.paid:
+        return const Color(0xFF4CAF50);
+    }
   }
 }
 
@@ -261,11 +57,17 @@ class _CreditsScreenState extends State<CreditsScreen> {
   bool loading = true;
   List<Map<String, dynamic>> credits = [];
   String query = "";
+
   final Map<int, List<Map<String, dynamic>>> saleItemsCache = {};
   final Set<int> loadingSaleItems = {};
-  final Set<int> loadingSaleReturnItems = {};
-  final Map<int, List<Map<String, dynamic>>> saleReturnItemsCache = {};
-  final Map<int, List<Map<String, dynamic>>> saleReturnsCache = {};
+
+  // ------------------ Filters ------------------
+  DateTime? _selectedDate;
+  String _selectedCashier = 'الكل';
+  _InvoiceStatus? _selectedStatus; // null = الكل
+
+  final _searchController = TextEditingController();
+  final _money = NumberFormat.currency(locale: 'ar', symbol: 'EGP ');
 
   @override
   void initState() {
@@ -273,41 +75,43 @@ class _CreditsScreenState extends State<CreditsScreen> {
     _loadCredits();
   }
 
-  // ------------------ Load invoices from API and keep only credit-paid invoices ------------------
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  // ------------------ Load invoices ------------------
   Future<void> _loadCredits() async {
     if (mounted) setState(() => loading = true);
-
     try {
-      saleReturnItemsCache.clear();
-      saleReturnsCache.clear();
       saleItemsCache.clear();
 
       final rows = await DBHelper.instance.getCreditSales();
       credits = rows.map((sale) {
         return {
           'id': sale['id'],
-          'invoice_id': sale['id'].toString(),
           'total': sale['total'] ?? 0.0,
           'paid_amount': sale['paid_amount'] ?? 0.0,
-          'change_amount': sale['change_amount'] ?? 0.0,
-          'payment_type': sale['payment_method'] ?? 'credit',
+          'payment_method': sale['payment_method'] ?? 'credit',
           'cashier_username': sale['cashier_username'] ?? '',
           'customer_name': sale['customer_name'] ?? '',
           'date': sale['date'] ?? '',
-          'created_at': sale['date'] ?? '',
           'is_credit': sale['is_credit'] ?? 1,
-          'meta': {},
+          'discount_type': sale['discount_type'] ?? 'fixed',
+          'discount_value': sale['discount_value'] ?? 0.0,
         };
       }).toList();
 
       for (final c in credits) {
         final id = (c['id'] as num).toInt();
         saleItemsCache[id] = await _fetchInvoiceItems(id);
-        saleReturnItemsCache[id] =
-            await DBHelper.instance.getSaleReturnItemsForSale(id);
-        saleReturnsCache[id] =
-            await DBHelper.instance.getSaleReturnsBySaleId(id);
       }
+
+      // الصفحة دي تعرض الفواتير التي لم يتم دفعها + المدفوعة جزئيًا،
+      // وتستبعد فقط الفواتير المدفوعة بالكامل.
+      credits =
+          credits.where((s) => _statusOf(s) != _InvoiceStatus.paid).toList();
     } catch (e, st) {
       debugPrint('Error loading credits: $e\n$st');
       if (mounted) {
@@ -327,209 +131,506 @@ class _CreditsScreenState extends State<CreditsScreen> {
     final rows = await DBHelper.instance.getSaleItemsBySaleId(saleId);
     return rows
         .map((r) => {
-              'product_id': r['product_id'],
-              'product_name': r['product_name'] ?? '',
-              'barcode': r['product_barcode'] ?? '',
-              'price': r['price'] ?? 0.0,
-              'quantity': r['quantity'] ?? 0,
-            })
+      'product_id': r['product_id'],
+      'product_name': r['product_name'] ?? '',
+      'barcode': r['product_barcode'] ?? '',
+      'price': r['price'] ?? 0.0,
+      'quantity': r['quantity'] ?? 0,
+    })
         .toList();
   }
 
-  // ------------------ Helpers & UI logic (mostly same as original) ------------------
+  // ------------------ Calculations ------------------
+  double _itemsTotal(int saleId, Map<String, dynamic> s) {
+    final items = saleItemsCache[saleId];
+    if (items == null || items.isEmpty) {
+      return (s['total'] as num?)?.toDouble() ?? 0.0;
+    }
+    return items.fold<double>(0.0, (p, it) {
+      final qty = (it['quantity'] as num?)?.toDouble() ?? 0.0;
+      final price = (it['price'] as num?)?.toDouble() ?? 0.0;
+      return p + qty * price;
+    });
+  }
+
+  double _effectiveTotal(Map<String, dynamic> s) {
+    final saleId = (s['id'] as num).toInt();
+    final itemsTotal = _itemsTotal(saleId, s);
+
+    final discountType =
+    (s['discount_type'] ?? 'fixed').toString() == 'percent'
+        ? 'percent'
+        : 'fixed';
+    final discountValue = (s['discount_value'] as num?)?.toDouble() ?? 0.0;
+
+    double discountAmount = discountType == 'percent'
+        ? itemsTotal * (discountValue / 100.0)
+        : discountValue;
+    if (discountAmount < 0) discountAmount = 0.0;
+    if (discountAmount > itemsTotal) discountAmount = itemsTotal;
+
+    return (itemsTotal - discountAmount).clamp(0.0, double.infinity);
+  }
+
+  double _paidAmount(Map<String, dynamic> s) =>
+      (s['paid_amount'] as num?)?.toDouble() ?? 0.0;
+
+  double _remaining(Map<String, dynamic> s) {
+    final r = _effectiveTotal(s) - _paidAmount(s);
+    return r < 0 ? 0.0 : r;
+  }
+
+  _InvoiceStatus _statusOf(Map<String, dynamic> s) {
+    final total = _effectiveTotal(s);
+    final paid = _paidAmount(s);
+    if (paid <= 0) return _InvoiceStatus.unpaid;
+    if (paid >= total) return _InvoiceStatus.paid;
+    return _InvoiceStatus.partial;
+  }
+
+  String _paymentMethodLabel(Map<String, dynamic> s) {
+    final m = (s['payment_method'] ?? '').toString();
+    switch (m) {
+      case 'cash':
+        return 'نقدي';
+      case 'card':
+        return 'بطاقة';
+      case 'wallet':
+        return 'محفظة';
+      default:
+        return 'آجل';
+    }
+  }
+
+  String _invoiceTypeLabel(Map<String, dynamic> s) {
+    final isCredit = (s['is_credit'] ?? 1) == 1 || s['is_credit'] == true;
+    return isCredit ? 'آجل' : 'فوري';
+  }
+
   String _formatTime(String isoString) {
     try {
       final dt = DateTime.parse(isoString);
-      final hh = dt.hour.toString().padLeft(2, '0');
-      final mm = dt.minute.toString().padLeft(2, '0');
-      final ss = dt.second.toString().padLeft(2, '0');
-      return '$hh:$mm:$ss';
+      return DateFormat('dd/MM/yyyy hh:mm a', 'ar').format(dt);
     } catch (_) {
       return isoString;
     }
   }
 
-  void _applySearch(String q) {
-    setState(() => query = q.trim().toLowerCase());
-  }
-
+  // ------------------ Filtering ------------------
   List<Map<String, dynamic>> get _filtered {
-    if (query.isEmpty) return credits;
+    final q = query.trim().toLowerCase();
     return credits.where((s) {
-      final name = (s['customer_name'] ?? '').toString().toLowerCase();
-      final cashier = (s['cashier_username'] ?? '').toString().toLowerCase();
-      final id = (s['id'] ?? '').toString();
-      return name.contains(query) ||
-          cashier.contains(query) ||
-          id.contains(query);
+      if (q.isNotEmpty) {
+        final name = (s['customer_name'] ?? '').toString().toLowerCase();
+        final cashier =
+        (s['cashier_username'] ?? '').toString().toLowerCase();
+        final id = (s['id'] ?? '').toString();
+        final matches = name.contains(q) || cashier.contains(q) || id.contains(q);
+        if (!matches) return false;
+      }
+
+      if (_selectedDate != null) {
+        final raw = (s['date'] ?? '').toString();
+        final dt = DateTime.tryParse(raw);
+        if (dt == null) return false;
+        if (dt.year != _selectedDate!.year ||
+            dt.month != _selectedDate!.month ||
+            dt.day != _selectedDate!.day) {
+          return false;
+        }
+      }
+
+      if (_selectedCashier != 'الكل') {
+        if ((s['cashier_username'] ?? '').toString() != _selectedCashier) {
+          return false;
+        }
+      }
+
+      if (_selectedStatus != null) {
+        if (_statusOf(s) != _selectedStatus) return false;
+      }
+
+      return true;
     }).toList();
   }
 
-  double _effectiveTotalForSaleHeader(Map<String, dynamic> s) {
-    final saleId = (s['id'] as num?)?.toInt();
-    double currentItemsTotal = 0.0;
-    if (saleId != null && saleItemsCache.containsKey(saleId)) {
-      final items = saleItemsCache[saleId]!;
-      currentItemsTotal = items.fold<double>(0.0, (p, it) {
-        final qty = (it['quantity'] as num?)?.toDouble() ?? 0.0;
-        final price = (it['price'] as num?)?.toDouble() ?? 0.0;
-        return p + qty * price;
-      });
-    } else {
-      currentItemsTotal = (s['total'] as num?)?.toDouble() ?? 0.0;
+  List<String> get _cashierOptions {
+    final set = <String>{'الكل'};
+    for (final s in credits) {
+      final c = (s['cashier_username'] ?? '').toString();
+      if (c.isNotEmpty) set.add(c);
     }
-
-    final discountTypeRaw = (s['discount_type'] ?? 'fixed').toString();
-    final discountValueRaw = (s['discount_value'] as num?)?.toDouble() ?? 0.0;
-    final discountType = (discountTypeRaw == 'percent') ? 'percent' : 'fixed';
-    double discountValue = discountValueRaw.isFinite ? discountValueRaw : 0.0;
-
-    double discountAmount = 0.0;
-    if (discountType == 'percent') {
-      discountAmount = currentItemsTotal * (discountValue / 100.0);
-    } else {
-      discountAmount = discountValue;
-    }
-    if (discountAmount < 0) discountAmount = 0.0;
-    if (discountAmount > currentItemsTotal) discountAmount = currentItemsTotal;
-
-    return (currentItemsTotal - discountAmount).clamp(0.0, double.infinity);
+    return set.toList();
   }
 
-  String _discountLabelForSale(Map<String, dynamic> s) {
-    final saleId = (s['id'] as num?)?.toInt();
-    double currentItemsTotal = 0.0;
-    if (saleId != null && saleItemsCache.containsKey(saleId)) {
-      final items = saleItemsCache[saleId]!;
-      currentItemsTotal = items.fold<double>(0.0, (p, it) {
-        final qty = (it['quantity'] as num?)?.toDouble() ?? 0.0;
-        final price = (it['price'] as num?)?.toDouble() ?? 0.0;
-        return p + qty * price;
-      });
-    } else {
-      currentItemsTotal = (s['total'] as num?)?.toDouble() ?? 0.0;
-    }
+  // ------------------ Stats ------------------
+  int get _totalInvoicesCount => credits.length;
 
-    final discountTypeRaw = (s['discount_type'] ?? 'fixed').toString();
-    final discountValueRaw = (s['discount_value'] as num?)?.toDouble() ?? 0.0;
-    final discountType = (discountTypeRaw == 'percent') ? 'percent' : 'fixed';
-    double discountValue = discountValueRaw.isFinite ? discountValueRaw : 0.0;
+  double get _totalAmount =>
+      credits.fold<double>(0.0, (p, s) => p + _effectiveTotal(s));
 
-    double discountAmount = 0.0;
-    if (discountType == 'percent') {
-      discountAmount = currentItemsTotal * (discountValue / 100.0);
-    } else {
-      discountAmount = discountValue;
-    }
-    if (discountAmount <= 0) return '';
+  double get _totalRemaining =>
+      credits.fold<double>(0.0, (p, s) => p + _remaining(s));
 
-    if (discountType == 'percent') {
-      return 'خصم ${discountValue.toStringAsFixed(0)}% (${discountAmount.toStringAsFixed(2)})';
-    } else {
-      return 'خصم ثابت ${discountAmount.toStringAsFixed(2)}';
-    }
+  int get _todayInvoicesCount {
+    final now = DateTime.now();
+    return credits.where((s) {
+      final dt = DateTime.tryParse((s['date'] ?? '').toString());
+      if (dt == null) return false;
+      return dt.year == now.year && dt.month == now.month && dt.day == now.day;
+    }).length;
   }
 
-  double _sumPaidDeltaForSale(int saleId) {
-    final rows = saleReturnsCache[saleId] ?? [];
-    double sum = 0.0;
-    for (final r in rows) {
-      sum += (r['paid_delta'] as num?)?.toDouble() ?? 0.0;
-    }
-    return sum;
-  }
+  // ------------------ Actions ------------------
+  Future<void> _openPaymentSheet(Map<String, dynamic> s) async {
+    final saleId = (s['id'] as num).toInt();
+    final total = _effectiveTotal(s);
+    final alreadyPaid = _paidAmount(s);
+    final remaining = _remaining(s);
 
-  Map<int, List<Map<String, dynamic>>> _groupReturnItemsByReturnId(int saleId) {
-    final rows = saleReturnItemsCache[saleId] ?? [];
-    final Map<int, List<Map<String, dynamic>>> m = {};
-    for (final r in rows) {
-      final rid = (r['return_id'] as num).toInt();
-      m.putIfAbsent(rid, () => []).add(r);
-    }
-    return m;
-  }
+    String method = 'cash'; // cash | wallet
+    bool fullPayment = true;
+    final amountController =
+    TextEditingController(text: remaining.toStringAsFixed(2));
 
-  // ------------------ Actions: mark as paid & delete (local-only) ------------------
-  Future<void> _markAsPaid(
-      int saleId, Map<String, dynamic> saleRow, String method) async {
-    final double amountToPay = _effectiveTotalForSaleHeader(saleRow);
-
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showModalBottomSheet<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: AppColorsDark.bgCardColor,
-        title: Center(
-            child: Text('تأكيد الدفع',
-                style: TextStyle(
-                    color: Theme.of(context).brightness == Brightness.light
-                        ? Colors.black87
-                        : Colors.white))),
-        content: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8.0),
-            child: Text(
-              'سيتم تسجيل الفاتورة كمُسدّدة بواسطة "$method" بمبلغ ${amountToPay.toStringAsFixed(2)}. هل تريد المتابعة؟',
-              style: TextStyle(
-                  color: Theme.of(context).brightness == Brightness.light
-                      ? Colors.black87
-                      : Colors.white),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-              style: TextButton.styleFrom(
-                  backgroundColor: AppColorsDark.bgCardColor),
-              onPressed: () => Navigator.pop(context, false),
-              child: Text('إلغاء',
-                  style: TextStyle(
-                      color: Theme.of(context).brightness == Brightness.light
-                          ? Colors.black
-                          : Colors.white))),
-          TextButton(
-              style: TextButton.styleFrom(
-                  backgroundColor: AppColorsDark.bgCardColor),
-              onPressed: () => Navigator.pop(context, true),
-              child: Text('تأكيد',
-                  style: TextStyle(
-                      color: Theme.of(context).brightness == Brightness.light
-                          ? Colors.black
-                          : Colors.white))),
-        ],
-      ),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            final rawPayNow = fullPayment
+                ? remaining
+                : (double.tryParse(amountController.text) ?? 0.0);
+            final payNow = rawPayNow > remaining ? remaining : rawPayNow;
+
+            return Directionality(
+              textDirection: TextDirection.rtl,
+              child: Container(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 20,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColorsDark.bgCardColor,
+                  borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(20)),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.description_outlined,
+                              color: Colors.blueAccent),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'تسجيل دفع الفاتورة',
+                              style: TextStyle(
+                                  color: AppColorsDark.mainTextDark,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(ctx, false),
+                            icon: Icon(Icons.close,
+                                color: Theme.of(ctx).iconTheme.color),
+                          ),
+                        ],
+                      ),
+                      Text('INV-${saleId.toString().padLeft(4, '0')}',
+                          style: TextStyle(
+                              color: AppColorsDark.mainColor,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16)),
+                      Text((s['customer_name'] ?? '').toString(),
+                          style: TextStyle(
+                              color: AppColorsDark.mainTextLight,
+                              fontSize: 13)),
+                      const SizedBox(height: 16),
+
+                      // ---- summary chips ----
+                      Row(
+                        children: [
+                          _sheetStat('إجمالي المبلغ',
+                              _money.format(total), AppColorsDark.mainTextDark),
+                          _sheetStat('تم الدفع',
+                              _money.format(alreadyPaid), Colors.green),
+                          _sheetStat('المتبقي',
+                              _money.format(remaining), Colors.redAccent),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+
+                      Text('اختر طريقة الدفع',
+                          style: TextStyle(
+                              color: AppColorsDark.mainTextDark,
+                              fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 8),
+                      _paymentMethodTile(
+                        icon: Icons.attach_money,
+                        label: 'نقدي',
+                        selected: method == 'cash',
+                        onTap: () => setSheetState(() => method = 'cash'),
+                      ),
+                      const SizedBox(height: 8),
+                      _paymentMethodTile(
+                        icon: Icons.account_balance_wallet_outlined,
+                        label: 'بالمحفظة',
+                        selected: method == 'wallet',
+                        onTap: () => setSheetState(() => method = 'wallet'),
+                      ),
+                      const SizedBox(height: 20),
+
+                      Text('اختر مبلغ الدفع',
+                          style: TextStyle(
+                              color: AppColorsDark.mainTextDark,
+                              fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 8),
+                      _amountOptionTile(
+                        label: 'دفع كامل المبلغ',
+                        trailing: _money.format(remaining),
+                        selected: fullPayment,
+                        onTap: () => setSheetState(() {
+                          fullPayment = true;
+                          amountController.text = remaining.toStringAsFixed(2);
+                        }),
+                      ),
+                      const SizedBox(height: 8),
+                      _amountOptionTile(
+                        label: 'دفع جزء من المبلغ',
+                        trailing: null,
+                        selected: !fullPayment,
+                        onTap: () => setSheetState(() {
+                          fullPayment = false;
+                          amountController.clear();
+                        }),
+                      ),
+                      if (!fullPayment) ...[
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: amountController,
+                          keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                          textDirection: TextDirection.rtl,
+                          onChanged: (_) => setSheetState(() {}),
+                          style: TextStyle(color: AppColorsDark.mainTextDark),
+                          decoration: InputDecoration(
+                            hintText: 'أدخل المبلغ',
+                            suffixText: 'EGP',
+                            filled: true,
+                            fillColor: AppColorsDark.bgColor,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 24),
+                      SizedBox(
+                        height: 48,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blueAccent,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: payNow <= 0
+                              ? null
+                              : () => Navigator.pop(ctx, true),
+                          child: const Text('تأكيد الدفع',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
+
     if (confirmed != true) return;
 
+    final rawPayAmount = fullPayment
+        ? remaining
+        : (double.tryParse(amountController.text) ?? 0.0);
+    final payAmount = rawPayAmount > remaining ? remaining : rawPayAmount;
+    if (payAmount <= 0) return;
+
+    await _submitPayment(
+      saleId: saleId,
+      sale: s,
+      method: method == 'cash' ? 'cash' : 'wallet',
+      payAmount: payAmount,
+      totalRemaining: remaining,
+    );
+  }
+
+  Widget _sheetStat(String label, String value, Color color) {
+    return Expanded(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          children: [
+            Text(label,
+                style: TextStyle(color: AppColorsDark.mainTextLight, fontSize: 11)),
+            const SizedBox(height: 4),
+            Text(value,
+                style: TextStyle(
+                    color: color, fontWeight: FontWeight.bold, fontSize: 13)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _paymentMethodTile({
+    required IconData icon,
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColorsDark.bgColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? Colors.blueAccent : Colors.transparent,
+            width: 1.5,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: AppColorsDark.mainTextLight, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(label,
+                  style: TextStyle(color: AppColorsDark.mainTextDark)),
+            ),
+            Icon(
+              selected ? Icons.radio_button_checked : Icons.radio_button_off,
+              color: selected ? Colors.blueAccent : AppColorsDark.mainTextLight,
+              size: 20,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _amountOptionTile({
+    required String label,
+    required String? trailing,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColorsDark.bgColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? Colors.blueAccent : Colors.transparent,
+            width: 1.5,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              selected ? Icons.radio_button_checked : Icons.radio_button_off,
+              color: selected ? Colors.blueAccent : AppColorsDark.mainTextLight,
+              size: 20,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(label,
+                  style: TextStyle(color: AppColorsDark.mainTextDark)),
+            ),
+            if (trailing != null)
+              Text(trailing,
+                  style: TextStyle(
+                      color: Colors.blueAccent, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _submitPayment({
+    required int saleId,
+    required Map<String, dynamic> sale,
+    required String method,
+    required double payAmount,
+    required double totalRemaining,
+  }) async {
     try {
       final currentRole = (Session.currentRole ?? '').toLowerCase().trim();
       final currentUser = (Session.currentUsername ?? '').trim();
-      await DBHelper.instance.markSaleAsPaid(saleId,
-          paymentMethod: method,
-          paidAmount: amountToPay,
-          paidBy: currentRole != 'admin' && currentUser.isNotEmpty
-              ? currentUser
-              : null,
-          paidAt: currentRole != 'admin' && currentUser.isNotEmpty
-              ? DateTime.now()
-              : null);
-      debugPrint(
-          '[CreditSalePayment] updated original sale: saleId=$saleId amount=$amountToPay method=$method paidBy=${currentRole != 'admin' ? currentUser : 'admin'}');
+      final newPaidAmount = _paidAmount(sale) + payAmount;
 
+      await DBHelper.instance.markSaleAsPaid(
+        saleId,
+        paymentMethod: method,
+        paidAmount: newPaidAmount,
+        paidBy: currentRole != 'admin' && currentUser.isNotEmpty
+            ? currentUser
+            : null,
+        paidAt: currentRole != 'admin' && currentUser.isNotEmpty
+            ? DateTime.now()
+            : null,
+      );
+
+      final isFullyPaid = payAmount >= totalRemaining;
+
+      // لو الدفع كامل: تختفي الفاتورة من القائمة لأنها بقت مدفوعة بالكامل.
+      // لو الدفع جزئي: تفضل الفاتورة ظاهرة بحالة "جزئي" عشان تقدر تفلتر عليها.
       setState(() {
-        credits.removeWhere((r) => (r['id'] as num).toInt() == saleId);
-        saleItemsCache.remove(saleId);
-        saleReturnItemsCache.remove(saleId);
-        saleReturnsCache.remove(saleId);
+        if (isFullyPaid) {
+          credits.removeWhere((r) => (r['id'] as num).toInt() == saleId);
+          saleItemsCache.remove(saleId);
+        } else {
+          final idx =
+          credits.indexWhere((r) => (r['id'] as num).toInt() == saleId);
+          if (idx != -1) credits[idx]['paid_amount'] = newPaidAmount;
+        }
       });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Directionality(
           textDirection: TextDirection.rtl,
-          child: Text('تم تسجيل الدفع '),
+          child: Text(isFullyPaid ? 'تم تسجيل الدفع بالكامل' : 'تم تسجيل الدفعة الجزئية'),
         ),
+        backgroundColor: Colors.green,
       ));
     } catch (e) {
       debugPrint('markAsPaid error: $e');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Directionality(
           textDirection: TextDirection.rtl,
@@ -544,38 +645,27 @@ class _CreditsScreenState extends State<CreditsScreen> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: AppColorsDark.bgCardColor,
-        title: Center(
-            child: Text('حذف الفاتورة',
-                style: TextStyle(
-                    color: Theme.of(context).brightness == Brightness.light
-                        ? Colors.black87
-                        : Colors.white))),
-        content: Text(
-          'هل تريد حذف الفاتورة #$saleId؟',
-          style: TextStyle(
-              color: Theme.of(context).brightness == Brightness.light
-                  ? Colors.black87
-                  : Colors.white),
+        title: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Center(
+              child: Text('حذف الفاتورة',
+                  style: TextStyle(color: AppColorsDark.mainTextDark))),
+        ),
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('هل تريد حذف الفاتورة #$saleId؟',
+              style: TextStyle(color: AppColorsDark.mainTextDark)),
         ),
         actions: [
           TextButton(
-              style: TextButton.styleFrom(
-                  backgroundColor: AppColorsDark.bgCardColor),
-              onPressed: () => Navigator.pop(context, false),
-              child: Text('إلغاء',
-                  style: TextStyle(
-                      color: Theme.of(context).brightness == Brightness.light
-                          ? Colors.black
-                          : Colors.white))),
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('إلغاء',
+                style: TextStyle(color: AppColorsDark.mainTextDark)),
+          ),
           TextButton(
-              style: TextButton.styleFrom(
-                  backgroundColor: AppColorsDark.bgCardColor),
-              onPressed: () => Navigator.pop(context, true),
-              child: Text('حذف محلي',
-                  style: TextStyle(
-                      color: Theme.of(context).brightness == Brightness.light
-                          ? Colors.black
-                          : Colors.white))),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('حذف', style: TextStyle(color: Colors.red)),
+          ),
         ],
       ),
     );
@@ -584,42 +674,418 @@ class _CreditsScreenState extends State<CreditsScreen> {
     setState(() {
       credits.removeWhere((r) => (r['id'] as num).toInt() == saleId);
       saleItemsCache.remove(saleId);
-      saleReturnItemsCache.remove(saleId);
-      saleReturnsCache.remove(saleId);
     });
 
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
       content: Directionality(
         textDirection: TextDirection.rtl,
         child: Text('تم الحذف'),
       ),
-      duration: Duration(seconds: 3),
     ));
   }
 
-  Widget buildLabelValue(String label, String value) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.end,
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Text(
-          value,
-          textAlign: TextAlign.right,
-          style: TextStyle(
-            color: AppColorsDark.mainTextLight,
-            fontSize: 15,
-          ),
-          overflow: TextOverflow.ellipsis,
+  void _viewInvoiceDetails(Map<String, dynamic> s) {
+    final saleId = (s['id'] as num).toInt();
+    final items = saleItemsCache[saleId] ?? [];
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColorsDark.bgCardColor,
+        title: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Text('INV-${saleId.toString().padLeft(4, '0')}',
+              style: TextStyle(color: AppColorsDark.mainTextDark)),
         ),
-        const SizedBox(width: 6),
-        Text(
-          ' : $label',
+        content: Directionality(
+          textDirection: TextDirection.rtl,
+          child: SizedBox(
+            width: 340,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: items
+                  .map((it) => ListTile(
+                dense: true,
+                title: Text((it['product_name'] ?? '').toString(),
+                    style:
+                    TextStyle(color: AppColorsDark.mainTextDark)),
+                trailing: Text(
+                    '${it['quantity']} × ${(it['price'] as num?)?.toStringAsFixed(2)}',
+                    style: TextStyle(
+                        color: AppColorsDark.mainTextLight)),
+              ))
+                  .toList(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('إغلاق',
+                style: TextStyle(color: AppColorsDark.mainTextDark)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ------------------ UI: stat card ------------------
+  Widget _statCard({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required String value,
+    required String unit,
+  }) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColorsDark.bgCardColor,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, color: color, size: 20),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      style: TextStyle(
+                          color: AppColorsDark.mainTextLight, fontSize: 12)),
+                  const SizedBox(height: 4),
+                  Text(value,
+                      style: TextStyle(
+                          color: color,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold)),
+                  Text(unit,
+                      style: TextStyle(
+                          color: AppColorsDark.mainTextLight, fontSize: 10)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ------------------ UI: filter dropdown ------------------
+  Widget _dropdownFilter<T>({
+    required String label,
+    required T value,
+    required List<T> items,
+    required String Function(T) itemLabel,
+    required ValueChanged<T?> onChanged,
+  }) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style:
+              TextStyle(color: AppColorsDark.mainTextLight, fontSize: 12)),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: AppColorsDark.bgCardColor,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<T>(
+                value: value,
+                isExpanded: true,
+                dropdownColor: AppColorsDark.bgCardColor,
+                style: TextStyle(color: AppColorsDark.mainTextDark),
+                items: items
+                    .map((e) => DropdownMenuItem<T>(
+                  value: e,
+                  child: Text(itemLabel(e)),
+                ))
+                    .toList(),
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dateFilter() {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('التاريخ',
+              style:
+              TextStyle(color: AppColorsDark.mainTextLight, fontSize: 12)),
+          const SizedBox(height: 6),
+          InkWell(
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: _selectedDate ?? DateTime.now(),
+                firstDate: DateTime(2020),
+                lastDate: DateTime(2100),
+              );
+              if (picked != null) setState(() => _selectedDate = picked);
+            },
+            child: Container(
+              padding:
+              const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppColorsDark.bgCardColor,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.calendar_today,
+                      size: 14, color: AppColorsDark.mainTextLight),
+                  const SizedBox(width: 8),
+                  Text(
+                    _selectedDate == null
+                        ? 'اختر تاريخ'
+                        : DateFormat('dd/MM/yyyy').format(_selectedDate!),
+                    style: TextStyle(color: AppColorsDark.mainTextDark),
+                  ),
+                  if (_selectedDate != null) ...[
+                    const Spacer(),
+                    InkWell(
+                      onTap: () => setState(() => _selectedDate = null),
+                      child: Icon(Icons.close,
+                          size: 14, color: AppColorsDark.mainTextLight),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ------------------ UI: status badge ------------------
+  Widget _statusBadge(_InvoiceStatus status) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: status.color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: status.color.withOpacity(0.4)),
+      ),
+      child: Text(status.label,
           style: TextStyle(
+              color: status.color, fontSize: 12, fontWeight: FontWeight.w600)),
+    );
+  }
+
+  // ------------------ Build ------------------
+  // ------------------ Full-width custom table ------------------
+  // ترتيب الأعمدة هنا هو ترتيب "القراءة" (RTL) فالعمود الأول بيظهر في أقصى اليمين
+  static const List<int> _colFlex = [
+    2, // رقم الفاتورة
+    2, // اسم العميل
+    2, // اسم الكاشير
+    3, // المنتجات
+    2, // المبلغ المستحق
+    2, // تاريخ الفاتورة
+    2, // الحالة
+    3, // الإجراءات
+  ];
+
+  Widget _buildInvoicesTable(List<Map<String, dynamic>> list) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppColorsDark.bgCardColor,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // header
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            color: AppColorsDark.bgCardColor,
+            child: Row(
+              children: [
+                _headerCell('رقم الفاتورة', _colFlex[0]),
+                _headerCell('اسم العميل', _colFlex[1]),
+                _headerCell('اسم الكاشير', _colFlex[2]),
+                _headerCell('المنتجات', _colFlex[3]),
+                _headerCell('المبلغ المستحق', _colFlex[4]),
+                _headerCell('تاريخ الفاتورة', _colFlex[5]),
+                _headerCell('الحالة', _colFlex[6]),
+                _headerCell('الإجراءات', _colFlex[7], alignEnd: true),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Colors.white12),
+          // rows
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: list.length,
+            separatorBuilder: (_, __) =>
+            const Divider(height: 1, color: Colors.white12),
+            itemBuilder: (context, index) => _invoiceRow(list[index]),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _headerCell(String label, int flex, {bool alignEnd = false}) {
+    return Expanded(
+      flex: flex,
+      child: Text(
+        label,
+        textAlign: alignEnd ? TextAlign.start : TextAlign.center,
+        style: TextStyle(
             color: AppColorsDark.mainTextDark,
-            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            fontSize: 13),
+      ),
+    );
+  }
+
+  Widget _invoiceRow(Map<String, dynamic> s) {
+    final saleId = (s['id'] as num).toInt();
+    final items = saleItemsCache[saleId] ?? [];
+    final remaining = _remaining(s);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            flex: _colFlex[0],
+            child: Text(
+              'INV-${saleId.toString().padLeft(4, '0')}',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  color: AppColorsDark.mainColor, fontWeight: FontWeight.bold),
+            ),
           ),
-        ),
-      ],
+          Expanded(
+            flex: _colFlex[1],
+            child: Text(
+              (s['customer_name'] ?? '').toString(),
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: AppColorsDark.mainTextDark),
+            ),
+          ),
+          Expanded(
+            flex: _colFlex[2],
+            child: Text(
+              (s['cashier_username'] ?? '').toString(),
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: AppColorsDark.mainTextDark),
+            ),
+          ),
+          Expanded(
+            flex: _colFlex[3],
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                if (items.isNotEmpty)
+                  Text('${items.length} منتجات',
+                      style: TextStyle(
+                          color: AppColorsDark.mainTextLight, fontSize: 11)),
+                ...items.take(2).map((it) => Text(
+                  '${it['quantity']} × ${(it['product_name'] ?? '')}',
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: AppColorsDark.mainTextLight, fontSize: 11),
+                )),
+                if (items.isEmpty)
+                  Text('-', style: TextStyle(color: AppColorsDark.mainTextLight)),
+              ],
+            ),
+          ),
+          Expanded(
+            flex: _colFlex[4],
+            child: Text(
+              _money.format(remaining),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: Colors.redAccent, fontWeight: FontWeight.bold),
+            ),
+          ),
+          Expanded(
+            flex: _colFlex[5],
+            child: Text(
+              _formatTime((s['date'] ?? '').toString()),
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  color: AppColorsDark.mainTextLight, fontSize: 12),
+            ),
+          ),
+          Expanded(
+            flex: _colFlex[6],
+            child: Center(child: _statusBadge(_statusOf(s))),
+          ),
+          Expanded(
+            flex: _colFlex[7],
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.start,
+              children: [
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueAccent,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20)),
+                  ),
+                  onPressed: () => _openPaymentSheet(s),
+                  icon: const Icon(Icons.credit_card,
+                      size: 16, color: Colors.white),
+                  label: const Text('تم الدفع',
+                      style: TextStyle(color: Colors.white)),
+                ),
+                IconButton(
+                  onPressed: () {
+                    showMenu(
+                      context: context,
+                      position: const RelativeRect.fromLTRB(200, 300, 0, 0),
+                      items: [
+                        PopupMenuItem(
+                          onTap: () => _viewInvoiceDetails(s),
+                          child: const Text('عرض التفاصيل'),
+                        ),
+                        PopupMenuItem(
+                          onTap: () => _deleteCredit(saleId),
+                          child: const Text('حذف',
+                              style: TextStyle(color: Colors.red)),
+                        ),
+                      ],
+                    );
+                  },
+                  icon: Icon(Icons.more_vert,
+                      color: Theme.of(context).iconTheme.color),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -627,660 +1093,131 @@ class _CreditsScreenState extends State<CreditsScreen> {
   Widget build(BuildContext context) {
     final list = _filtered;
 
-    // Group credits by cashier username
-    final Map<String, List<Map<String, dynamic>>> byCashier = {};
-    for (final s in list) {
-      final cashier =
-          (s['cashier_username'] ?? s['cashierName'] ?? '-').toString();
-      byCashier.putIfAbsent(cashier, () => []).add(s);
-    }
-    final cashiers = byCashier.keys.toList();
-
     return Scaffold(
       backgroundColor: AppColorsDark.bgColor,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
-        elevation: 0.0,
-        scrolledUnderElevation: 0.0,
+        elevation: 0,
         iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
         title: Text(
-          'فواتير مدفوعة (بطاقة / كريدت)',
+          'الفواتير التي لم يتم دفعها',
           style: TextStyle(color: AppColorsDark.mainTextDark, fontSize: 20),
         ),
         actions: [
           IconButton(
             tooltip: 'تحديث',
             onPressed: _loadCredits,
-            icon: Icon(Icons.refresh,
-                color: Theme.of(context).iconTheme.color, size: 22),
+            icon: Icon(Icons.refresh, color: Theme.of(context).iconTheme.color),
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          children: [
-            CustomFormField(
-              hint: 'بحث باسم العميل / رقم الفاتورة',
-              onChanged: _applySearch,
-              centerHint: true,
-            ),
-            const SizedBox(height: 14),
-            Expanded(
-              child: loading
-                  ? ListView.separated(
-                      padding: const EdgeInsets.all(12),
-                      itemCount:
-                          6, // عدد عناصر shimmer المراد عرضها أثناء التحميل
-                      separatorBuilder: (_, __) => const SizedBox(height: 12),
-                      itemBuilder: (context, index) {
-                        return LoadingShimmer(
-                          height: 80,
-                          borderRadius: BorderRadius.circular(10),
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                        );
-                      },
-                    )
-                  : list.isEmpty
-                      ? const EmptyStateCard(
-                          icon: Icons.receipt_long,
-                          title: 'لا توجد فواتير',
-                          message: 'لا توجد فواتير آجلة مطابقة لهذا البحث.',
-                        )
-                      : ListView.separated(
-                          itemCount: cashiers.length,
-                          separatorBuilder: (_, __) =>
-                              const SizedBox(height: 12),
-                          itemBuilder: (context, idx) {
-                            final cashier = cashiers[idx];
-                            final salesForCashier = byCashier[cashier] ?? [];
+      body: Directionality(
+        textDirection: TextDirection.rtl,
+        child: loading
+            ? const Center(child: CircularProgressIndicator())
+            : SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ---- search ----
+              CustomFormField(
+                hint: 'بحث برقم الفاتورة / اسم العميل / اسم الكاشير',
+                onChanged: (v) => setState(() => query = v),
+                centerHint: true,
+              ),
+              const SizedBox(height: 16),
 
-                            return Card(
-                                color: AppColorsDark.bgCardColor,
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                    side: BorderSide(
-                                        color: AppColorsDark.mainColor
-                                            .withOpacity(0.12))),
-                                child: Directionality(
-                                  textDirection: TextDirection.rtl,
-                                  child: AccordionWidget(
-                                    decoration: BoxDecoration(
-                                        color: AppColorsDark.bgColor),
-                                    showIcon: true,
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 12, vertical: 6),
-                                    header: AbsorbPointer(
-                                      absorbing: true,
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                            vertical: 8.0, horizontal: 6),
-                                        child: Row(
-                                          children: [
-                                            CircleAvatar(
-                                              radius: 22,
-                                              backgroundColor: AppColorsDark
-                                                  .mainColor
-                                                  .withOpacity(0.12),
-                                              child: Text(
-                                                  '${salesForCashier.length}',
-                                                  style: TextStyle(
-                                                      color: AppColorsDark
-                                                          .mainColor,
-                                                      fontWeight:
-                                                          FontWeight.bold)),
-                                            ),
-                                            const SizedBox(width: 12),
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Text(cashier,
-                                                      style: TextStyle(
-                                                          color: AppColorsDark
-                                                              .mainTextDark,
-                                                          fontSize: 16,
-                                                          fontWeight:
-                                                              FontWeight.w700),
-                                                      overflow: TextOverflow
-                                                          .ellipsis),
-                                                  const SizedBox(height: 6),
-                                                  Text(
-                                                      'الفواتير الخاصة بهذا الكاشير',
-                                                      style: TextStyle(
-                                                          color: AppColorsDark
-                                                              .mainTextLight,
-                                                          fontSize: 12)),
-                                                ],
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                    content: Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 8.0, vertical: 6),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          // For each sale of this cashier, render the existing sale Card+Accordion as before
-                                          ...salesForCashier.map((s) {
-                                            final saleId =
-                                                (s['id'] as num).toInt();
-                                            final customer =
-                                                (s['customer_name'] ?? '-')
-                                                    .toString();
-                                            final effectiveTotal =
-                                                _effectiveTotalForSaleHeader(s);
-                                            final paid =
-                                                (s['paid_amount'] as num?)
-                                                        ?.toDouble() ??
-                                                    0.0;
-                                            final dateRaw = (s['date'] ??
-                                                    s['created_at'] ??
-                                                    '')
-                                                .toString();
-                                            final time = _formatTime(dateRaw);
-                                            final cashierName =
-                                                (s['cashier_username'] ??
-                                                        s['cashierName'] ??
-                                                        '-')
-                                                    .toString();
-                                            final discountLabel =
-                                                _discountLabelForSale(s);
+              // ---- stat cards ----
+              Row(
+                children: [
+                  _statCard(
+                    icon: Icons.description_outlined,
+                    color: Colors.redAccent,
+                    label: 'فواتير غير مدفوعة',
+                    value: '$_totalInvoicesCount',
+                    unit: 'فاتورة',
+                  ),
+                  const SizedBox(width: 12),
+                  _statCard(
+                    icon: Icons.account_balance_wallet_outlined,
+                    color: Colors.purpleAccent,
+                    label: 'إجمالي المبلغ المستحق',
+                    value: _money.format(_totalRemaining),
+                    unit: 'جنيه',
+                  ),
+                  const SizedBox(width: 12),
+                  _statCard(
+                    icon: Icons.event_available,
+                    color: Colors.orangeAccent,
+                    label: 'عدد فواتير اليوم',
+                    value: '$_todayInvoicesCount',
+                    unit: 'فاتورة',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
 
-                                            return Padding(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      vertical: 6.0),
-                                              child: Card(
-                                                color:
-                                                    AppColorsDark.bgCardColor,
-                                                shape: RoundedRectangleBorder(
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            12),
-                                                    side: BorderSide(
-                                                        color: AppColorsDark
-                                                            .mainColor
-                                                            .withOpacity(
-                                                                0.12))),
-                                                child: Directionality(
-                                                  textDirection:
-                                                      TextDirection.rtl,
-                                                  child: AccordionWidget(
-                                                    decoration: BoxDecoration(
-                                                        color: AppColorsDark
-                                                            .bgCardColor),
-                                                    showIcon: false,
-                                                    padding: const EdgeInsets
-                                                        .symmetric(
-                                                        horizontal: 12,
-                                                        vertical: 6),
-                                                    header: Padding(
-                                                      padding: const EdgeInsets
-                                                          .symmetric(
-                                                          vertical: 8.0,
-                                                          horizontal: 6),
-                                                      child: AbsorbPointer(
-                                                        absorbing: true,
-                                                        child: Row(
-                                                          children: [
-                                                            CircleAvatar(
-                                                              radius: 22,
-                                                              backgroundColor:
-                                                                  AppColorsDark
-                                                                      .mainColor
-                                                                      .withOpacity(
-                                                                          0.12),
-                                                              child: Text(
-                                                                  '#$saleId',
-                                                                  style: TextStyle(
-                                                                      color: AppColorsDark
-                                                                          .mainColor,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .bold)),
-                                                            ),
-                                                            const SizedBox(
-                                                                width: 12),
-                                                            Expanded(
-                                                              child: Column(
-                                                                crossAxisAlignment:
-                                                                    CrossAxisAlignment
-                                                                        .start,
-                                                                children: [
-                                                                  Text(customer,
-                                                                      style: TextStyle(
-                                                                          color: Theme.of(context).brightness == Brightness.light
-                                                                              ? Colors
-                                                                                  .black87
-                                                                              : Colors
-                                                                                  .white,
-                                                                          fontSize:
-                                                                              16,
-                                                                          fontWeight: FontWeight
-                                                                              .w700),
-                                                                      overflow:
-                                                                          TextOverflow
-                                                                              .ellipsis),
-                                                                  const SizedBox(
-                                                                      height:
-                                                                          6),
-                                                                  Row(
-                                                                    children: [
-                                                                      Icon(
-                                                                          Icons
-                                                                              .person,
-                                                                          size:
-                                                                              14,
-                                                                          color: Theme.of(context)
-                                                                              .iconTheme
-                                                                              .color),
-                                                                      const SizedBox(
-                                                                          width:
-                                                                              6),
-                                                                      Text(
-                                                                          cashierName,
-                                                                          style: TextStyle(
-                                                                              color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight,
-                                                                              fontSize: 12)),
-                                                                      const SizedBox(
-                                                                          width:
-                                                                              12),
-                                                                      Icon(
-                                                                          Icons
-                                                                              .access_time,
-                                                                          size:
-                                                                              14,
-                                                                          color: Theme.of(context)
-                                                                              .iconTheme
-                                                                              .color),
-                                                                      const SizedBox(
-                                                                          width:
-                                                                              6),
-                                                                      Text(time,
-                                                                          style: TextStyle(
-                                                                              color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight,
-                                                                              fontSize: 12)),
-                                                                    ],
-                                                                  )
-                                                                ],
-                                                              ),
-                                                            ),
-                                                            Column(
-                                                              crossAxisAlignment:
-                                                                  CrossAxisAlignment
-                                                                      .end,
-                                                              children: [
-                                                                Text(
-                                                                    effectiveTotal
-                                                                        .toStringAsFixed(
-                                                                            2),
-                                                                    style: TextStyle(
-                                                                        color: Theme.of(context).brightness == Brightness.light
-                                                                            ? Colors
-                                                                                .black87
-                                                                            : Colors
-                                                                                .white,
-                                                                        fontSize:
-                                                                            16,
-                                                                        fontWeight:
-                                                                            FontWeight.bold)),
-                                                                const SizedBox(
-                                                                    height: 6),
-                                                                if (discountLabel
-                                                                    .isNotEmpty)
-                                                                  Container(
-                                                                    padding: const EdgeInsets
-                                                                        .symmetric(
-                                                                        horizontal:
-                                                                            8,
-                                                                        vertical:
-                                                                            4),
-                                                                    decoration:
-                                                                        BoxDecoration(
-                                                                      color: AppColorsDark
-                                                                          .mainColor
-                                                                          .withOpacity(
-                                                                              0.08),
-                                                                      borderRadius:
-                                                                          BorderRadius.circular(
-                                                                              20),
-                                                                      border: Border.all(
-                                                                          color: AppColorsDark
-                                                                              .mainColor
-                                                                              .withOpacity(0.2)),
-                                                                    ),
-                                                                    child: Text(
-                                                                        discountLabel,
-                                                                        style: TextStyle(
-                                                                            color:
-                                                                                AppColorsDark.mainColor,
-                                                                            fontSize: 12)),
-                                                                  )
-                                                              ],
-                                                            )
-                                                          ],
-                                                        ),
-                                                      ),
-                                                    ),
-                                                    content: Padding(
-                                                      padding: const EdgeInsets
-                                                          .symmetric(
-                                                          horizontal: 8.0,
-                                                          vertical: 6),
-                                                      child: Column(
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .start,
-                                                        children: [
-                                                          Builder(builder: (_) {
-                                                            final items =
-                                                                saleItemsCache[
-                                                                        saleId] ??
-                                                                    [];
-                                                            if (loadingSaleItems
-                                                                .contains(
-                                                                    saleId)) {
-                                                              return const Padding(
-                                                                padding:
-                                                                    EdgeInsets
-                                                                        .all(
-                                                                            8.0),
-                                                                child: Center(
-                                                                    child:
-                                                                        CircularProgressIndicator()),
-                                                              );
-                                                            }
-                                                            if (items.isEmpty) {
-                                                              return const Padding(
-                                                                padding:
-                                                                    EdgeInsets
-                                                                        .all(
-                                                                            8.0),
-                                                                child:
-                                                                    EmptyStateCard(
-                                                                  icon: Icons
-                                                                      .inventory_2_outlined,
-                                                                  title:
-                                                                      'لا توجد عناصر',
-                                                                  message:
-                                                                      'لا توجد عناصر مسجلة لهذه الفاتورة.',
-                                                                  margin:
-                                                                      EdgeInsets
-                                                                          .zero,
-                                                                ),
-                                                              );
-                                                            }
+              // ---- filters ----
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColorsDark.bgCardColor.withOpacity(0.4),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _dateFilter(),
+                    const SizedBox(width: 10),
+                    _dropdownFilter<String>(
+                      label: 'اسم الكاشير',
+                      value: _selectedCashier,
+                      items: _cashierOptions,
+                      itemLabel: (v) => v,
+                      onChanged: (v) =>
+                          setState(() => _selectedCashier = v ?? 'الكل'),
+                    ),
+                    const SizedBox(width: 10),
+                    _dropdownFilter<_InvoiceStatus?>(
+                      label: 'حالة الدفع',
+                      value: _selectedStatus,
+                      items: const [
+                        null,
+                        _InvoiceStatus.unpaid,
+                        _InvoiceStatus.partial,
+                      ],
+                      itemLabel: (v) => v == null ? 'الكل' : v.label,
+                      onChanged: (v) => setState(() => _selectedStatus = v),
+                    ),
+                    const SizedBox(width: 10),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 20),
+                      child: OutlinedButton.icon(
+                        onPressed: () => setState(() {
+                          _selectedDate = null;
+                          _selectedCashier = 'الكل';
+                          _selectedStatus = null;
+                        }),
+                        icon: const Icon(Icons.filter_alt_off, size: 16),
+                        label: const Text('تصفية'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
 
-                                                            final itemsTotal =
-                                                                items.fold<
-                                                                        double>(
-                                                                    0.0,
-                                                                    (p, it) {
-                                                              final qty = (it['quantity']
-                                                                          as num?)
-                                                                      ?.toDouble() ??
-                                                                  0.0;
-                                                              final price = (it[
-                                                                              'price']
-                                                                          as num?)
-                                                                      ?.toDouble() ??
-                                                                  0.0;
-                                                              return p +
-                                                                  qty * price;
-                                                            });
-
-                                                            final discountTypeRaw =
-                                                                (s['discount_type'] ??
-                                                                        'fixed')
-                                                                    .toString();
-                                                            final discountValueRaw =
-                                                                (s['discount_value']
-                                                                            as num?)
-                                                                        ?.toDouble() ??
-                                                                    0.0;
-                                                            final discountType =
-                                                                (discountTypeRaw ==
-                                                                        'percent')
-                                                                    ? 'percent'
-                                                                    : 'fixed';
-                                                            double
-                                                                discountValue =
-                                                                discountValueRaw
-                                                                        .isFinite
-                                                                    ? discountValueRaw
-                                                                    : 0.0;
-                                                            double
-                                                                discountAmount =
-                                                                0.0;
-                                                            if (discountType ==
-                                                                'percent') {
-                                                              discountAmount =
-                                                                  itemsTotal *
-                                                                      (discountValue /
-                                                                          100.0);
-                                                            } else {
-                                                              discountAmount =
-                                                                  discountValue;
-                                                            }
-                                                            if (discountAmount <
-                                                                0)
-                                                              discountAmount =
-                                                                  0.0;
-                                                            if (discountAmount >
-                                                                itemsTotal)
-                                                              discountAmount =
-                                                                  itemsTotal;
-
-                                                            final effectiveTotalLocal =
-                                                                (itemsTotal -
-                                                                        discountAmount)
-                                                                    .clamp(
-                                                                        0.0,
-                                                                        double
-                                                                            .infinity);
-
-                                                            return Column(
-                                                              crossAxisAlignment:
-                                                                  CrossAxisAlignment
-                                                                      .start,
-                                                              children: [
-                                                                // items list: compact rows
-                                                                ...items
-                                                                    .map((it) {
-                                                                  final name = (it[
-                                                                              'product_name'] ??
-                                                                          'منتج')
-                                                                      as String;
-                                                                  final qty =
-                                                                      (it['quantity'] as num?)
-                                                                              ?.toInt() ??
-                                                                          0;
-                                                                  final price =
-                                                                      (it['price'] as num?)
-                                                                              ?.toDouble() ??
-                                                                          0.0;
-                                                                  return Padding(
-                                                                    padding: const EdgeInsets
-                                                                        .symmetric(
-                                                                        vertical:
-                                                                            6.0),
-                                                                    child: Row(
-                                                                      children: [
-                                                                        Expanded(
-                                                                          child: Text(
-                                                                              name,
-                                                                              style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight, fontSize: 14),
-                                                                              overflow: TextOverflow.ellipsis),
-                                                                        ),
-                                                                        const SizedBox(
-                                                                            width:
-                                                                                8),
-                                                                        Text(
-                                                                            '$qty x',
-                                                                            style:
-                                                                                TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight, fontSize: 13)),
-                                                                        const SizedBox(
-                                                                            width:
-                                                                                8),
-                                                                        Text(
-                                                                            price.toStringAsFixed(
-                                                                                2),
-                                                                            style:
-                                                                                TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black87 : Colors.white, fontWeight: FontWeight.w700)),
-                                                                      ],
-                                                                    ),
-                                                                  );
-                                                                }).toList(),
-
-                                                                const Divider(
-                                                                    color: Colors
-                                                                        .white12),
-
-                                                                // summary row
-                                                                Padding(
-                                                                  padding: const EdgeInsets
-                                                                      .symmetric(
-                                                                      vertical:
-                                                                          8.0),
-                                                                  child: Row(
-                                                                    children: [
-                                                                      Expanded(
-                                                                        child:
-                                                                            Column(
-                                                                          crossAxisAlignment:
-                                                                              CrossAxisAlignment.start,
-                                                                          children: [
-                                                                            Text('مجموع العناصر',
-                                                                                style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight, fontSize: 12)),
-                                                                            const SizedBox(height: 6),
-                                                                            Text(itemsTotal.toStringAsFixed(2),
-                                                                                style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black87 : Colors.white, fontWeight: FontWeight.bold)),
-                                                                          ],
-                                                                        ),
-                                                                      ),
-                                                                      Expanded(
-                                                                        child:
-                                                                            Column(
-                                                                          crossAxisAlignment:
-                                                                              CrossAxisAlignment.end,
-                                                                          children: [
-                                                                            Text('بعد الخصم',
-                                                                                style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.grey[700] : AppColorsDark.mainTextLight, fontSize: 12)),
-                                                                            const SizedBox(height: 6),
-                                                                            Text(effectiveTotalLocal.toStringAsFixed(2),
-                                                                                style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black87 : Colors.white, fontWeight: FontWeight.bold)),
-                                                                          ],
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ),
-                                                                ),
-
-                                                                const SizedBox(
-                                                                    height: 10),
-
-                                                                // actions row
-                                                                Row(
-                                                                  mainAxisAlignment:
-                                                                      MainAxisAlignment
-                                                                          .end,
-                                                                  children: [
-                                                                    TextButton
-                                                                        .icon(
-                                                                      style: TextButton
-                                                                          .styleFrom(
-                                                                        backgroundColor:
-                                                                            AppColorsDark.bgCardColor,
-                                                                      ),
-                                                                      onPressed:
-                                                                          () async {
-                                                                        final choice =
-                                                                            await showDialog<String>(
-                                                                          context:
-                                                                              context,
-                                                                          builder: (ctx) =>
-                                                                              AlertDialog(
-                                                                            backgroundColor:
-                                                                                AppColorsDark.bgCardColor,
-                                                                            title:
-                                                                                Center(child: Text('بماذا تم الدفع؟', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black87 : Colors.white, fontSize: 22))),
-                                                                            actions: [
-                                                                              TextButton(style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor), onPressed: () => Navigator.pop(ctx, null), child: Text('إلغاء', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black : Colors.white))),
-                                                                              TextButton(style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor), onPressed: () => Navigator.pop(ctx, 'card'), child: Text('كارت', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black : Colors.white))),
-                                                                              TextButton(style: TextButton.styleFrom(backgroundColor: AppColorsDark.bgCardColor), onPressed: () => Navigator.pop(ctx, 'cash'), child: Text('نقدي', style: TextStyle(color: Theme.of(context).brightness == Brightness.light ? Colors.black : Colors.white))),
-                                                                            ],
-                                                                          ),
-                                                                        );
-                                                                        if (choice ==
-                                                                            null)
-                                                                          return;
-                                                                        await _markAsPaid(
-                                                                            saleId,
-                                                                            s,
-                                                                            choice);
-                                                                      },
-                                                                      icon: const Icon(
-                                                                          Icons
-                                                                              .check_circle,
-                                                                          color:
-                                                                              Colors.green),
-                                                                      label: const Text(
-                                                                          'تم الدفع',
-                                                                          style:
-                                                                              TextStyle(color: Colors.green)),
-                                                                    ),
-                                                                    const SizedBox(
-                                                                        width:
-                                                                            8),
-                                                                    TextButton
-                                                                        .icon(
-                                                                      style: TextButton
-                                                                          .styleFrom(
-                                                                        backgroundColor:
-                                                                            AppColorsDark.bgCardColor,
-                                                                      ),
-                                                                      onPressed:
-                                                                          () =>
-                                                                              _deleteCredit(saleId),
-                                                                      icon: Icon(
-                                                                          Icons
-                                                                              .delete,
-                                                                          color: Colors
-                                                                              .red
-                                                                              .withOpacity(0.7)),
-                                                                      label: Text(
-                                                                          'حذف',
-                                                                          style:
-                                                                              TextStyle(color: Colors.red.withOpacity(0.7))),
-                                                                    ),
-                                                                  ],
-                                                                ),
-                                                              ],
-                                                            );
-                                                          }),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                              ),
-                                            );
-                                          }).toList(),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ));
-                          },
-                        ),
-            ),
-          ],
+              // ---- table ----
+              list.isEmpty
+                  ? const EmptyStateCard(
+                icon: Icons.receipt_long,
+                title: 'لا توجد فواتير',
+                message: 'لا توجد فواتير آجلة مطابقة لهذا البحث.',
+              )
+                  : _buildInvoicesTable(list),
+            ],
+          ),
         ),
       ),
     );

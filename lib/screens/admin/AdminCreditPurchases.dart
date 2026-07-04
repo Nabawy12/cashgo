@@ -1,4 +1,3 @@
-// admin_later_purchases_screen.dart
 import 'package:cashgo/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
@@ -17,25 +16,49 @@ class AdminLaterPurchasesScreen extends StatefulWidget {
       _AdminLaterPurchasesScreenState();
 }
 
-class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
+class _AdminLaterPurchasesScreenState
+    extends State<AdminLaterPurchasesScreen> {
   List<Map<String, dynamic>> _rows = [];
+  List<Map<String, dynamic>> _filteredRows = [];
   bool _loading = false;
   String? _error;
   final ScrollController _scrollController = ScrollController();
+  final TextEditingController _searchController = TextEditingController();
+  final NumberFormat _money =
+  NumberFormat.currency(locale: 'ar', symbol: 'EGP ');
 
-  // فلتر التاريخ
   DateTime selectedDate = DateTime.now();
 
   @override
   void initState() {
     super.initState();
     _load(date: selectedDate);
+    _searchController.addListener(_applySearch);
   }
 
   @override
   void dispose() {
     _scrollController.dispose();
+    _searchController.dispose();
     super.dispose();
+  }
+
+  void _applySearch() {
+    final q = _searchController.text.trim().toLowerCase();
+    setState(() {
+      if (q.isEmpty) {
+        _filteredRows = List.from(_rows);
+      } else {
+        _filteredRows = _rows.where((r) {
+          final name =
+          (r['product_name'] ?? r['supplier_name'] ?? r['barcode'] ?? '')
+              .toString()
+              .toLowerCase();
+          final id = (r['id'] ?? r['receipt_id'] ?? '').toString();
+          return name.contains(q) || id.contains(q);
+        }).toList();
+      }
+    });
   }
 
   Future<void> _load({DateTime? date}) async {
@@ -43,40 +66,29 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
       _loading = true;
       _error = null;
     });
-
     try {
-      final rows = await _fetchReceiptsFromServer(date: date);
-
-      // فلترة محلياً لإظهار سجلات الآجل (credit) فقط، أو التي تحتوي على credit_amount>0،
-      // ولليوم المحدد إن طُلب
+      final rows = await DBHelper.instance.getCreditPurchaseReceipts();
       final filtered = rows.where((r) {
         final pt = _normalizePaymentType(r);
-        final creditAmt = _getNumericField(r, [
-          'credit_amount',
-          'creditAmount',
-          'due',
-          'due_amount',
-          'dueAmount'
-        ]);
-        // show if declared payment_type is credit OR credit_amount > 0
+        final creditAmt = _getNumericField(r,
+            ['credit_amount', 'creditAmount', 'due', 'due_amount', 'dueAmount']);
         if (!(pt == 'credit' || creditAmt > 0.0)) return false;
-
         if (date == null) return true;
-        final raw = (r['created_at'] ?? r['receipt_date'] ?? r['date'] ?? '')
-            .toString();
+        final raw =
+        (r['created_at'] ?? r['receipt_date'] ?? r['date'] ?? '').toString();
         final dt = _parseDateOnly(raw);
         if (dt == null) return false;
         return dt.year == date.year &&
             dt.month == date.month &&
             dt.day == date.day;
       }).toList();
-
       setState(() {
         _rows = filtered;
+        _filteredRows = List.from(filtered);
         _loading = false;
       });
     } catch (e, st) {
-      debugPrint('Error loading credit purchase receipts: $e\n$st');
+      debugPrint('Error: $e\n$st');
       setState(() {
         _loading = false;
         _error = e.toString();
@@ -84,59 +96,16 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
     }
   }
 
-  Future<List<Map<String, dynamic>>> _fetchReceiptsFromServer(
-      {DateTime? date}) async {
-    return DBHelper.instance.getCreditPurchaseReceipts();
-  }
-
-  // ------------ helpers for payment processing ------------
+  // ─── Helpers ───────────────────────────────────────────────────────────────
 
   String _fmtDate(String s) {
-    if (s.isEmpty) return s;
+    if (s.isEmpty) return '-';
     try {
-      final d = DateTime.parse(s);
-      return DateFormat('yyyy-MM-dd HH:mm').format(d);
+      return DateFormat('yyyy-MM-dd').format(DateTime.parse(s));
     } catch (_) {
-      return s;
+      return s.split('T').first;
     }
   }
-
-  Color? _paymentColor(String paymentType) {
-    switch (paymentType) {
-      case 'cash':
-        return Colors.greenAccent;
-      case 'wallet':
-        return Colors.blueAccent;
-      case 'card':
-        return Colors.orangeAccent[200];
-      case 'credit':
-        return Colors.redAccent;
-      default:
-        return Colors.grey[400];
-    }
-  }
-
-  Color get _dialogTextColor => Theme.of(context).brightness == Brightness.light
-      ? Colors.black
-      : Colors.white;
-
-  Color get _cardTextColor => Theme.of(context).brightness == Brightness.light
-      ? Colors.black87
-      : Colors.white;
-
-  Color get _cardLabelColor => Theme.of(context).brightness == Brightness.light
-      ? Colors.grey[700]!
-      : Colors.grey[400]!;
-
-  Color get _dialogBackgroundColor =>
-      Theme.of(context).brightness == Brightness.light
-          ? Colors.white
-          : AppColorsDark.bgCardColor;
-
-  Color get _dialogSecondaryButtonColor =>
-      Theme.of(context).brightness == Brightness.light
-          ? Colors.grey.shade200
-          : AppColorsDark.bgColor;
 
   DateTime? _parseDateOnly(String raw) {
     if (raw.isEmpty) return null;
@@ -151,38 +120,22 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
         final d = int.tryParse(m.group(3) ?? '') ?? 0;
         if (y > 0 && mo > 0 && d > 0) return DateTime(y, mo, d);
       }
-      final parts =
-          raw.split(RegExp(r'[\s/\\\-]')).where((p) => p.isNotEmpty).toList();
-      if (parts.length >= 3) {
-        if (parts[0].length == 4) {
-          final y = int.tryParse(parts[0]) ?? 0;
-          final mo = int.tryParse(parts[1]) ?? 0;
-          final d = int.tryParse(parts[2]) ?? 0;
-          if (y > 0 && mo > 0 && d > 0) return DateTime(y, mo, d);
-        } else {
-          final d = int.tryParse(parts[0]) ?? 0;
-          final mo = int.tryParse(parts[1]) ?? 0;
-          final y = int.tryParse(parts[2]) ?? 0;
-          if (y > 0 && mo > 0 && d > 0) return DateTime(y, mo, d);
-        }
-      }
     }
     return null;
   }
 
   String _normalizePaymentType(Map<String, dynamic> r) {
     final pt =
-        (r['payment_type'] ?? r['paymentType'] ?? r['paymentTypeStored'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
+    (r['payment_type'] ?? r['paymentType'] ?? r['paymentTypeStored'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
     if (pt.isEmpty) return 'cash';
     if (pt == 'wallet' || pt == 'card' || pt == 'cash' || pt == 'credit')
       return pt;
     if (pt.contains('card')) return 'card';
     if (pt.contains('wallet') || pt.contains('محفظ')) return 'wallet';
-    if (pt.contains('credit') || pt.contains('آجل') || pt.contains('قرض'))
-      return 'credit';
+    if (pt.contains('credit') || pt.contains('آجل')) return 'credit';
     return 'cash';
   }
 
@@ -193,108 +146,22 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
       final v = r[k];
       if (v == null) continue;
       if (v is num) return v.toDouble();
-      final s = v.toString().trim();
-      if (s.isEmpty) continue;
-      final parsed = double.tryParse(s.replaceAll(',', ''));
+      final parsed = double.tryParse(v.toString().replaceAll(',', ''));
       if (parsed != null) return parsed;
     }
     return fallback;
   }
 
-  Widget _buildPaymentChip(String paymentType, {double creditAmount = 0.0}) {
-    final label = paymentType == 'cash'
-        ? 'نقدي'
-        : paymentType == 'wallet'
-            ? 'دفع بالمحفظة'
-            : paymentType == 'card'
-                ? 'بطاقة'
-                : paymentType == 'credit'
-                    ? 'آجل'
-                    : paymentType;
-    return Container(
-      decoration: BoxDecoration(
-        color: _paymentColor(paymentType)!.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(8),
-        border:
-            Border.all(color: _paymentColor(paymentType) ?? Colors.transparent),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 8),
-        child: Text(
-          creditAmount > 0 && paymentType == 'credit'
-              ? '$label (${creditAmount.toStringAsFixed(2)})'
-              : label,
-          style: TextStyle(color: _cardTextColor, fontSize: 12),
-        ),
-      ),
-    );
+  String _getStatus(Map<String, dynamic> r) {
+    final paid = _getNumericField(
+        r, ['total_paid', 'paid_amount', 'paid', 'paidAmount']);
+    final due = _getNumericField(
+        r, ['credit_amount', 'creditAmount', 'due', 'due_amount', 'dueAmount']);
+    if (due <= 0.01) return 'مدفوع';
+    if (paid > 0) return 'جزئي';
+    return 'لم يتم الدفع';
   }
 
-  /// Show dialog to choose payment method (cash/wallet) and confirm -> returns 'cash'|'wallet' or null
-  Future<String?> _askForPaymentMethod({required bool isFullPayment}) async {
-    final picked = await showDialog<String?>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        String selected = 'cash';
-        return Directionality(
-          textDirection: TextDirection.rtl,
-          child: StatefulBuilder(builder: (ctx2, setState2) {
-            return AlertDialog(
-              backgroundColor: _dialogBackgroundColor,
-              title: Center(
-                  child: Text(
-                      isFullPayment ? 'دفع المبلغ كاملاً' : 'دفع جزء من المبلغ',
-                      style: TextStyle(color: _dialogTextColor))),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  RadioListTile<String>(
-                    value: 'cash',
-                    groupValue: selected,
-                    title:
-                        Text('نقدي', style: TextStyle(color: _dialogTextColor)),
-                    activeColor: AppColorsDark.mainColor,
-                    onChanged: (v) => setState2(() => selected = v ?? 'cash'),
-                  ),
-                  RadioListTile<String>(
-                    value: 'wallet',
-                    groupValue: selected,
-                    title: Text('دفع بالمحفظة',
-                        style: TextStyle(color: _dialogTextColor)),
-                    activeColor: AppColorsDark.mainColor,
-                    onChanged: (v) => setState2(() => selected = v ?? 'wallet'),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  style: TextButton.styleFrom(
-                    backgroundColor: _dialogSecondaryButtonColor,
-                    foregroundColor: _dialogTextColor,
-                  ),
-                  onPressed: () => Navigator.of(ctx2).pop(null),
-                  child: const Text('إلغاء'),
-                ),
-                TextButton(
-                  style: TextButton.styleFrom(
-                    backgroundColor: AppColorsDark.mainColor,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: () => Navigator.of(ctx2).pop(selected),
-                  child: const Text('إتمام'),
-                ),
-              ],
-            );
-          }),
-        );
-      },
-    );
-
-    return picked;
-  }
-
-  /// Process payment locally in SQLite.
   Future<void> _processPaymentOnServer({
     required int receiptId,
     required double amount,
@@ -303,157 +170,45 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
   }) async {
     setState(() => _loading = true);
     try {
-      await DBHelper.instance.addPaymentToPurchase(
-        receiptId,
-        amount,
-        paymentMethod: method,
-      );
-
-      final currentRole = (Session.currentRole ?? '').toLowerCase().trim();
-      final currentUser = (Session.currentUsername ?? '').trim();
-      if (currentRole != 'admin' && currentUser.isNotEmpty) {
-        debugPrint(
-            '[CreditPayment] payment recorded on original purchase receipt only: amount=$amount method=$method cashier=$currentUser receiptId=$receiptId');
-      }
-
+      await DBHelper.instance
+          .addPaymentToPurchase(receiptId, amount, paymentMethod: method);
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Directionality(
-            textDirection: TextDirection.rtl,
-            child: Text('تمت المعالجةً'),
-          ),
+              textDirection: TextDirection.rtl, child: Text('تمت المعالجة')),
         ));
       await _load(date: selectedDate);
     } catch (e) {
-      debugPrint('Error processing payment: $e');
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Directionality(
-            textDirection: TextDirection.rtl,
-            child: Text('فشل تسجيل الدفعة: $e'),
-          ),
+              textDirection: TextDirection.rtl,
+              child: Text('فشل تسجيل الدفعة: $e')),
         ));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  // Mark fully paid (ask method then call server)
   Future<void> _markPaid(int id) async {
     final r = _rows.firstWhere(
-        (e) =>
-            ((e['id'] ?? e['receipt_id']) is num) &&
-            (e['id'] ?? e['receipt_id']) == id,
+            (e) => (e['id'] ?? e['receipt_id']) == id,
         orElse: () => {});
-    if (r.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Text('السند غير موجود'),
-        ),
-      ));
-      return;
-    }
-
+    if (r.isEmpty) return;
     final due = _getNumericField(
-        r,
-        ['credit_amount', 'creditAmount', 'due', 'due_amount', 'dueAmount'],
-        0.0);
-    if (due <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Text('لا يوجد مبلغ مستحق'),
-        ),
-      ));
-      return;
-    }
-
-    final method = await _askForPaymentMethod(isFullPayment: true);
-    if (method == null) return;
-    await _processPaymentOnServer(
-        receiptId: id, amount: due, method: method, receiptRow: r);
+        r, ['credit_amount', 'creditAmount', 'due', 'due_amount', 'dueAmount']);
+    if (due <= 0) return;
+    _showPaymentSheet(r);
   }
 
-  // Partial payment: ask amount then method then send
   Future<void> _partialPay(int id) async {
     final r = _rows.firstWhere(
-        (e) =>
-            ((e['id'] ?? e['receipt_id']) is num) &&
-            (e['id'] ?? e['receipt_id']) == id,
+            (e) => (e['id'] ?? e['receipt_id']) == id,
         orElse: () => {});
-    if (r.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Text('السند غير موجود'),
-        ),
-      ));
-      return;
-    }
-
-    final due = _getNumericField(
-        r,
-        ['credit_amount', 'creditAmount', 'due', 'due_amount', 'dueAmount'],
-        0.0);
-    if (due <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Text('لا يوجد مبلغ مستحق'),
-        ),
-      ));
-      return;
-    }
-
-    final ctrl = TextEditingController();
-    final ok = await showDialog<bool?>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: _dialogBackgroundColor,
-        title: Center(
-            child: Text('دفع جزء من المبلغ',
-                style: TextStyle(color: _dialogTextColor))),
-        content: CustomFormField(
-          controller: ctrl,
-          hint: 'المبلغ (<= ${due.toStringAsFixed(2)})',
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        ),
-        actions: [
-          TextButton(
-            style: TextButton.styleFrom(
-              backgroundColor: _dialogSecondaryButtonColor,
-              foregroundColor: _dialogTextColor,
-            ),
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('إلغاء'),
-          ),
-          TextButton(
-            style: TextButton.styleFrom(
-              backgroundColor: AppColorsDark.mainColor,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('التالي'),
-          ),
-        ],
-      ),
-    );
-
-    if (ok != true) return;
-
-    double amount = double.tryParse(ctrl.text.replaceAll(',', '')) ?? 0.0;
-    if (amount <= 0) return;
-    if (amount > due) amount = due;
-
-    final method = await _askForPaymentMethod(isFullPayment: false);
-    if (method == null) return;
-
-    await _processPaymentOnServer(
-        receiptId: id, amount: amount, method: method, receiptRow: r);
+    if (r.isEmpty) return;
+    _showPaymentSheet(r, forcePartial: true);
   }
 
-  // ====== تاريخ ======
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -462,17 +217,435 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
       lastDate: DateTime(2100),
     );
     if (picked != null) {
-      setState(() {
-        selectedDate = picked;
-      });
+      setState(() => selectedDate = picked);
       await _load(date: selectedDate);
     }
   }
 
-  String _formatSelectedDate(DateTime dt) => '${dt.day}/${dt.month}/${dt.year}';
+  String _formatSelectedDate(DateTime dt) =>
+      DateFormat('dd/MM/yyyy').format(dt);
+
+  // ─── Bottom Sheet ───────────────────────────────────────────────────────────
+
+  void _showPaymentSheet(Map<String, dynamic> r, {bool forcePartial = false}) {
+    final id = (r['id'] ?? r['receipt_id']) is num
+        ? (r['id'] ?? r['receipt_id']) as int
+        : 0;
+    final title = r['product_name'] ?? r['barcode'] ?? '—';
+    final due = _getNumericField(
+        r, ['credit_amount', 'creditAmount', 'due', 'due_amount', 'dueAmount']);
+    final paid =
+    _getNumericField(r, ['total_paid', 'paid_amount', 'paid', 'paidAmount']);
+    final total = paid + due;
+
+    String selectedMethod = 'cash';
+    String selectedAmountType = forcePartial ? 'partial' : 'full';
+    final amountController = TextEditingController();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColorsDark.bgCardColor,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 20,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // ── Header ──
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'INV-${id.toString().padLeft(4, '0')}',
+                          style: TextStyle(
+                              color: AppColorsDark.mainColor,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15),
+                        ),
+                        Text(title,
+                            style: TextStyle(
+                                color: AppColorsDark.mainTextLight,
+                                fontSize: 12)),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Icon(Icons.shopping_bag_outlined,
+                            color: AppColorsDark.mainColor, size: 20),
+                        const SizedBox(width: 6),
+                        Text(
+                          'تسديد المشتريات الآجلة',
+                          style: TextStyle(
+                              color: AppColorsDark.mainTextDark,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16),
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      icon: Icon(Icons.close, color: AppColorsDark.mainTextDark),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // ── Amount cards ──
+                Row(
+                  children: [
+                    Expanded(
+                      child: _sheetCard('إجمالي الفاتورة',
+                          _money.format(total), Colors.blueAccent),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _sheetCard(
+                          'المتبقي', _money.format(due), Colors.greenAccent),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ── Payment method ──
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('اختر طريقة التسديد',
+                              style: TextStyle(
+                                  color: AppColorsDark.mainTextDark,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13)),
+                          const SizedBox(height: 10),
+                          _methodTile(
+                            label: 'نقدي',
+                            value: 'cash',
+                            icon: Icons.payments_rounded,
+                            iconColor: Colors.greenAccent,
+                            selected: selectedMethod,
+                            onTap: () =>
+                                setSheet(() => selectedMethod = 'cash'),
+                          ),
+                          const SizedBox(height: 8),
+                          _methodTile(
+                            label: 'محفظة',
+                            value: 'wallet',
+                            icon: Icons.account_balance_wallet_rounded,
+                            iconColor: Colors.purpleAccent,
+                            selected: selectedMethod,
+                            onTap: () =>
+                                setSheet(() => selectedMethod = 'wallet'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 20),
+
+                    // ── Amount type ──
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('اختر مبلغ التسديد',
+                              style: TextStyle(
+                                  color: AppColorsDark.mainTextDark,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13)),
+                          const SizedBox(height: 8),
+                          GestureDetector(
+                            onTap: () =>
+                                setSheet(() => selectedAmountType = 'full'),
+                            child: Row(
+                              children: [
+                                Radio<String>(
+                                  value: 'full',
+                                  groupValue: selectedAmountType,
+                                  onChanged: (v) =>
+                                      setSheet(() => selectedAmountType = v!),
+                                  activeColor: AppColorsDark.mainColor,
+                                ),
+                                Expanded(
+                                    child: Text('دفع كامل المبلغ',
+                                        style: TextStyle(
+                                            color: AppColorsDark.mainTextDark,
+                                            fontSize: 13))),
+                                Text(
+                                  _money.format(due),
+                                  style: TextStyle(
+                                      color: AppColorsDark.mainColor,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: () =>
+                                setSheet(() => selectedAmountType = 'partial'),
+                            child: Row(
+                              children: [
+                                Radio<String>(
+                                  value: 'partial',
+                                  groupValue: selectedAmountType,
+                                  onChanged: (v) =>
+                                      setSheet(() => selectedAmountType = v!),
+                                  activeColor: AppColorsDark.mainColor,
+                                ),
+                                Text('دفع جزء من المبلغ',
+                                    style: TextStyle(
+                                        color: AppColorsDark.mainTextDark,
+                                        fontSize: 13)),
+                              ],
+                            ),
+                          ),
+                          if (selectedAmountType == 'partial') ...[
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: amountController,
+                              keyboardType: const TextInputType.numberWithOptions(
+                                  decimal: true),
+                              style:
+                              TextStyle(color: AppColorsDark.mainTextDark),
+                              decoration: InputDecoration(
+                                hintText: 'أدخل المبلغ',
+                                hintStyle: TextStyle(
+                                    color: AppColorsDark.mainTextLight),
+                                suffixText: 'EGP',
+                                suffixStyle: TextStyle(
+                                    color: AppColorsDark.mainTextLight),
+                                filled: true,
+                                fillColor: AppColorsDark.bgColor,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                  borderSide: BorderSide.none,
+                                ),
+                                isDense: true,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+
+                // ── Confirm button ──
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColorsDark.mainColor,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: () async {
+                      Navigator.pop(ctx);
+                      double amount;
+                      if (selectedAmountType == 'full') {
+                        amount = due;
+                      } else {
+                        amount = double.tryParse(
+                            amountController.text.replaceAll(',', '')) ??
+                            0.0;
+                        if (amount <= 0) return;
+                        if (amount > due) amount = due;
+                      }
+                      await _processPaymentOnServer(
+                          receiptId: id,
+                          amount: amount,
+                          method: selectedMethod,
+                          receiptRow: r);
+                    },
+                    child: const Text('تأكيد التسديد',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _sheetCard(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColorsDark.bgColor,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Text(label,
+              style: TextStyle(
+                  color: AppColorsDark.mainTextLight, fontSize: 12)),
+          const SizedBox(height: 6),
+          Text(value,
+              style: TextStyle(
+                  color: color, fontWeight: FontWeight.bold, fontSize: 15)),
+        ],
+      ),
+    );
+  }
+
+  Widget _methodTile({
+    required String label,
+    required String value,
+    required IconData icon,
+    required Color iconColor,
+    required String selected,
+    required VoidCallback onTap,
+  }) {
+    final isSelected = selected == value;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? AppColorsDark.mainColor.withOpacity(0.12)
+              : AppColorsDark.bgColor,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected
+                ? AppColorsDark.mainColor
+                : Colors.transparent,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: iconColor, size: 20),
+            const SizedBox(width: 8),
+            Text(label,
+                style:
+                TextStyle(color: AppColorsDark.mainTextDark, fontSize: 13)),
+            const Spacer(),
+            Radio<String>(
+              value: value,
+              groupValue: selected,
+              onChanged: (_) => onTap(),
+              activeColor: AppColorsDark.mainColor,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ─── Widgets ────────────────────────────────────────────────────────────────
+
+  Widget _summaryCard(
+      String title, String value, Color color, IconData icon) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColorsDark.bgCardColor,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: color.withOpacity(0.2)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: color, size: 18),
+            ),
+            const SizedBox(height: 10),
+            Text(title,
+                style: TextStyle(
+                    color: AppColorsDark.mainTextLight, fontSize: 11)),
+            const SizedBox(height: 4),
+            Text(value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _headerCell(String label, {int flex = 1}) {
+    return Expanded(
+      flex: flex,
+      child: Text(label,
+          style: TextStyle(
+              color: AppColorsDark.mainTextLight,
+              fontSize: 12,
+              fontWeight: FontWeight.w600)),
+    );
+  }
+
+  Widget _statusBadge(String status) {
+    final color = status == 'مدفوع'
+        ? Colors.greenAccent
+        : status == 'جزئي'
+        ? Colors.orangeAccent
+        : Colors.redAccent;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Text(status,
+          style: TextStyle(
+              color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+    );
+  }
+
+  // ─── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
+    final totalCredit = _rows.fold(
+        0.0,
+            (sum, r) => sum +
+            _getNumericField(r, [
+              'credit_amount',
+              'creditAmount',
+              'due',
+              'due_amount',
+              'dueAmount'
+            ]));
+    final totalPaid = _rows.fold(
+        0.0,
+            (sum, r) => sum +
+            _getNumericField(
+                r, ['total_paid', 'paid_amount', 'paid', 'paidAmount']));
+
     return Scaffold(
       backgroundColor: AppColorsDark.bgColor,
       appBar: AppBar(
@@ -480,226 +653,356 @@ class _AdminLaterPurchasesScreenState extends State<AdminLaterPurchasesScreen> {
             style: TextStyle(color: AppColorsDark.mainTextDark)),
         backgroundColor: Colors.transparent,
         elevation: 0,
+        centerTitle: true,
         iconTheme: IconThemeData(color: Theme.of(context).iconTheme.color),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(32),
+          child: GestureDetector(
+            onTap: _pickDate,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    _formatSelectedDate(selectedDate),
+                    style: TextStyle(
+                        color: AppColorsDark.mainTextDark,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
+                  ),
+                  const SizedBox(width: 6),
+                  Icon(Icons.calendar_today_rounded,
+                      size: 15, color: AppColorsDark.mainTextLight),
+                ],
+              ),
+            ),
+          ),
+        ),
         actions: [
           IconButton(
-            tooltip: "إعادة تحميل",
+            tooltip: 'إعادة تحميل',
             onPressed: () => _load(date: selectedDate),
             icon: Icon(Icons.refresh, color: Theme.of(context).iconTheme.color),
-          )
+          ),
         ],
       ),
       body: _loading
           ? ListView.separated(
-              padding: const EdgeInsets.all(12),
-              itemCount: 6, // عدد عناصر shimmer المراد عرضها أثناء التحميل
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (context, index) {
-                return LoadingShimmer(
-                  height: 80,
-                  borderRadius: BorderRadius.circular(10),
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                );
-              },
-            )
+        padding: const EdgeInsets.all(12),
+        itemCount: 6,
+        separatorBuilder: (_, __) => const SizedBox(height: 12),
+        itemBuilder: (_, i) => LoadingShimmer(
+          height: 60,
+          borderRadius: BorderRadius.circular(10),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+        ),
+      )
           : _error != null
-              ? Center(
-                  child: Text('حدث خطأ: $_error',
-                      style: TextStyle(color: Colors.redAccent)))
-              : Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 12.0, horizontal: 16.0),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          GestureDetector(
-                            onTap: _pickDate,
-                            child: Column(
-                              children: [
-                                Text('التاريخ',
-                                    style: TextStyle(
-                                        color: AppColorsDark.mainTextLight,
-                                        fontSize: 13)),
-                                const SizedBox(height: 4),
-                                Text(_formatSelectedDate(selectedDate),
-                                    style: TextStyle(
-                                        color: AppColorsDark.mainTextDark,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold)),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Expanded(
-                      child: Scrollbar(
-                        controller: _scrollController,
-                        thumbVisibility: true,
-                        child: _rows.isEmpty
-                            ? const EmptyStateCard(
-                                icon: Icons.pending_actions,
-                                title: 'لا توجد مشتريات آجلة',
-                                message: 'لا توجد مشتريات آجلة في هذا التاريخ.',
-                              )
-                            : ListView.builder(
-                                controller: _scrollController,
-                                itemCount: _rows.length,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 30, vertical: 20),
-                                itemBuilder: (_, i) {
-                                  final r = _rows[i];
-                                  final id = (r['id'] ?? r['receipt_id']) is num
-                                      ? (r['id'] ?? r['receipt_id']) as int
-                                      : (i + 1);
-                                  final title =
-                                      r['product_name'] ?? r['barcode'] ?? '—';
-
-                                  // read paid from total_paid / paid_amount / paid
-                                  final paid = _getNumericField(
-                                      r,
-                                      [
-                                        'total_paid',
-                                        'paid_amount',
-                                        'paid',
-                                        'paidAmount'
-                                      ],
-                                      0.0);
-
-                                  // prefer credit_amount as "due", fallback to due/due_amount fields
-                                  final due = _getNumericField(
-                                      r,
-                                      [
-                                        'credit_amount',
-                                        'creditAmount',
-                                        'due',
-                                        'due_amount',
-                                        'dueAmount'
-                                      ],
-                                      0.0);
-
-                                  final created = (r['created_at'] ??
-                                          r['receipt_date'] ??
-                                          '')
-                                      .toString();
-                                  final paymentType = _normalizePaymentType(r);
-
-                                  return Directionality(
-                                    textDirection: TextDirection.rtl,
-                                    child: Card(
-                                      color: AppColorsDark.bgCardColor,
-                                      margin: const EdgeInsets.symmetric(
-                                          vertical: 12),
-                                      shape: RoundedRectangleBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(12)),
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(16.0),
-                                        child: Row(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Wrap(
-                                                    spacing: 8,
-                                                    runSpacing: 8,
-                                                    crossAxisAlignment:
-                                                        WrapCrossAlignment
-                                                            .center,
-                                                    children: [
-                                                      ConstrainedBox(
-                                                        constraints:
-                                                            const BoxConstraints(
-                                                                minWidth: 160,
-                                                                maxWidth: 520),
-                                                        child: Text('$title',
-                                                            overflow:
-                                                                TextOverflow
-                                                                    .ellipsis,
-                                                            style: TextStyle(
-                                                                color:
-                                                                    _cardTextColor,
-                                                                fontSize: 18,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .bold)),
-                                                      ),
-                                                      _buildPaymentChip(
-                                                          paymentType,
-                                                          creditAmount: due),
-                                                    ],
-                                                  ),
-                                                  const SizedBox(height: 8),
-                                                  _buildInfoRow("استلم:",
-                                                      "${r['received_by'] ?? r['cashier_name'] ?? ''}"),
-                                                  _buildInfoRow("كمية:",
-                                                      "${r['cartons'] ?? 0} كراتين + ${r['units'] ?? 0} وحدات"),
-                                                  _buildInfoRow("المدفوع:",
-                                                      paid.toStringAsFixed(2),
-                                                      valueColor: Colors.green),
-                                                  _buildInfoRow("المتبقي/آجل:",
-                                                      due.toStringAsFixed(2),
-                                                      valueColor: Colors
-                                                          .redAccent[200]),
-                                                  _buildInfoRow("التاريخ:",
-                                                      _fmtDate(created)),
-                                                ],
-                                              ),
-                                            ),
-                                            PopupMenuButton<String>(
-                                              iconColor: Theme.of(context)
-                                                  .iconTheme
-                                                  .color,
-                                              onSelected: (v) async {
-                                                if (v == 'partial') {
-                                                  await _partialPay(id);
-                                                } else if (v == 'full') {
-                                                  await _markPaid(id);
-                                                }
-                                              },
-                                              itemBuilder: (_) => const [
-                                                PopupMenuItem(
-                                                    value: 'partial',
-                                                    child: Text('دفع جزء')),
-                                                PopupMenuItem(
-                                                    value: 'full',
-                                                    child:
-                                                        Text('دفعت بالكامل')),
-                                              ],
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                      ),
-                    ),
-                  ],
-                ),
-    );
-  }
-
-  Widget _buildInfoRow(String label, String value, {Color? valueColor}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4.0),
-      child: Text.rich(
-        TextSpan(
+          ? Center(
+          child: Text('حدث خطأ: $_error',
+              style: const TextStyle(color: Colors.redAccent)))
+          : Directionality(
+        textDirection: TextDirection.rtl,
+        child: Column(
           children: [
-            TextSpan(
-                text: "$label ",
-                style: TextStyle(color: _cardLabelColor, fontSize: 14)),
-            TextSpan(
-                text: value,
-                style: TextStyle(
-                    color: valueColor ?? _cardTextColor, fontSize: 14)),
+            // ── Summary Cards ──
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Row(
+                children: [
+                  _summaryCard(
+                      'إجمالي المشتريات الآجلة',
+                      _money.format(totalCredit),
+                      Colors.blueAccent,
+                      Icons.shopping_bag_outlined),
+                  const SizedBox(width: 10),
+                  _summaryCard(
+                      'إجمالي المدفوع',
+                      _money.format(totalPaid),
+                      Colors.orangeAccent,
+                      Icons.receipt_rounded),
+                  const SizedBox(width: 10),
+                  _summaryCard(
+                      'المتبقي',
+                      _money.format(totalCredit),
+                      Colors.greenAccent,
+                      Icons.account_balance_wallet_rounded),
+                  const SizedBox(width: 10),
+                  _summaryCard(
+                      'عدد الفواتير',
+                      '${_rows.length}',
+                      Colors.purpleAccent,
+                      Icons.format_list_numbered_rounded),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // ── Search ──
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: TextField(
+                controller: _searchController,
+                textDirection: TextDirection.rtl,
+                style: TextStyle(color: AppColorsDark.mainTextDark),
+                decoration: InputDecoration(
+                  prefixIcon: Icon(Icons.search,
+                      color: Theme.of(context).iconTheme.color),
+                  hintText: 'ابحث برقم الفاتورة أو اسم المورد',
+                  hintStyle:
+                  TextStyle(color: AppColorsDark.mainTextLight),
+                  filled: true,
+                  fillColor: AppColorsDark.bgCardColor,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  isDense: true,
+                  contentPadding:
+                  const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // ── Table Header ──
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColorsDark.bgCardColor,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  _headerCell('رقم الفاتورة', flex: 2),
+                  _headerCell('اسم المورد', flex: 3),
+                  _headerCell('تاريخ الفاتورة', flex: 2),
+                  _headerCell('إجمالي الفاتورة', flex: 2),
+                  _headerCell('المدفوع', flex: 2),
+                  _headerCell('المتبقي', flex: 2),
+                  _headerCell('الحالة', flex: 2),
+                  _headerCell('الإجراءات', flex: 2),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+
+            // ── Rows ──
+            Expanded(
+              child: _filteredRows.isEmpty
+                  ? const EmptyStateCard(
+                icon: Icons.pending_actions,
+                title: 'لا توجد مشتريات آجلة',
+                message:
+                'لا توجد مشتريات آجلة في هذا التاريخ.',
+              )
+                  : ListView.separated(
+                controller: _scrollController,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 4),
+                itemCount: _filteredRows.length,
+                separatorBuilder: (_, __) =>
+                const SizedBox(height: 6),
+                itemBuilder: (_, i) {
+                  final r = _filteredRows[i];
+                  final id =
+                  (r['id'] ?? r['receipt_id']) is num
+                      ? (r['id'] ?? r['receipt_id']) as int
+                      : (i + 1);
+                  final title =
+                      r['product_name'] ?? r['barcode'] ?? '—';
+                  final paid = _getNumericField(r, [
+                    'total_paid',
+                    'paid_amount',
+                    'paid',
+                    'paidAmount'
+                  ]);
+                  final due = _getNumericField(r, [
+                    'credit_amount',
+                    'creditAmount',
+                    'due',
+                    'due_amount',
+                    'dueAmount'
+                  ]);
+                  final total = paid + due;
+                  final created =
+                  (r['created_at'] ?? r['receipt_date'] ?? '')
+                      .toString();
+                  final status = _getStatus(r);
+
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: AppColorsDark.bgCardColor,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            'INV-${id.toString().padLeft(4, '0')}',
+                            style: TextStyle(
+                                color: AppColorsDark.mainColor,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 3,
+                          child: Text(
+                            title,
+                            style: TextStyle(
+                                color:
+                                AppColorsDark.mainTextDark,
+                                fontSize: 13),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            _fmtDate(created),
+                            style: TextStyle(
+                                color:
+                                AppColorsDark.mainTextLight,
+                                fontSize: 12),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            _money.format(total),
+                            style: const TextStyle(
+                                color: Colors.blueAccent,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            _money.format(paid),
+                            style: const TextStyle(
+                                color: Colors.orangeAccent,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Text(
+                            _money.format(due),
+                            style: const TextStyle(
+                                color: Colors.greenAccent,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: _statusBadge(status),
+                        ),
+                        Expanded(
+                          flex: 2,
+                          child: Row(
+                            children: [
+                              if (status != 'مدفوع')
+                                ElevatedButton.icon(
+                                  onPressed: () =>
+                                      _showPaymentSheet(r),
+                                  icon: const Icon(
+                                      Icons.payment_rounded,
+                                      size: 13),
+                                  label: const Text('دفع',
+                                      style: TextStyle(
+                                          fontSize: 12)),
+                                  style:
+                                  ElevatedButton.styleFrom(
+                                    backgroundColor:
+                                    AppColorsDark.mainColor,
+                                    foregroundColor:
+                                    Colors.white,
+                                    padding: const EdgeInsets
+                                        .symmetric(
+                                        horizontal: 10,
+                                        vertical: 6),
+                                    shape:
+                                    RoundedRectangleBorder(
+                                        borderRadius:
+                                        BorderRadius
+                                            .circular(
+                                            8)),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize:
+                                    MaterialTapTargetSize
+                                        .shrinkWrap,
+                                  ),
+                                )
+                              else
+                                OutlinedButton.icon(
+                                  onPressed: null,
+                                  icon: const Icon(
+                                      Icons
+                                          .remove_red_eye_rounded,
+                                      size: 13),
+                                  label: const Text('عرض',
+                                      style: TextStyle(
+                                          fontSize: 12)),
+                                  style:
+                                  OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets
+                                        .symmetric(
+                                        horizontal: 10,
+                                        vertical: 6),
+                                    shape:
+                                    RoundedRectangleBorder(
+                                        borderRadius:
+                                        BorderRadius
+                                            .circular(
+                                            8)),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize:
+                                    MaterialTapTargetSize
+                                        .shrinkWrap,
+                                  ),
+                                ),
+                              const SizedBox(width: 4),
+                              PopupMenuButton<String>(
+                                iconColor: Theme.of(context)
+                                    .iconTheme
+                                    .color,
+                                iconSize: 18,
+                                padding: EdgeInsets.zero,
+                                onSelected: (v) async {
+                                  if (v == 'partial')
+                                    await _partialPay(id);
+                                  else if (v == 'full')
+                                    await _markPaid(id);
+                                },
+                                itemBuilder: (_) => const [
+                                  PopupMenuItem(
+                                      value: 'partial',
+                                      child: Text('دفع جزء')),
+                                  PopupMenuItem(
+                                      value: 'full',
+                                      child: Text(
+                                          'دفعت بالكامل')),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
           ],
         ),
       ),

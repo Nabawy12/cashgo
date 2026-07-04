@@ -42,6 +42,20 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
   // replacement product info stored with keys used later: 'selling_price' and 'total_units', 'name', 'barcode'
   final Map<int, Map<String, dynamic>> _replacementProducts = {};
 
+
+  Widget _miniChip(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Text(label,
+          style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -169,8 +183,10 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
     if (code.isEmpty) return;
 
     try {
-      final apiProduct = await ProductApi.getProductByBarcode(code);
-      if (apiProduct == null) {
+      // جيب كل المنتجات بنفس الباركود
+      final allMatches = await DBHelper.instance.getProductsByBarcodeList(code);
+
+      if (allMatches.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Directionality(
             textDirection: TextDirection.rtl,
@@ -181,9 +197,101 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
         return;
       }
 
-      final product = Product.fromMap(apiProduct);
-      final pid = product.id!;
-      final available = product.totalUnits ?? 0;
+      Map<String, dynamic>? chosenRaw;
+
+      if (allMatches.length == 1) {
+        chosenRaw = allMatches.first;
+      } else {
+        // فيه أكتر من منتج بنفس الباركود — اسأل الكاشير
+        chosenRaw = await showDialog<Map<String, dynamic>>(
+          context: context,
+          builder: (ctx) => Directionality(
+            textDirection: TextDirection.rtl,
+            child: AlertDialog(
+              backgroundColor: AppColorsDark.bgCardColor,
+              title: Text(
+                'اختر المنتج',
+                style: TextStyle(color: AppColorsDark.mainTextDark),
+              ),
+              content: SizedBox(
+                width: 400,
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: allMatches.length,
+                  separatorBuilder: (_, __) =>
+                      Divider(color: Colors.white12, height: 1),
+                  itemBuilder: (_, i) {
+                    final p = allMatches[i];
+                    final name = (p['name'] ?? '').toString();
+                    final totalUnits = (p['total_units'] as num?)?.toInt() ?? 0;
+                    final price = (p['selling_price'] as num?)?.toDouble() ?? 0.0;
+                    final available = totalUnits > 0;
+
+                    return ListTile(
+                      enabled: available,
+                      onTap: available ? () => Navigator.pop(ctx, p) : null,
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: available
+                              ? AppColorsDark.mainColor.withOpacity(0.15)
+                              : Colors.grey.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          Icons.inventory_2_rounded,
+                          color: available
+                              ? AppColorsDark.mainColor
+                              : Colors.grey,
+                          size: 20,
+                        ),
+                      ),
+                      title: Text(
+                        name,
+                        style: TextStyle(
+                          color: available
+                              ? AppColorsDark.mainTextDark
+                              : AppColorsDark.mainTextLight,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      subtitle: Row(
+                        children: [
+                          _miniChip(
+                            'السعر: ${price.toStringAsFixed(2)}',
+                            Colors.blueAccent,
+                          ),
+                          const SizedBox(width: 8),
+                          _miniChip(
+                            available ? 'متاح: $totalUnits' : 'نفذ',
+                            available ? Colors.greenAccent : Colors.redAccent,
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, null),
+                  child: Text('إلغاء',
+                      style: TextStyle(color: AppColorsDark.mainTextLight)),
+                ),
+              ],
+            ),
+          ),
+        );
+
+        if (chosenRaw == null) {
+          _replacementBarcodeController.clear();
+          return;
+        }
+      }
+
+      final pid = (chosenRaw['id'] as num).toInt();
+      final available = (chosenRaw['total_units'] as num?)?.toInt() ?? 0;
+
       if (available <= 0) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Directionality(
@@ -198,26 +306,28 @@ class _ProcessReturnDialogState extends State<ProcessReturnDialog> {
       setState(() {
         _replacementProducts[pid] = {
           'id': pid,
-          'name': product.name ?? '',
-          'barcode': product.barcode ?? code,
-          'selling_price': product.sellingPrice?.toDouble() ?? 0.0,
-          'total_units': product.totalUnits ?? 0,
+          'name': (chosenRaw!['name'] ?? '').toString(),
+          'barcode': (chosenRaw['barcode'] ?? code).toString(),
+          'selling_price':
+          (chosenRaw['selling_price'] as num?)?.toDouble() ?? 0.0,
+          'total_units': available,
         };
         final cur = _replacementQty[pid] ?? 0;
-        _replacementQty[pid] = (cur + 1) <= available ? (cur + 1) : available;
+        _replacementQty[pid] =
+        (cur + 1) <= available ? (cur + 1) : available;
       });
+
       _replacementBarcodeController.clear();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Directionality(
           textDirection: TextDirection.rtl,
-          child: Text('خطأ في جلب المنتج: $e'),
+          child: Text('خطأ: $e'),
         ),
       ));
       _replacementBarcodeController.clear();
     }
   }
-
   // Update local meta for offline cash/credit totals.
   Future<void> _recordOfflineTotals(double amount, String paymentMethod) async {
     try {

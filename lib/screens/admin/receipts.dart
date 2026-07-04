@@ -310,6 +310,25 @@ class _receiptsScreenState extends State<receiptsScreen> {
     );
   }
 
+
+  Widget _paymentFilterChip(String value, String label, IconData icon) {
+    final selected = _activeFilter == value;
+    return FilterChip(
+      selected: selected,
+      onSelected: (_) => setState(() => _activeFilter = value),
+      label: Text(label),
+      avatar: Icon(icon, size: 16, color: selected ? AppColorsDark.mainColor : null),
+      selectedColor: AppColorsDark.mainColor.withOpacity(0.2),
+      labelStyle: TextStyle(
+        color: selected ? AppColorsDark.mainTextDark : AppColorsDark.mainTextLight,
+        fontWeight: FontWeight.w600,
+      ),
+      side: BorderSide(color: AppColorsDark.mainColor.withOpacity(selected ? 0.6 : 0.25)),
+      backgroundColor: AppColorsDark.bgCardColor,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+    );
+  }
+
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -466,47 +485,44 @@ class _receiptsScreenState extends State<receiptsScreen> {
           crossAxisAlignment: CrossAxisAlignment.center,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(vertical: 12.0, horizontal: 16.0),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  GestureDetector(
-                    onTap: _pickDate,
-                    child: Column(
-                      children: [
-                        Text(
-                          'التاريخ',
-                          style: TextStyle(
-                            color: AppColorsDark.mainTextLight,
-                            fontSize: 15,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(
-                              _formatSelectedDate(selectedDate),
-                              style: TextStyle(
-                                  color: AppColorsDark.mainTextDark,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(width: 8),
-                            Icon(Icons.calendar_today,
-                                size: 18,
-                                color: Theme.of(context).iconTheme.color),
-                          ],
-                        ),
-                      ],
-                    ),
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: _pickDate,
+                borderRadius: BorderRadius.circular(14),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(vertical: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: AppColorsDark.bgCardColor,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppColorsDark.mainColor.withOpacity(0.3)),
                   ),
-                ],
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.calendar_today_rounded,
+                          size: 18, color: AppColorsDark.mainColor),
+                      const SizedBox(width: 8),
+                      Text(
+                        _formatSelectedDate(selectedDate),
+                        style: TextStyle(
+                          color: AppColorsDark.mainTextDark,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '(اضغط للتغيير)',
+                        style: TextStyle(
+                          color: AppColorsDark.mainTextLight,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: 8),
@@ -517,106 +533,9 @@ class _receiptsScreenState extends State<receiptsScreen> {
                 spacing: 12,
                 runSpacing: 8,
                 children: [
-                  // chips...
-                  Theme(
-                    data: Theme.of(context).copyWith(
-                      chipTheme: Theme.of(context).chipTheme.copyWith(
-                            checkmarkColor: AppColorsDark.mainColor,
-                          ),
-                    ),
-                    child: ChoiceChip(
-                      disabledColor: AppColorsDark.bgColor,
-                      backgroundColor: AppColorsDark.bgColor,
-                      selectedColor: AppColorsDark.bgColor,
-                      labelStyle: TextStyle(
-                        color: _activeFilter == 'card'
-                            ? AppColorsDark.mainTextDark
-                            : AppColorsDark.mainTextLight,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      side: BorderSide(
-                        color: AppColorsDark.mainColor,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      label: const Text('دفع بالمحفظة'),
-                      iconTheme: IconThemeData(
-                        color: Theme.of(context).iconTheme.color,
-                      ),
-                      selected: _activeFilter == 'card',
-                      onSelected: (_) {
-                        setState(() {
-                          _activeFilter = 'card';
-                        });
-                      },
-                    ),
-                  ),
-                  Theme(
-                    data: Theme.of(context).copyWith(
-                      chipTheme: Theme.of(context).chipTheme.copyWith(
-                            checkmarkColor: AppColorsDark.mainColor,
-                          ),
-                    ),
-                    child: ChoiceChip(
-                      disabledColor: AppColorsDark.bgColor,
-                      backgroundColor: AppColorsDark.bgColor,
-                      selectedColor: AppColorsDark.bgColor,
-                      labelStyle: TextStyle(
-                        color: _activeFilter == 'cash'
-                            ? AppColorsDark.mainTextDark
-                            : AppColorsDark.mainTextLight,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      side: BorderSide(
-                        color: AppColorsDark.mainColor,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      label: const Text('نقدي'),
-                      iconTheme: IconThemeData(
-                        color: Theme.of(context).iconTheme.color,
-                      ),
-                      selected: _activeFilter == 'cash',
-                      onSelected: (_) {
-                        setState(() {
-                          _activeFilter = 'cash';
-                        });
-                      },
-                    ),
-                  ),
-                  Theme(
-                    data: Theme.of(context).copyWith(
-                      chipTheme: Theme.of(context).chipTheme.copyWith(
-                            checkmarkColor: AppColorsDark.mainColor,
-                          ),
-                    ),
-                    child: ChoiceChip(
-                      disabledColor: AppColorsDark.bgColor,
-                      backgroundColor: AppColorsDark.bgColor,
-                      selectedColor: AppColorsDark.bgColor,
-                      labelStyle: TextStyle(
-                        color: _activeFilter == 'all'
-                            ? AppColorsDark.mainTextDark
-                            : AppColorsDark.mainTextLight,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      side: BorderSide(color: AppColorsDark.mainColor),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      label: const Text('الكل'),
-                      iconTheme: IconThemeData(
-                          color: Theme.of(context).iconTheme.color),
-                      selected: _activeFilter == 'all',
-                      onSelected: (_) {
-                        setState(() {
-                          _activeFilter = 'all';
-                        });
-                      },
-                    ),
-                  ),
+                  _paymentFilterChip('card', 'دفع بالمحفظة', Icons.credit_card_rounded),
+                  _paymentFilterChip('cash', 'نقدي', Icons.payments_rounded),
+                  _paymentFilterChip('all', 'الكل', Icons.list_alt_rounded),
                 ],
               ),
             ),
@@ -780,23 +699,16 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                         child: Align(
                                                             alignment: Alignment
                                                                 .centerLeft,
-                                                            child: Text(
-                                                                cashierName,
+                                                            child: Text(cashierName,
                                                                 style: TextStyle(
-                                                                    color: Colors
-                                                                        .black,
-                                                                    fontWeight:
-                                                                        FontWeight
-                                                                            .bold,
-                                                                    fontSize:
-                                                                        17)))),
+                                                                    color: AppColorsDark.mainTextDark,
+                                                                    fontWeight: FontWeight.bold,
+                                                                    fontSize: 17)))),
                                                     Expanded(
                                                         child: Center(
-                                                            child: Text(
-                                                                'فاتورات: ${cashierSales.length}',
+                                                            child: Text('فاتورات: ${cashierSales.length}',
                                                                 style: TextStyle(
-                                                                    color: Colors
-                                                                        .black)))),
+                                                                    color: AppColorsDark.mainTextDark)))),
                                                     Expanded(
                                                         child: Align(
                                                             alignment: Alignment
@@ -804,8 +716,7 @@ class _receiptsScreenState extends State<receiptsScreen> {
                                                             child: Text(
                                                                 'إجمالي: ${cashierTotal.toStringAsFixed(2)}',
                                                                 style: TextStyle(
-                                                                    color: Colors
-                                                                        .black)))),
+                                                                    color: AppColorsDark.mainTextDark)))),
                                                   ],
                                                 ),
                                               ),
