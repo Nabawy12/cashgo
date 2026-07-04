@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:cashgo/utils/colors.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
 import 'package:accordion_widget/accordion_widget.dart';
 import '../../services/db/db_helper.dart';
 import '../../widgets/Cashier/returndailog.dart';

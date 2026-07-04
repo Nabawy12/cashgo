@@ -1,6 +1,6 @@
 // lib/widgets/loading_shimmer.dart
 import 'package:flutter/material.dart';
-import 'package:cashgo/utils/colors.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
 
 /// LoadingShimmer
 /// ويدجت قابل لإعادة الاستخدام لعرض تأثير shimmer بسيط.

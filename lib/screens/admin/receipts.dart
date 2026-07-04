@@ -1,6 +1,6 @@
 // lib/screens/receipts_screen.dart
 import 'package:accordion_widget/Accordion_Widget.dart';
-import 'package:cashgo/utils/colors.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 

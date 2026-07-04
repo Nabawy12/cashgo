@@ -1,6 +1,6 @@
 // lib/network/network_aware_page.dart
 import 'dart:async';
-import 'package:cashgo/widgets/Cashier/network.dart';
+import 'package:cashgo_supermarket/widgets/Cashier/network.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';

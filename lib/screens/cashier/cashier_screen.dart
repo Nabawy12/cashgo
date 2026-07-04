@@ -1,11 +1,11 @@
 // lib/screens/cashier/cashier_screen.dart
 import 'dart:async';
 import 'dart:convert';
-import 'package:cashgo/models/login.dart';
-import 'package:cashgo/services/cashier/close_shieft.dart';
-import 'package:cashgo/utils/colors.dart';
-import 'package:cashgo/widgets/custom_button.dart';
-import 'package:cashgo/widgets/custom_form.dart';
+import 'package:cashgo_supermarket/models/login.dart';
+import 'package:cashgo_supermarket/services/cashier/close_shieft.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
+import 'package:cashgo_supermarket/widgets/custom_button.dart';
+import 'package:cashgo_supermarket/widgets/custom_form.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';

@@ -1,5 +1,5 @@
 // lib/screens/shared/locked_screen.dart
-import 'package:cashgo/Locked/ActivationService.dart';
+import 'package:cashgo_supermarket/Locked/ActivationService.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';

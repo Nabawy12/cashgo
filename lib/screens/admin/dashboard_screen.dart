@@ -1,8 +1,8 @@
-import 'package:cashgo/screens/admin/product_management_screen.dart'
+import 'package:cashgo_supermarket/screens/admin/product_management_screen.dart'
     show ProductManagementScreen;
-import 'package:cashgo/screens/admin/profit_screen.dart';
-import 'package:cashgo/screens/admin/receipts.dart';
-import 'package:cashgo/screens/admin/stock_screen.dart';
+import 'package:cashgo_supermarket/screens/admin/profit_screen.dart';
+import 'package:cashgo_supermarket/screens/admin/receipts.dart';
+import 'package:cashgo_supermarket/screens/admin/stock_screen.dart';
 import 'package:flutter/material.dart';
 import '../../services/db/db_helper.dart';
 import '../../utils/colors.dart';

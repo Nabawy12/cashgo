@@ -1,4 +1,4 @@
-import 'package:cashgo/utils/colors.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
 import 'package:flutter/material.dart';
 
 class CustomButton extends StatelessWidget {

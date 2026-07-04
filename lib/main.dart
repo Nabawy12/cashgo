@@ -1,10 +1,10 @@
 // lib/main.dart
 import 'dart:async';
 
-import 'package:cashgo/services/Api/Admin/Products.dart';
-import 'package:cashgo/services/app_settings_controller.dart';
-import 'package:cashgo/services/cashier/close_shieft.dart';
-import 'package:cashgo/utils/colors.dart';
+import 'package:cashgo_supermarket/services/Api/Admin/Products.dart';
+import 'package:cashgo_supermarket/services/app_settings_controller.dart';
+import 'package:cashgo_supermarket/services/cashier/close_shieft.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:intl/date_symbol_data_local.dart';

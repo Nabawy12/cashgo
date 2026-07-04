@@ -1,8 +1,8 @@
 // lib/widgets/Cashier/payment_controller.dart
-import 'package:cashgo/models/login.dart';
-import 'package:cashgo/utils/colors.dart';
-import 'package:cashgo/widgets/custom_button.dart';
-import 'package:cashgo/widgets/custom_form.dart';
+import 'package:cashgo_supermarket/models/login.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
+import 'package:cashgo_supermarket/widgets/custom_button.dart';
+import 'package:cashgo_supermarket/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
 
 class PaymentControls extends StatefulWidget {

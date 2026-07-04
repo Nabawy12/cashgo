@@ -6,7 +6,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:cashgo/utils/colors.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' show rootBundle, FontLoader;

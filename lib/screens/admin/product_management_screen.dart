@@ -1,8 +1,8 @@
 // lib/screens/product_management_screen.dart
 import 'dart:async';
 
-import 'package:cashgo/utils/colors.dart';
-import 'package:cashgo/widgets/custom_button.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
+import 'package:cashgo_supermarket/widgets/custom_button.dart';
 import 'package:flutter/material.dart';
 import 'package:skeletonizer/skeletonizer.dart';
 import '../../services/Api/Admin/Products.dart';

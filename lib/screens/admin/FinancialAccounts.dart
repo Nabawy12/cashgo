@@ -12,8 +12,8 @@ import '../../models/login.dart';
 import '../../services/Api/Admin/financle.dart';
 import '../../services/db/db_helper.dart';
 import '../../utils/colors.dart';
-import 'package:cashgo/widgets/custom_button.dart';
-import 'package:cashgo/widgets/custom_form.dart';
+import 'package:cashgo_supermarket/widgets/custom_button.dart';
+import 'package:cashgo_supermarket/widgets/custom_form.dart';
 import 'package:flutter/foundation.dart'; // for kIsWeb & defaultTargetPlatform
 
 /// شاشة الدرج — تدعم offline / online: تحفظ محليًا في Hive وتضع ops في صندوق 'ops'

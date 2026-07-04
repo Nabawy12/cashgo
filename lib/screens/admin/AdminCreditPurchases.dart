@@ -1,4 +1,4 @@
-import 'package:cashgo/widgets/custom_form.dart';
+import 'package:cashgo_supermarket/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 

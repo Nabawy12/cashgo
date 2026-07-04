@@ -1,7 +1,7 @@
-name: cashgo
-description: A starter POS desktop app (admin + cashier) built with Flutter.
+name: cashgo_supermarket
+description: CashGo SuperMarket POS desktop app built with Flutter.
 publish_to: "none"
-version: 0.0.1
+version: 1.0.0+1
 
 environment:
   sdk: ">=2.18.0 <4.0.0"
@@ -30,6 +30,8 @@ dependencies:
   crypto: ^3.0.6
   sqlite3_flutter_libs: ^0.6.0+eol
   url_launcher: ^6.3.2
+  path_provider: ^2.1.1
+  msix: ^3.16.7
 
 dependency_overrides:
   sqlite3: ^2.9.0
@@ -39,6 +41,13 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  windows:
+    generate: true
+    image_path: "assets/images/logo.png"
+    icon_size: 48
 
 flutter:
   uses-material-design: true
@@ -47,3 +56,15 @@ flutter:
     - assets/fonts/Cairo-Regular.ttf
     - assets/icons/
     - assets/images/
+
+msix_config:
+  display_name: CashGo SuperMarket
+  publisher_display_name: NabawySolution
+  identity_name: NabawySolution.CashGoSuperMarket
+  msix_version: 1.0.0.0
+  logo_path: assets/images/logo.png
+  start_menu_icon_path: assets/images/logo.png
+  tile_icon_path: assets/images/logo.png
+  icons_background_color: transparent
+  architecture: x64
+  capabilities: internetClient

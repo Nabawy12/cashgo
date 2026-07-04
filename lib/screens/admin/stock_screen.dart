@@ -2,8 +2,8 @@
 import 'dart:io';
 
 import 'package:accordion_widget/accordion_widget.dart';
-import 'package:cashgo/utils/colors.dart';
-import 'package:cashgo/widgets/custom_form.dart';
+import 'package:cashgo_supermarket/utils/colors.dart';
+import 'package:cashgo_supermarket/widgets/custom_form.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart' hide TextDirection;
