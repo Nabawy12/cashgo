@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io' show Platform;
-
+import 'package:path_provider/path_provider.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
@@ -38,10 +38,28 @@ class DBHelper {
         databaseFactory = databaseFactoryFfi;
       } catch (e) {
         print('sqflite_common_ffi init failed: $e');
+        rethrow;
       }
     }
-    final dbPath = await getDatabasesPath();
+
+    String dbPath;
+    try {
+      if (!kIsWeb &&
+          (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+        final dir = await getApplicationSupportDirectory();
+        if (!await dir.exists()) {
+          await dir.create(recursive: true);
+        }
+        dbPath = dir.path;
+      } else {
+        dbPath = await getDatabasesPath();
+      }
+    } catch (e) {
+      rethrow;
+    }
+
     final path = join(dbPath, fileName);
+    debugPrint('DB path: $path');
 
     return await openDatabase(
       path,
@@ -72,80 +90,29 @@ class DBHelper {
         await _ensureShopExternalExpensesTable(db);
       },
       onOpen: (db) async {
-        try {
-          await _ensureUnitsRemainderColumn(db);
-        } catch (_) {}
-        try {
-          await _ensureSaleColumns(db);
-        } catch (_) {}
-        try {
-          await _ensureSaleItemsPurchasePriceColumn(db);
-        } catch (_) {}
-        try {
-          await _ensureProductDatesColumns(db);
-        } catch (_) {}
-        try {
-          await _ensureProductProfitMarkedColumn(db);
-        } catch (_) {}
-        try {
-          await _ensureExpirySeenColumn(db);
-        } catch (_) {}
-        try {
-          await _ensureLowStockSeenColumn(db);
-        } catch (_) {}
-        try {
-          await _ensurePurchaseReceiptsTable(db);
-        } catch (_) {}
-        try {
-          await _ensurePurchaseReceiptsColumns(db);
-        } catch (_) {}
-        try {
-          await _ensurePurchasePaymentsTable(db);
-        } catch (_) {}
-        try {
-          await _ensureCashDrawerTable(db);
-        } catch (_) {}
-
-        try {
-          await _ensureIsCurrentUserColumn(db);
-        } catch (_) {}
-
-        try {
-          await _ensureSalePaymentMethodColumn(db);
-        } catch (_) {}
-
-        try {
-          await _ensureSaleCardTransferredColumn(db);
-        } catch (_) {}
-
-        try {
-          await _ensureSaleDiscountColumns(db);
-        } catch (_) {}
-        try {
-          await _ensureProductDatesColumns(db);
-        } catch (_) {}
-
-        try {
-          await _ensureDrawerWithdrawnAmountColumn(db);
-        } catch (_) {}
-        try {
-          await _ensureUserAuthColumns(db);
-        } catch (_) {}
-        try {
-          await _migratePlaintextUsers(db);
-        } catch (_) {}
-        try {
-          await _ensureCloseShiftsTable(db);
-        } catch (_) {}
-        try {
-          await _ensureShiftSettingsTable(db);
-        } catch (_) {}
-        try {
-          await _ensureAppSettingsTable(db);
-        } catch (_) {}
-        try {
-          await _ensureShopExternalExpensesTable(db);
-        } catch (_) {}
+        try { await _ensureUnitsRemainderColumn(db); } catch (_) {}
+        try { await _ensureSaleColumns(db); } catch (_) {}
+        try { await _ensureSaleItemsPurchasePriceColumn(db); } catch (_) {}
+        try { await _ensureProductDatesColumns(db); } catch (_) {}
+        try { await _ensureProductProfitMarkedColumn(db); } catch (_) {}
+        try { await _ensureExpirySeenColumn(db); } catch (_) {}
+        try { await _ensureLowStockSeenColumn(db); } catch (_) {}
+        try { await _ensurePurchaseReceiptsTable(db); } catch (_) {}
+        try { await _ensurePurchaseReceiptsColumns(db); } catch (_) {}
+        try { await _ensurePurchasePaymentsTable(db); } catch (_) {}
+        try { await _ensureCashDrawerTable(db); } catch (_) {}
+        try { await _ensureIsCurrentUserColumn(db); } catch (_) {}
+        try { await _ensureSalePaymentMethodColumn(db); } catch (_) {}
+        try { await _ensureSaleCardTransferredColumn(db); } catch (_) {}
+        try { await _ensureSaleDiscountColumns(db); } catch (_) {}
+        try { await _ensureProductDatesColumns(db); } catch (_) {}
+        try { await _ensureDrawerWithdrawnAmountColumn(db); } catch (_) {}
+        try { await _ensureUserAuthColumns(db); } catch (_) {}
+        try { await _migratePlaintextUsers(db); } catch (_) {}
+        try { await _ensureCloseShiftsTable(db); } catch (_) {}
+        try { await _ensureShiftSettingsTable(db); } catch (_) {}
+        try { await _ensureAppSettingsTable(db); } catch (_) {}
+        try { await _ensureShopExternalExpensesTable(db); } catch (_) {}
       },
     );
   }
