@@ -6,7 +6,6 @@ import 'package:intl/intl.dart' hide TextDirection;
 import 'package:skeletonizer/skeletonizer.dart';
 import 'package:uuid/uuid.dart';
 import 'package:hive/hive.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 
 import '../../models/login.dart';
 import '../../services/Api/Admin/financle.dart';
@@ -104,14 +103,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
   // ---------------------------
   // Offline/online helpers
   // ---------------------------
-  Future<bool> _isOnline() async {
-    try {
-      final c = await Connectivity().checkConnectivity();
-      return c != ConnectivityResult.none;
-    } catch (_) {
-      return false;
-    }
-  }
 
   Future<void> _saveLocalAndQueue(FinancialAccount payload,
       {String? localKey, Map<String, dynamic>? extraMeta}) async {
@@ -220,36 +211,6 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
     if (!mounted) return;
     setState(() => _loading = true);
 
-    final online = await _isOnline();
-    if (online) {
-      // try fetch latest from server
-      try {
-        final list = await _service.getLatest(limit: 1);
-        if (list.isNotEmpty) {
-          final rec = list.first;
-          // save server record to local cache for offline usage
-          await _saveServerRecordToLocal(rec.toJsonFull());
-          _applyRecordToState(rec);
-          return;
-        } else {
-          // server returned empty -> try local cache
-          final local = await _latestFromLocal();
-          if (local != null) {
-            _applyRecordToState(local);
-            return;
-          } else {
-            // no data at all
-            _applyDefaults();
-            return;
-          }
-        }
-      } catch (e, st) {
-        debugPrint('Failed to load from server, will attempt local: $e\n$st');
-        // fallthrough to local
-      }
-    }
-
-    // offline or server failed: load local
     try {
       final local = await _latestFromLocal();
       if (local != null) {
@@ -445,46 +406,16 @@ class _AdminCashDrawerPageState extends State<AdminCashDrawerPage> {
 
   // ---------- Save helpers that try online, else queue ----------
   Future<void> _saveOnlineOrQueue(FinancialAccount payload) async {
-    final online = await _isOnline();
-
-    if (online) {
-      try {
-        final inserted = await _service.insert(payload);
-        // server returned inserted record; persist locally and update UI
-        // InsertFinancialAccountService.insert returns FinancialAccount.fromJson(...)
-        // Save server record into Hive
-        await _saveServerRecordToLocal(inserted.toJsonFull());
-        _applyRecordToState(inserted);
-        if (mounted) {
-          _showSnackBar(const SnackBar(
-            content: Directionality(
-              textDirection: TextDirection.rtl,
-              child: Text('تم الحفظ'),
-            ),
-            duration: Duration(seconds: 2),
-          ));
-        }
-        return;
-      } catch (e) {
-        // network/API error -> fallthrough to queue
-        debugPrint(
-            '[AdminCashDrawerPage] online save failed, queueing locally: $e');
-      }
-    }
-
-    // offline or failed: save local and queue op
     await _saveLocalAndQueue(payload);
     if (mounted) {
       _showSnackBar(const SnackBar(
         content: Directionality(
           textDirection: TextDirection.rtl,
-          child: Text(
-              'لا يوجد اتصال — تم الحفظ محليًا وسيتم رفعه تلقائيًا عند عودة الشبكة'),
+          child: Text('تم الحفظ محليًا'),
         ),
-        duration: Duration(seconds: 3),
+        duration: Duration(seconds: 2),
       ));
     }
-    // update UI to reflect local change
     final localLatest = await _latestFromLocal();
     if (localLatest != null) _applyRecordToState(localLatest);
   }

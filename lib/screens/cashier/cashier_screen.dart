@@ -6,7 +6,6 @@ import 'package:cashgo_supermarket/services/cashier/close_shieft.dart';
 import 'package:cashgo_supermarket/utils/colors.dart';
 import 'package:cashgo_supermarket/widgets/custom_button.dart';
 import 'package:cashgo_supermarket/widgets/custom_form.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hive/hive.dart';
@@ -313,201 +312,16 @@ class _CashierScreenState extends State<CashierScreen> {
     _initFinancialsListener();
     Session.updateDateTime();
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scaffoldReady = true;
-    });
 
-    // init network checker (io/web implementations موجودة عندك)
-    _networkCheck = NetworkCheck();
-
-    // فحص أولي لحالة الإنترنت الحقيقية (ما نعرضش سناك بار أثناء التهيئة)
-    _checkInitial();
-
-    // استمع لتغيّر واجهة الشبكة (لاحظ أن onConnectivityChanged الآن يعيد List<ConnectivityResult>)
-    // فنحوّله إلى عنصر واحد منطقي (أو ConnectivityResult.none لو فاضية)
-    _connectivitySub = Connectivity()
-        .onConnectivityChanged
-        .map((list) => (list is List<ConnectivityResult> && list.isNotEmpty)
-            ? list.first
-            : ConnectivityResult.none)
-        .listen((ConnectivityResult result) {
-      // لو بدك تحدد سلوك حسب النوع: result == ConnectivityResult.wifi || ethernet ...
-      // هنا نعيد فحص الاتصال الحقيقي (socket / http probe) بعد أي تغيير في الواجهة
-      _onInterfaceChanged();
-    });
-
-    // استمع لبث حالة الإنترنت الحقيقية من NetworkCheck (stream of bool)
-    _internetStatusSub = _networkCheck.onStatusChange.listen((connected) {
-      _handleConnectionChanged(connected);
-    });
   }
 
   final GlobalKey<ScaffoldMessengerState> _scaffoldMessengerKey =
       GlobalKey<ScaffoldMessengerState>();
 
-  late final NetworkCheck _networkCheck;
 
-  // نعمل Subscription على عنصر واحد بعد تحويل القائمة
-  StreamSubscription<ConnectivityResult>? _connectivitySub;
-  StreamSubscription<bool>? _internetStatusSub;
 
-  bool _hasInternet = true;
-  bool _initialChecked = false;
-  bool _isOnline = false;
 
-// لمنع تكرار استدعاءات _onNetworkBack عند تقلبات سريعة
-  bool _hasHandledNetworkBack = false;
-  // ننتظر أول frame عشان نتأكد إن ScaffoldMessenger جاهز لعرض SnackBars
-  bool _scaffoldReady = false;
 
-  Future<void> _checkInitial() async {
-    final connected = await _networkCheck.hasConnection();
-    _initialChecked = true;
-    // لا نعرض SnackBar عند البداية — فقط نحدّث الحالة الداخلية
-    _handleConnectionChanged(connected, showSnack: false);
-  }
-
-  Future<void> _onInterfaceChanged() async {
-    // بعد تغيير الواجهة نعيد الفحص الحقيقي
-    final connected = await _networkCheck.hasConnection();
-    _handleConnectionChanged(connected);
-  }
-
-  void _handleConnectionChanged(bool connected, {bool showSnack = true}) {
-    if (!mounted) return;
-
-    // تحديث الـ state المرئي
-    if (connected == _hasInternet && showSnack) {
-      // لا تغيير مرئي — لكن نحتاج في بعض الأحيان تحديث _isOnline أيضاً
-      _isOnline = connected;
-      return;
-    }
-
-    final wasOnline = _isOnline;
-    _isOnline = connected; // <-- هذه القيمة تستخدم لاحقاً في اللوجيك
-    setState(() => _hasInternet = connected);
-
-    if (!showSnack) return;
-
-    // تأجيل عرض الـ SnackBar إذا الـ ScaffoldMessenger مش جاهز
-    if (!_scaffoldReady) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _showSnack(connected);
-      });
-    } else {
-      _showSnack(connected);
-    }
-
-    // --- إذا النت رجع الآن (وكان offline قبل كده) نفّذ مهام المزامنة بأمان ---
-    if (connected && !wasOnline) {
-      if (!_hasHandledNetworkBack) {
-        _hasHandledNetworkBack = true;
-
-        // نأجل شوية عشان نتجنب ارتدادات سريعة
-        Future.delayed(const Duration(milliseconds: 300), () async {
-          try {
-            debugPrint('[networkBack] detected online -> running sync tasks');
-
-            // 1) نفحّص وندفع أي ops معلق (لو عندك SyncManager)
-            try {
-              await SyncManager.flushOnce();
-              debugPrint('[networkBack] SyncManager.flushOnce succeeded');
-            } catch (e, st) {
-              debugPrint('[networkBack] SyncManager.flushOnce failed: $e\n$st');
-            }
-
-            // 2) جلب و مزامنة الـ financials من السيرفر (لو عندك دالة جاهزة)
-            try {
-              await _fetchAndSyncFinancialsFromServer();
-              debugPrint('[networkBack] fetched financials from server');
-            } catch (e, st) {
-              debugPrint('[networkBack] fetch financials failed: $e\n$st');
-            }
-
-            // 3) إعادة تشغيل الـ inits أو إعادة تحميل كل البيانات الحساسية
-            try {
-              await _restartInitialLoad();
-              debugPrint('[networkBack] _restartInitialLoad completed');
-            } catch (e, st) {
-              debugPrint('[networkBack] _restartInitialLoad failed: $e\n$st');
-            }
-
-            // 4) مسح أي مجاميع اوفلاين مخزنة (اختياري حسب منطقك)
-            try {
-              final meta = await Hive.openBox('meta');
-              await meta.put('lastOfflineSale', 0.0);
-              await meta.put('lastOfflineSale_cash', 0.0);
-              await meta.put('lastOfflineSale_credit', 0.0);
-
-              if (mounted) {
-                setState(() {
-                  saleOffline_cash = 0.0;
-                  saleOffline_credit = 0.0;
-                  _lastOfflineSale = 0.0;
-                });
-              }
-              debugPrint('[networkBack] cleared offline meta totals');
-            } catch (e, st) {
-              debugPrint('[networkBack] clearing offline meta failed: $e\n$st');
-            }
-          } catch (e, st) {
-            debugPrint('[networkBack] unexpected error: $e\n$st');
-          } finally {
-            // اسمح بإعادة المعالجة بعد ثانيتين لو تقلب النت تاني
-            Future.delayed(const Duration(seconds: 2), () {
-              _hasHandledNetworkBack = false;
-            });
-          }
-        });
-      }
-    }
-  }
-
-  void _showSnack(bool connected) {
-    final messenger = _scaffoldMessengerKey.currentState;
-    // إغلاق أي SnackBar سابق
-    messenger?.hideCurrentSnackBar();
-    if (connected) {
-      // استمع لـ Hive local financials + حاول جلب من السيرفر
-      _initFinancialsListener();
-      _loadFinancials(); // محفوظة لديك — ممكن تبقى مُحدّثة لعمل sync عند online
-
-      _loadFinancialsFromLocal().then((_) => _loadFinancials());
-      messenger?.showSnackBar(
-        SnackBar(
-          content: const Directionality(
-            textDirection: TextDirection.rtl,
-            child: Text('الإنترنت رجع ✅'),
-          ),
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    } else {
-      // استمع لـ Hive local financials + حاول جلب من السيرفر
-      _initFinancialsListener();
-      _loadFinancials(); // محفوظة لديك — ممكن تبقى مُحدّثة لعمل sync عند online
-
-      _loadFinancialsFromLocal().then((_) => _loadFinancials());
-      messenger?.showSnackBar(
-        SnackBar(
-          content: const Directionality(
-            textDirection: TextDirection.rtl,
-            child: Text('لا يوجد اتصال بالإنترنت ⚠️'),
-          ),
-          // نتركه ظاهراً لفترة طويلة (سنخفيه تلقائياً عندما يعود)
-          duration: const Duration(days: 1),
-          action: SnackBarAction(
-            label: 'إعادة فحص',
-            onPressed: () async {
-              final connected = await _networkCheck.hasConnection();
-              _handleConnectionChanged(connected);
-            },
-          ),
-        ),
-      );
-    }
-  }
 
 // ====================== _initFinancialsListener ======================
   Future<void> _initFinancialsListener() async {
@@ -1898,72 +1712,6 @@ class _CashierScreenState extends State<CashierScreen> {
     setState(() => _loading = true);
 
     try {
-      // 1) قرار سريع: نثق أولاً في الحالة المركزية _isOnline
-      bool online = _isOnline;
-
-      // 2) إذا لم نكن واثقين أو طُلب فحص إجباري، نتحقق سريعاً:
-      if (!online || forceOnlineCheck) {
-        // فحص واجهة الشبكة (WiFi/ethernet/mobile) أولاً — أسرع من probe
-        final conn = await Connectivity().checkConnectivity();
-        if (conn != ConnectivityResult.none) {
-          // نفعل probe حقيقي لكن لا ننتظر أكثر من ثانيتين لتقليل الـ UX delay
-          try {
-            online = await _networkCheck
-                .hasConnection()
-                .timeout(const Duration(seconds: 2));
-          } catch (_) {
-            online = false;
-          }
-        } else {
-          online = false;
-        }
-        debugPrint(
-            '[Financials] connectivity check -> conn=$conn, probeOnline=$online');
-      }
-
-      // 3) لو عندنا إنترنت حقيقي، حاول تجيب من السيرفر أولاً
-      if (online) {
-        try {
-          // timeout معقول للـ API
-          final list = await _service
-              .getLatest(limit: 1)
-              .timeout(const Duration(seconds: 8));
-          if (list.isNotEmpty) {
-            final rec = list.first;
-            // خزّن/حدّث الـ Hive بحذر ثم عمل setState
-            try {
-              final box = await Hive.openBox('financial_accounts');
-              final key = rec.id?.toString() ??
-                  DateTime.now().millisecondsSinceEpoch.toString();
-              await box.put(key, rec.toJsonFull());
-              debugPrint('[Financials] saved server record to Hive key=$key');
-            } catch (e, st) {
-              debugPrint(
-                  '[Financials] failed to save server record to Hive: $e\n$st');
-            }
-
-            if (!mounted) return;
-            setState(() {
-              _startingAmount = rec.startingAmount;
-              _financialsLoaded = true;
-            });
-            await DBHelper.instance
-                .setFixedShiftOpeningBalance(rec.startingAmount);
-            await _loadDrawerBalance();
-            return;
-          } else {
-            debugPrint('[Financials] server returned empty list');
-          }
-        } catch (e, st) {
-          debugPrint(
-              '[Financials] online fetch failed despite online=true: $e\n$st');
-          // fallthrough to local
-        }
-      } else {
-        debugPrint('[Financials] not online -> fallback to local');
-      }
-
-      // 4) OFFLINE fallback: اقرأ من الـ Hive (listener يتابع التغييرات)
       await _applyLatestFinancialFromBox();
     } catch (e, st) {
       debugPrint('Failed to load financials: $e\n$st');
